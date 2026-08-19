@@ -30,4 +30,20 @@ INVOCATION_DENOMINATOR_PROVEN=<true|false>
 TERMINAL_STATUS_PROVEN=<true|false>
 ```
 
+Evidence architecture must additionally state one of:
+
+```text
+EVIDENCE_SOURCE_CLASS=PassiveEvidenceSource|InstrumentedEvidenceSource
+PASSIVE_EVIDENCE_PREFERRED=true
+INSTRUMENTATION_OPT_IN=<true|false>
+OWNER_LIVE_CODEX_MUTATED=<true|false>
+PROXY_STREAM_CONTENT_PERSISTED=false
+```
+
+Instrumented receipts may contain only bounded invocation metadata: opaque
+invocation id, handler key/revision, event, source kind, execution mode,
+timestamps/duration, exit/result taxonomy, and coverage. Exact configuration
+backup/restore material is private local control-plane data, never ledger,
+report, fixture, or committed evidence.
+
 Never commit unsanitized prompts, tool arguments, tokens, credentials, or full personal session transcripts as evidence.

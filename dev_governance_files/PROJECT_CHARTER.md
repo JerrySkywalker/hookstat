@@ -15,7 +15,11 @@ HookStat is a local-first reliability analytics tool for hooks across coding-age
 
 ## v0.1 product promise
 
-Codex-first. The user continues to launch Codex normally. Later, running `hookstat` ingests available local durable evidence and presents per-handler invocation count, failed invocation count, failure rate, basic terminal-state breakdown, time windows, recent failures, and latency only when supported by evidence.
+Codex-first. The user continues to launch Codex normally. HookStat may ingest
+preferred passive durable evidence or, where passive per-handler receipts are
+unavailable, opt-in transparent instrumented receipts. It presents per-handler
+invocation count, failed invocation count, failure rate, terminal-state
+breakdown, time windows, recent failures, and latency only when supported.
 
 ## Long-term runtimes
 
@@ -26,8 +30,15 @@ Codex-first. The user continues to launch Codex normally. Later, running `hookst
 
 ## Safety/privacy
 
-HookStat v0.1 is read-only toward coding-agent runtimes, offline by default, and does not persist raw prompts/tool payloads. Incomplete evidence must remain visibly incomplete.
+HookStat v0.1 is offline by default and does not persist raw prompts, tool
+payloads, stdin/stdout/stderr, or raw hook commands in its reliability ledger.
+Passive ingestion is read-only. Instrumentation is opt-in, never changes Codex
+trust, and retains exact private backups only locally for restore. Incomplete
+evidence must remain visibly incomplete.
 
 ## Non-goals for v0.1
 
-No daemon, launcher wrapper, system tray, Web UI, notifications, automatic repair, active probe, hook doctor, live Codex mutation, DeepSeek Harness implementation, OpenCode implementation, error clustering, handler revision analytics, or crates.io publication without a separate release authorization.
+No daemon, Codex launcher wrapper, system tray, Web UI, notifications,
+automatic repair, active probe, trust automation, DeepSeek Harness
+implementation, OpenCode implementation, error clustering, or crates.io
+publication without a separate release authorization.

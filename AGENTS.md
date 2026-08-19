@@ -12,8 +12,12 @@ The primary v0.1 user value is: after ordinary `codex` usage, `hookstat` reports
 
 - Normal Codex launch remains `codex`; never require `hookstat codex`.
 - No daemon/service is required for v0.1.
-- Do not mutate live Codex config, hook definitions, trust state, or session history.
-- Do not install wrappers around the user's hooks to manufacture observability.
+- Normal analysis is read-only toward Codex. An explicit, opt-in per-handler
+  instrumentation plan may install a transparent proxy only after dry-run and
+  explicit apply; it must never be a `hookstat codex` launcher wrapper, daemon,
+  trust modifier, or implicit default mutation. Unmanaged/owner-live Codex
+  configuration remains untouched during unattended development trains unless a
+  goal expressly authorizes an attended apply.
 - Do not report incomplete coverage as `0.00% healthy`.
 - `Blocked`/`Stopped`/policy denial are not automatically execution failures.
 - Every displayed failure rate must be accompanied by its sample count.
@@ -28,7 +32,9 @@ Start as one publishable Rust package (modular monolith). Preserve explicit conc
 
 `dev_governance_files/ROADMAP.md` defines order. `QUALITY_GATES.md` defines required proof. `FAST_LANE.md` prevents redundant ceremony. Each `goals/` file is an execution contract, not a suggestion.
 
-If HS-G01 cannot prove a durable per-handler Codex evidence source, stop at `BLOCKED_DATA_SOURCE_DECISION_REQUIRED`. Do not solve that blocker by silently adding a daemon, wrapper, App Server dependency, live config mutation, or other product-scope expansion.
+Passive durable evidence remains preferred. If it is unavailable, an owner may
+explicitly admit an opt-in instrumented receipt source. The canonical model,
+ledger, analytics, JSON, and TUI must remain evidence-source-neutral.
 
 ## Git and scope
 

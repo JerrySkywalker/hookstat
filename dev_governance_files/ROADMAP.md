@@ -7,7 +7,7 @@ Critical path:
 ```text
 HS-B00 Repository Foundation
   ↓
-HS-G01 Codex Evidence Qualification
+HS-G01 Codex Evidence Qualification (passive preferred; opt-in instrumented only by owner decision)
   ↓
 HS-G02 Codex Vertical Slice
   ↓
@@ -30,7 +30,10 @@ Rust skeleton, pinned toolchain, CI, governance, architecture/ADRs, normative TU
 
 Empirically determine which local Codex evidence surfaces can durably recover per-handler invocations and terminal outcomes. Candidate sources include rollout/session files, archived sessions, local diagnostic/state stores, App Server live events, and OTel only as evidence warrants. App Server is not presumed to be the primary source.
 
-Hard stop: if no durable source can identify individual handlers plus invocation/result, return `BLOCKED_DATA_SOURCE_DECISION_REQUIRED`; do not widen architecture automatically.
+Hard stop: if no passive durable source can identify individual handlers plus
+invocation/result, return `BLOCKED_DATA_SOURCE_DECISION_REQUIRED` unless the
+Owner explicitly admits the separately governed opt-in instrumented receipt
+architecture. Do not widen architecture automatically.
 
 ### HS-G02 — Codex Vertical Slice
 

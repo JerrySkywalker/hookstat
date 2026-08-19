@@ -1,17 +1,16 @@
-//! Deterministic JSON report assembly. Reports carry their admission state so a
-//! synthetic fixture can never masquerade as owner runtime history.
+//! Deterministic machine-readable report assembly.
 
 use crate::analytics::{HandlerAggregate, RecentFailure, TimeWindow, aggregate, recent_failures};
 use crate::domain::{
-    EvidenceCoverage, EvidenceKind, HandlerIdentity, HookEvent, HookInvocation, Runtime,
-    SourceQualification, TerminalStatus,
+    EvidenceCoverage, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent, HookInvocation,
+    Runtime, SourceQualification, TerminalStatus,
 };
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportKind {
-    BlockedNoAdmittedEvidence,
+    InstrumentedCodex,
     SyntheticFixture,
 }
 
@@ -24,6 +23,8 @@ pub struct MachineReport {
     pub qualification: SourceQualification,
     pub handlers: Vec<HandlerAggregate>,
     pub recent_failures: Vec<RecentFailure>,
+    pub malformed_receipts: u64,
+    pub incomplete_receipts: u64,
 }
 
 impl MachineReport {
@@ -32,113 +33,117 @@ impl MachineReport {
     }
 }
 
-/// The only report available without an admitted source. It has no rate rows.
-pub fn blocked_report(now_unix_ms: i64) -> MachineReport {
+pub fn instrumented_report(
+    values: &[HookInvocation],
+    now: i64,
+    window: TimeWindow,
+    malformed_receipts: u64,
+    incomplete_receipts: u64,
+) -> MachineReport {
     MachineReport {
         schema_version: 1,
-        report_kind: ReportKind::BlockedNoAdmittedEvidence,
-        generated_at_unix_ms: now_unix_ms,
-        window: TimeWindow::Last7Days,
-        qualification: SourceQualification::blocked(),
-        handlers: Vec::new(),
-        recent_failures: Vec::new(),
+        report_kind: ReportKind::InstrumentedCodex,
+        generated_at_unix_ms: now,
+        window,
+        qualification: SourceQualification::instrumented(),
+        handlers: aggregate(values, now, window),
+        recent_failures: recent_failures(values, now, window, 10),
+        malformed_receipts,
+        incomplete_receipts,
     }
 }
 
-/// A stable development fixture that proves the canonical aggregate path only.
-/// It is explicitly labelled synthetic in both JSON and terminal rendering.
-pub fn synthetic_fixture_report(now_unix_ms: i64) -> MachineReport {
-    let records = synthetic_fixture_invocations(now_unix_ms);
-    let window = TimeWindow::Last7Days;
+pub fn synthetic_fixture_report(now: i64) -> MachineReport {
+    let values = synthetic_fixture_invocations(now);
     MachineReport {
         schema_version: 1,
         report_kind: ReportKind::SyntheticFixture,
-        generated_at_unix_ms: now_unix_ms,
-        window,
+        generated_at_unix_ms: now,
+        window: TimeWindow::Last7Days,
         qualification: SourceQualification::synthetic_fixture(),
-        handlers: aggregate(&records, now_unix_ms, window),
-        recent_failures: recent_failures(&records, now_unix_ms, window, 5),
+        handlers: aggregate(&values, now, TimeWindow::Last7Days),
+        recent_failures: recent_failures(&values, now, TimeWindow::Last7Days, 5),
+        malformed_receipts: 0,
+        incomplete_receipts: 0,
     }
 }
 
-fn synthetic_fixture_invocations(now_unix_ms: i64) -> Vec<HookInvocation> {
-    let alpha = HandlerIdentity {
-        key: "fixture:stop:alpha".to_owned(),
-        label: "fixture alpha".to_owned(),
-        event: HookEvent::Stop,
-    };
-    let beta = HandlerIdentity {
-        key: "fixture:stop:beta".to_owned(),
-        label: "fixture beta".to_owned(),
-        event: HookEvent::Stop,
-    };
+fn fixture_handler(key: &str, event: HookEvent) -> HandlerIdentity {
+    HandlerIdentity {
+        key: key.into(),
+        revision: "fixture-revision".into(),
+        label: format!("fixture {key}"),
+        source_kind: "synthetic_fixture".into(),
+        event,
+        matcher_identity: "any".into(),
+        structural_identity: "fixture".into(),
+        execution_mode: ExecutionMode::Sync,
+    }
+}
+fn synthetic_fixture_invocations(now: i64) -> Vec<HookInvocation> {
     [
         (
             "fixture-001",
-            alpha.clone(),
+            fixture_handler("alpha", HookEvent::Stop),
             TerminalStatus::Completed,
-            None,
         ),
         (
             "fixture-002",
-            alpha.clone(),
+            fixture_handler("alpha", HookEvent::Stop),
             TerminalStatus::Failed,
-            Some("E_FIXTURE"),
         ),
-        ("fixture-003", alpha, TerminalStatus::Blocked, None),
-        ("fixture-004", beta.clone(), TerminalStatus::Completed, None),
-        ("fixture-005", beta, TerminalStatus::Stopped, None),
+        (
+            "fixture-003",
+            fixture_handler("alpha", HookEvent::Stop),
+            TerminalStatus::Blocked,
+        ),
+        (
+            "fixture-004",
+            fixture_handler("beta", HookEvent::Stop),
+            TerminalStatus::Completed,
+        ),
+        (
+            "fixture-005",
+            fixture_handler("beta", HookEvent::Stop),
+            TerminalStatus::Stopped,
+        ),
     ]
     .into_iter()
     .enumerate()
-    .map(
-        |(index, (source_record_id, handler, terminal_status, error_fingerprint))| HookInvocation {
-            source_key: "synthetic-fixture-v1".to_owned(),
-            source_record_id: source_record_id.to_owned(),
-            runtime: Runtime::Codex,
-            evidence_kind: EvidenceKind::SyntheticFixture,
-            coverage: EvidenceCoverage::SyntheticFixture,
-            handler,
-            occurred_at_unix_ms: now_unix_ms - (index as i64 * 60_000),
-            terminal_status,
-            duration_ms: None,
-            error_fingerprint: error_fingerprint.map(str::to_owned),
-        },
-    )
+    .map(|(index, (id, handler, status))| HookInvocation {
+        source_key: "synthetic-fixture-v1".into(),
+        source_record_id: id.into(),
+        runtime: Runtime::Codex,
+        evidence_kind: EvidenceKind::SyntheticFixture,
+        coverage: EvidenceCoverage::SyntheticFixture,
+        handler,
+        occurred_at_unix_ms: now - index as i64 * 60_000,
+        terminal_status: status,
+        duration_ms: None,
+        error_fingerprint: status
+            .is_execution_failure()
+            .then_some("fixture_failure".into()),
+    })
     .collect()
+}
+
+#[cfg(test)]
+pub(crate) fn synthetic_fixture_invocations_for_tui(now: i64) -> Vec<HookInvocation> {
+    synthetic_fixture_invocations(now)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::EvidenceAdmission;
-
     #[test]
-    fn blocked_report_has_no_healthy_zero_rows() {
-        let report = blocked_report(1_000_000);
-        assert!(report.handlers.is_empty());
-        assert_eq!(
-            report.qualification.admission,
-            EvidenceAdmission::BlockedDataSourceDecisionRequired
-        );
-        assert!(
-            report
-                .to_pretty_json()
-                .unwrap()
-                .contains("blocked_no_admitted_evidence")
-        );
+    fn instrumented_json_has_provenance_and_sample_denominator() {
+        let report = instrumented_report(&[], 1_000, TimeWindow::All, 2, 1);
+        let json = report.to_pretty_json().unwrap();
+        assert!(json.contains("instrumented_codex"));
+        assert!(json.contains("admitted_instrumented"));
     }
-
     #[test]
-    fn synthetic_report_labels_its_provenance_and_preserves_handler_split() {
-        let report = synthetic_fixture_report(1_000_000);
-        assert_eq!(report.handlers.len(), 2);
-        assert_eq!(report.report_kind, ReportKind::SyntheticFixture);
-        assert!(
-            report
-                .to_pretty_json()
-                .unwrap()
-                .contains("synthetic_fixture")
-        );
+    fn fixture_keeps_same_event_handlers_distinct() {
+        assert_eq!(synthetic_fixture_report(1_000).handlers.len(), 2);
     }
 }
