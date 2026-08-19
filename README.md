@@ -1,52 +1,88 @@
 # HookStat
 
-**Reliability analytics for hooks across coding-agent runtimes.**
+**Local-first reliability analytics for hooks across coding-agent runtimes.**
 
-HookStat is a local-first Rust CLI/TUI for turning real hook executions into reliability history: invocation counts, failures, failure rates, latency, coverage, and later revision-aware comparisons.
+HookStat v0.1.0 is Codex-first, while its canonical ledger, analytics, JSON,
+and TUI remain evidence-source-neutral. Passive durable receipts remain the
+preferred architecture. Current Codex 0.147.0 does not provide enough passive
+retrospective per-handler terminal evidence, so v0.1 also supports an **opt-in
+transparent instrumented receipt source**.
 
-## Status
-
-**HS-G01 is blocked: `BLOCKED_DATA_SOURCE_DECISION_REQUIRED`.** On 2026-08-20, the current Codex installation exposed durable session JSONL and local state surfaces, but none proved the required combination of per-handler identity, invocation denominator, terminal status, and timestamp. The public App Server protocol exposes hook notifications live, not a retrospective durable evidence contract. See the sanitized [HS-G01 qualification receipt](runs/HS-V01-UNATTENDED-12H-TRAIN-001-G01-qualification.md).
-
-Accordingly, this development build does **not** ingest the owner's Codex history, create a default ledger, or present an empty history as `0.00% healthy`. The v0.1 implementation target remains **Codex-first** once a durable source is admitted; the architecture is explicitly multi-runtime-ready for DeepSeek Harness, OpenCode, and future runtimes.
-
-The v0.1 user contract is intentionally narrow:
+Normal daily launch is unchanged:
 
 ```text
-use codex normally
-      ↓
-Codex leaves local evidence
-      ↓
-run hookstat
-      ↓
-see per-hook historical runs / failures / failure rate
+codex
 ```
 
-HookStat v0.1 must not require a launcher wrapper, daemon, mutation of Codex configuration, or mutation of Codex trust state.
+HookStat never requires `hookstat codex` as a launcher and does not require a
+daemon.
 
-### Current development commands
+## Opt-in Codex instrumentation
+
+Start with read-only discovery. It reports only hashed handler identities and
+coverage/trust consequences, never raw command strings:
 
 ```powershell
-# Explicitly reports the evidence-admission blocker (exit code 3).
-hookstat status
-
-# Deterministic development fixture only. It never reads Codex data.
-hookstat preview-fixture
-hookstat preview-fixture --json
+hookstat codex instrument --dry-run
 ```
 
-`preview-fixture` is a synthetic test/report path, not a claim about local Codex history. It exists to exercise canonical records, reliability aggregation, frozen-style text rendering, and the HookStat-owned SQLite ledger tests while the data-source decision is unresolved.
+For an attended activation, select the configuration root explicitly. This is
+deliberate: `--apply` has no implicit live-default target.
 
-## Development
+```powershell
+hookstat codex instrument --apply --config-root $env:USERPROFILE\.codex
+hookstat codex instrument --restore --config-root $env:USERPROFILE\.codex
+```
+
+Apply is atomic, creates an exact local prestate backup and rollback journal,
+is idempotent, refuses configuration drift during restore, and will not wrap a
+handler twice. It supports safe `hooks.json` command handlers. Inline TOML,
+plugin, and managed sources are shown as unsupported coverage rather than
+modified optimistically. Changing a hook command can require Codex trust review;
+HookStat never approves or edits Codex trust.
+
+The proxy executes the original handler with the same stdin/stdout/stderr data
+flow and returns its exit code. It does not inspect or persist prompt text, tool
+arguments, assistant messages, arbitrary standard-stream content, or raw hook
+commands in the reliability ledger. It writes atomic HookStat-owned metadata
+receipts under the platform user-data directory, then later ingests them into a
+SQLite ledger. Start-only receipts are explicitly `incomplete`, not success or
+failure. Exit code `2` is `unknown` because Codex control semantics depend on
+stderr content that HookStat intentionally does not inspect.
+
+## Reports and TUI
+
+```powershell
+hookstat report
+hookstat report --json
+hookstat
+```
+
+Reports and the Ratatui TUI provide 24h/7d/30d/All selections, per-handler
+counts, distinct terminal states, coverage warnings, and latency only when every
+terminal observation proves duration. Every failure percentage includes its
+terminal sample count. Partial/incomplete coverage never appears as `0.00%
+healthy`.
+
+`hookstat preview-fixture [--json]` is sanitized deterministic development data,
+not Owner Codex history.
+
+## Development and release checks
 
 ```powershell
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets
+cargo test --all-targets --locked
 cargo build --locked
+cargo package
+cargo publish --dry-run
 ```
 
-The roadmap and execution rules live under `dev_governance_files/` and `goals/`. The normative TUI baseline is `docs/design/TUI_SPEC.md`.
+Actual crates.io publication, a `v0.1.0` tag, and GitHub Release creation remain
+separate Owner-authorized actions.
+
+See the architecture, ADRs, and execution contracts under `docs/`,
+`dev_governance_files/`, and `goals/`.
 
 ## License
 

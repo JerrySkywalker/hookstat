@@ -1,10 +1,13 @@
 //! Privacy-preserving canonical concepts for HookStat reliability records.
+//!
+//! The types in this module deliberately describe evidence rather than a
+//! particular runtime implementation. Codex v0.1 can use opt-in instrumented
+//! receipts; future runtimes can provide passive durable evidence without
+//! changing storage, analytics, JSON, or TUI consumers.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// Coding-agent host. The model intentionally remains multi-runtime even while
-/// v0.1 development is limited to Codex.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Runtime {
@@ -40,13 +43,24 @@ impl Runtime {
     }
 }
 
-/// The runtime-specific surface from which a record originated.
+/// The implementation class of a source. It is intentionally separate from
+/// `EvidenceKind`: callers can reason about passive versus instrumented data
+/// while retaining the runtime-specific surface name.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceSourceClass {
+    Passive,
+    Instrumented,
+    SyntheticFixture,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceKind {
     CodexSessionJsonl,
     CodexStateDatabase,
     CodexAppServerLive,
+    CodexInstrumentedReceipt,
     OpenTelemetry,
     SyntheticFixture,
 }
@@ -57,6 +71,7 @@ impl EvidenceKind {
             Self::CodexSessionJsonl => "codex_session_jsonl",
             Self::CodexStateDatabase => "codex_state_database",
             Self::CodexAppServerLive => "codex_app_server_live",
+            Self::CodexInstrumentedReceipt => "codex_instrumented_receipt",
             Self::OpenTelemetry => "open_telemetry",
             Self::SyntheticFixture => "synthetic_fixture",
         }
@@ -67,14 +82,25 @@ impl EvidenceKind {
             "codex_session_jsonl" => Some(Self::CodexSessionJsonl),
             "codex_state_database" => Some(Self::CodexStateDatabase),
             "codex_app_server_live" => Some(Self::CodexAppServerLive),
+            "codex_instrumented_receipt" => Some(Self::CodexInstrumentedReceipt),
             "open_telemetry" => Some(Self::OpenTelemetry),
             "synthetic_fixture" => Some(Self::SyntheticFixture),
             _ => None,
         }
     }
+
+    pub const fn source_class(self) -> EvidenceSourceClass {
+        match self {
+            Self::CodexSessionJsonl
+            | Self::CodexStateDatabase
+            | Self::CodexAppServerLive
+            | Self::OpenTelemetry => EvidenceSourceClass::Passive,
+            Self::CodexInstrumentedReceipt => EvidenceSourceClass::Instrumented,
+            Self::SyntheticFixture => EvidenceSourceClass::SyntheticFixture,
+        }
+    }
 }
 
-/// How completely an evidence source observes the invocation denominator.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceCoverage {
@@ -114,16 +140,15 @@ impl EvidenceCoverage {
     }
 }
 
-/// Whether a source is allowed to underpin user-facing reliability claims.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceAdmission {
-    Admitted,
+    AdmittedPassive,
+    AdmittedInstrumented,
     BlockedDataSourceDecisionRequired,
     SyntheticFixtureOnly,
 }
 
-/// The compact proof summary carried with every report.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SourceQualification {
     pub admission: EvidenceAdmission,
@@ -135,8 +160,6 @@ pub struct SourceQualification {
 }
 
 impl SourceQualification {
-    /// The governed HS-G01 stop state. This must never be rendered as healthy
-    /// zero evidence.
     pub const fn blocked() -> Self {
         Self {
             admission: EvidenceAdmission::BlockedDataSourceDecisionRequired,
@@ -148,7 +171,17 @@ impl SourceQualification {
         }
     }
 
-    /// A deterministic test-only source. It is intentionally not admitted.
+    pub const fn instrumented() -> Self {
+        Self {
+            admission: EvidenceAdmission::AdmittedInstrumented,
+            primary_source: Some(EvidenceKind::CodexInstrumentedReceipt),
+            coverage: EvidenceCoverage::Partial,
+            handler_identity_proven: true,
+            invocation_denominator_proven: true,
+            terminal_status_proven: true,
+        }
+    }
+
     pub const fn synthetic_fixture() -> Self {
         Self {
             admission: EvidenceAdmission::SyntheticFixtureOnly,
@@ -161,7 +194,6 @@ impl SourceQualification {
     }
 }
 
-/// A configured lifecycle point. An event name alone is not a handler identity.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HookEvent {
@@ -229,7 +261,32 @@ impl HookEvent {
     }
 }
 
-/// Native terminal status. Only execution failures contribute to failure rate.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionMode {
+    Sync,
+    Async,
+}
+
+impl ExecutionMode {
+    pub const fn as_storage(self) -> &'static str {
+        match self {
+            Self::Sync => "sync",
+            Self::Async => "async",
+        }
+    }
+
+    pub fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "sync" => Some(Self::Sync),
+            "async" => Some(Self::Async),
+            _ => None,
+        }
+    }
+}
+
+/// Native terminal status. `Incomplete` and `Unknown` intentionally do not
+/// become failures or successes; their presence keeps coverage visible.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminalStatus {
@@ -239,6 +296,8 @@ pub enum TerminalStatus {
     Stopped,
     TimedOut,
     ProtocolFailure,
+    Incomplete,
+    Unknown,
 }
 
 impl TerminalStatus {
@@ -250,6 +309,8 @@ impl TerminalStatus {
             Self::Stopped => "stopped",
             Self::TimedOut => "timed_out",
             Self::ProtocolFailure => "protocol_failure",
+            Self::Incomplete => "incomplete",
+            Self::Unknown => "unknown",
         }
     }
 
@@ -261,6 +322,8 @@ impl TerminalStatus {
             "stopped" => Some(Self::Stopped),
             "timed_out" => Some(Self::TimedOut),
             "protocol_failure" => Some(Self::ProtocolFailure),
+            "incomplete" => Some(Self::Incomplete),
+            "unknown" => Some(Self::Unknown),
             _ => None,
         }
     }
@@ -268,23 +331,31 @@ impl TerminalStatus {
     pub const fn is_execution_failure(self) -> bool {
         matches!(self, Self::Failed | Self::TimedOut | Self::ProtocolFailure)
     }
+
+    pub const fn is_terminal_sample(self) -> bool {
+        !matches!(self, Self::Incomplete | Self::Unknown)
+    }
 }
 
-/// Stable per-handler attribution. `key` is expected to be a source-defined
-/// stable identifier or one-way fingerprint, never a raw command line.
+/// Stable per-handler attribution. Its fields are fingerprints or structural
+/// metadata, not a raw command string, matcher text, stdin, or hook output.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct HandlerIdentity {
     pub key: String,
+    pub revision: String,
     pub label: String,
+    pub source_kind: String,
     pub event: HookEvent,
+    pub matcher_identity: String,
+    pub structural_identity: String,
+    pub execution_mode: ExecutionMode,
 }
 
-/// A normalized execution record containing no prompt or tool-payload field.
+/// A normalized execution record containing no prompt, tool payload, stdin,
+/// stdout, stderr, or raw hook command field.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct HookInvocation {
-    /// Opaque key for the source surface; a filesystem path is not required.
     pub source_key: String,
-    /// Opaque source-record identity used for idempotent ingestion.
     pub source_record_id: String,
     pub runtime: Runtime,
     pub evidence_kind: EvidenceKind,
@@ -293,7 +364,7 @@ pub struct HookInvocation {
     pub occurred_at_unix_ms: i64,
     pub terminal_status: TerminalStatus,
     pub duration_ms: Option<u64>,
-    /// Optional bounded fingerprint, never raw stderr/stdout, a prompt, or tool data.
+    /// Bounded taxonomy only (for example `exit_nonzero`), never stream data.
     pub error_fingerprint: Option<String>,
 }
 
@@ -303,7 +374,14 @@ impl HookInvocation {
             ("source_key", &self.source_key),
             ("source_record_id", &self.source_record_id),
             ("handler.key", &self.handler.key),
+            ("handler.revision", &self.handler.revision),
             ("handler.label", &self.handler.label),
+            ("handler.source_kind", &self.handler.source_kind),
+            ("handler.matcher_identity", &self.handler.matcher_identity),
+            (
+                "handler.structural_identity",
+                &self.handler.structural_identity,
+            ),
         ] {
             if value.trim().is_empty() || value.len() > 256 {
                 return Err(ValidationError::new(name));
@@ -314,14 +392,14 @@ impl HookInvocation {
         }
         if self
             .duration_ms
-            .is_some_and(|duration_ms| duration_ms > i64::MAX as u64)
+            .is_some_and(|value| value > i64::MAX as u64)
         {
             return Err(ValidationError::new("duration_ms"));
         }
         if self
             .error_fingerprint
             .as_deref()
-            .is_some_and(|fingerprint| fingerprint.is_empty() || fingerprint.len() > 128)
+            .is_some_and(|value| value.is_empty() || value.len() > 128)
         {
             return Err(ValidationError::new("error_fingerprint"));
         }
@@ -329,7 +407,6 @@ impl HookInvocation {
     }
 }
 
-/// A validation error intentionally reports only a field name, never the data.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidationError {
     field: &'static str,
@@ -354,20 +431,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn blocked_qualification_cannot_look_healthy() {
-        let qualification = SourceQualification::blocked();
+    fn instrumented_evidence_is_explicitly_admitted_but_partial() {
+        let qualification = SourceQualification::instrumented();
         assert_eq!(
             qualification.admission,
-            EvidenceAdmission::BlockedDataSourceDecisionRequired
+            EvidenceAdmission::AdmittedInstrumented
         );
-        assert_eq!(qualification.coverage, EvidenceCoverage::NotAdmitted);
-        assert!(!qualification.handler_identity_proven);
+        assert_eq!(qualification.coverage, EvidenceCoverage::Partial);
     }
 
     #[test]
-    fn blocked_and_stopped_are_not_execution_failures() {
+    fn incomplete_and_control_results_are_not_execution_failures() {
         assert!(!TerminalStatus::Blocked.is_execution_failure());
-        assert!(!TerminalStatus::Stopped.is_execution_failure());
+        assert!(!TerminalStatus::Incomplete.is_execution_failure());
+        assert!(!TerminalStatus::Unknown.is_terminal_sample());
         assert!(TerminalStatus::TimedOut.is_execution_failure());
     }
 }

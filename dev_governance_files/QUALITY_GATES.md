@@ -20,7 +20,7 @@ Required when parser/adapters/status normalization/coverage change:
 - sanitized fixture family covering admitted statuses;
 - same-event multi-handler identity proof where applicable;
 - malformed/unknown record behavior;
-- at least one read-only real-runtime owner smoke for claims not provable synthetically;
+- at least one read-only real-runtime owner smoke for claims not provable synthetically, or an explicit owner-activation-required receipt when live instrumentation is prohibited;
 - explicit coverage statement;
 - no live runtime mutation.
 
@@ -32,6 +32,11 @@ Required for SQLite/schema/migration/cursor/dedup changes:
 - incremental ingest adds only new records;
 - interrupted/bad record does not corrupt prior accepted ledger;
 - data directory isolation and privacy/data-minimization checks.
+
+Instrumented receipt spools additionally prove atomic start/completion records,
+concurrent writer safety, duplicate ingest, malformed isolation, and explicit
+incomplete/unknown terminal coverage. Concurrent hooks must not write the main
+SQLite database directly.
 
 ## T — TUI/presentation
 
@@ -53,4 +58,7 @@ Release candidate must freshly pass package metadata, `cargo package`, `cargo pu
 
 ## Stop gate
 
-Failure to prove a durable v0.1 Codex data source with per-handler identity and terminal result is not permission to add a wrapper/daemon/live mutation. Record `BLOCKED_DATA_SOURCE_DECISION_REQUIRED` and preserve all evidence.
+Failure to prove passive durable Codex evidence is not permission to silently
+add a daemon or launcher wrapper. An instrumented source requires an explicit
+owner architecture decision, transparent proxy semantics, fixture-proven
+apply/restore, and no unattended live-owner configuration mutation.
