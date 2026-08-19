@@ -1,0 +1,12 @@
+/target/
+/.idea/
+/.vscode/
+*.swp
+*.tmp
+*.log
+.DS_Store
+Thumbs.db
+
+# Local HookStat state must never be committed.
+/.hookstat/
+hookstat.sqlite*

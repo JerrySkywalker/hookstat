@@ -1,0 +1,20 @@
+[package]
+name = "hookstat"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+description = "Reliability analytics for hooks across coding-agent runtimes"
+license = "MIT"
+repository = "https://github.com/JerrySkywalker/hookstat"
+readme = "README.md"
+keywords = ["hooks", "reliability", "agents", "codex", "tui"]
+categories = ["command-line-utilities", "development-tools"]
+publish = false
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
