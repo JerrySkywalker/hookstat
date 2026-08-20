@@ -22,6 +22,9 @@ use std::time::Duration;
 
 const MARKER: &str = "--hookstat-instrumentation-v1";
 const MANIFEST_SCHEMA_VERSION: u8 = 1;
+const MANIFEST_TOKEN_PREFIX: &str = "m1_";
+const MAX_MANIFEST_TOKEN_LEN: usize = 32_000;
+const MAX_HANDLER_KEY_LEN: usize = 128;
 static WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1229,9 +1232,18 @@ pub fn apply(
                 &item.discovered.handler.key,
             );
             handler["command"] = Value::String(command.clone());
-            if handler.get("commandWindows").is_some() {
-                handler["commandWindows"] = Value::String(command);
-            }
+            // Codex 0.147 invokes Windows hook commands as `cmd.exe /C
+            // "<command_line>"`. `command` deliberately preserves the
+            // portable quoted form, while `commandWindows` must have no
+            // embedded quote after the optional leading executable quote.
+            // Always set it, including for handlers that did not originally
+            // define commandWindows; the exact original bytes remain in the
+            // authoritative backup used by restore.
+            handler["commandWindows"] = Value::String(proxy_command_windows(
+                proxy_executable,
+                &manifest_path,
+                &item.discovered.handler.key,
+            )?);
         }
         atomic_json(&manifest_path, &manifest)?;
         let applied = serde_json::to_vec_pretty(&root)?;
@@ -1365,6 +1377,128 @@ fn proxy_command(exe: &Path, manifest: &Path, handler: &str) -> String {
         handler
     )
 }
+
+fn proxy_command_windows(exe: &Path, manifest: &Path, handler: &str) -> Result<String, CodexError> {
+    if !is_safe_handler_key(handler) {
+        return Err(CodexError::Invalid("handler key"));
+    }
+    Ok(format!(
+        "\"{}\" codex proxy --manifest-token {} --handler {} {MARKER}",
+        quote_component(exe),
+        manifest_token(manifest),
+        handler
+    ))
+}
+
+/// Encodes only the manifest pathname for HookStat's private Windows proxy
+/// transport. URL-safe base64 without padding keeps the resulting token free
+/// from quotes, whitespace, and cmd.exe metacharacters.
+pub fn manifest_token(manifest: &Path) -> String {
+    manifest_token_text(&manifest.to_string_lossy())
+}
+
+/// Decodes the private Windows proxy transport. It accepts only canonical
+/// URL-safe base64 without padding so malformed shell-shaped values fail
+/// before the proxy can load a manifest or write a receipt.
+pub fn manifest_path_from_token(token: &str) -> Result<PathBuf, CodexError> {
+    let Some(encoded) = token.strip_prefix(MANIFEST_TOKEN_PREFIX) else {
+        return Err(CodexError::Invalid("manifest token"));
+    };
+    if encoded.is_empty() || token.len() > MAX_MANIFEST_TOKEN_LEN {
+        return Err(CodexError::Invalid("manifest token"));
+    }
+    let bytes = decode_base64url(encoded).ok_or(CodexError::Invalid("manifest token"))?;
+    let path = String::from_utf8(bytes).map_err(|_| CodexError::Invalid("manifest token"))?;
+    if path.is_empty() || manifest_token_text(&path) != token {
+        return Err(CodexError::Invalid("manifest token"));
+    }
+    Ok(PathBuf::from(path))
+}
+
+/// The generated positional key is a stable `hk_<hex>` value. The internal
+/// proxy additionally accepts the backwards-compatible test keys that remain
+/// in this strictly shell-safe grammar.
+pub fn is_safe_handler_key(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_HANDLER_KEY_LEN
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn manifest_token_text(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut token =
+        String::with_capacity(MANIFEST_TOKEN_PREFIX.len() + (bytes.len() * 4).div_ceil(3));
+    token.push_str(MANIFEST_TOKEN_PREFIX);
+    for chunk in bytes.chunks(3) {
+        token.push(alphabet[(chunk[0] >> 2) as usize] as char);
+        token.push(
+            alphabet[(((chunk[0] & 0b0000_0011) << 4) | (chunk.get(1).copied().unwrap_or(0) >> 4))
+                as usize] as char,
+        );
+        if chunk.len() > 1 {
+            token.push(
+                alphabet[(((chunk[1] & 0b0000_1111) << 2)
+                    | (chunk.get(2).copied().unwrap_or(0) >> 6)) as usize] as char,
+            );
+        }
+        if chunk.len() > 2 {
+            token.push(alphabet[(chunk[2] & 0b0011_1111) as usize] as char);
+        }
+    }
+    token
+}
+
+fn decode_base64url(value: &str) -> Option<Vec<u8>> {
+    if value.is_empty() || value.len() % 4 == 1 {
+        return None;
+    }
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len() * 3 / 4);
+    let mut index = 0;
+    while index < bytes.len() {
+        let remaining = bytes.len() - index;
+        let first = base64url_value(bytes[index])?;
+        let second = base64url_value(bytes[index + 1])?;
+        if remaining == 2 {
+            if second & 0b0000_1111 != 0 {
+                return None;
+            }
+            decoded.push((first << 2) | (second >> 4));
+            index += 2;
+            continue;
+        }
+        let third = base64url_value(bytes[index + 2])?;
+        if remaining == 3 {
+            if third & 0b0000_0011 != 0 {
+                return None;
+            }
+            decoded.push((first << 2) | (second >> 4));
+            decoded.push((second << 4) | (third >> 2));
+            index += 3;
+            continue;
+        }
+        let fourth = base64url_value(bytes[index + 3])?;
+        decoded.push((first << 2) | (second >> 4));
+        decoded.push((second << 4) | (third >> 2));
+        decoded.push((third << 6) | fourth);
+        index += 4;
+    }
+    Some(decoded)
+}
+
+fn base64url_value(value: u8) -> Option<u8> {
+    match value {
+        b'A'..=b'Z' => Some(value - b'A'),
+        b'a'..=b'z' => Some(value - b'a' + 26),
+        b'0'..=b'9' => Some(value - b'0' + 52),
+        b'-' => Some(62),
+        b'_' => Some(63),
+        _ => None,
+    }
+}
 fn quote_component(path: &Path) -> String {
     path.to_string_lossy().replace('"', "\\\"")
 }
@@ -1418,6 +1552,10 @@ mod tests {
         assert!(first.trust_review_required);
         let after = fs::read(&config).unwrap();
         assert_ne!(after, original);
+        let applied: Value = serde_json::from_slice(&after).unwrap();
+        let first = &applied["hooks"]["Stop"][0]["hooks"][0];
+        assert!(first["commandWindows"].as_str().is_some());
+        assert_ne!(first["commandWindows"], first["command"]);
         let second_plan = discover_paths(std::slice::from_ref(&config)).unwrap();
         assert_eq!(second_plan.summary.already_instrumented, 3);
         assert_eq!(
@@ -1478,6 +1616,7 @@ mod tests {
             r#"{"unrelated":{"keep":[1,2]},"hooks":{"Stop":[{"matcher":"^Bash$","groupUnknown":"keep","hooks":[{"type":"command","command":"same","commandWindows":"windows","async":true,"timeout":9,"statusMessage":"status","additionalContextLimit":42,"unknownHandlerField":{"keep":true}},{"type":"command","command":"same","timeout":7}]}]}}"#,
         )
         .unwrap();
+        let original = fs::read(&config).unwrap();
         let before = discover_paths(std::slice::from_ref(&config)).unwrap();
         assert_eq!(before.summary.instrumentable, 2);
         assert_ne!(
@@ -1499,7 +1638,12 @@ mod tests {
         let first = &applied["hooks"]["Stop"][0]["hooks"][0];
         assert_eq!(applied["unrelated"]["keep"], serde_json::json!([1, 2]));
         assert_eq!(applied["hooks"]["Stop"][0]["groupUnknown"], "keep");
-        assert_eq!(first["commandWindows"], first["command"]);
+        assert_ne!(first["commandWindows"], first["command"]);
+        assert!(
+            applied["hooks"]["Stop"][0]["hooks"][1]["commandWindows"]
+                .as_str()
+                .is_some()
+        );
         assert_eq!(first["async"], true);
         assert_eq!(first["timeout"], 9);
         assert_eq!(first["statusMessage"], "status");
@@ -1508,6 +1652,7 @@ mod tests {
         let partially = discover_paths(std::slice::from_ref(&config)).unwrap();
         assert_eq!(partially.summary.already_instrumented, 2);
         assert_eq!(restore(&config, &state).unwrap().restored, 1);
+        assert_eq!(fs::read(&config).unwrap(), original);
         let mut changed: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
         changed["hooks"]["Stop"][0]["hooks"][1]["command"] = Value::String("changed".into());
         fs::write(&config, serde_json::to_vec(&changed).unwrap()).unwrap();
@@ -1551,6 +1696,66 @@ mod tests {
         let result = apply(&plan, &state, Path::new("hookstat-test")).unwrap();
         assert_eq!(result.applied, 0);
         assert_eq!(fs::read(unsupported).unwrap(), original);
+    }
+
+    #[test]
+    fn manifest_tokens_are_canonical_url_safe_and_round_trip_non_ascii_paths() {
+        let path = Path::new("C:/HookStat Data/\u{6d4b}\u{8bd5}/hooks.json");
+        let token = manifest_token(path);
+        assert!(token.starts_with(MANIFEST_TOKEN_PREFIX));
+        assert!(
+            token
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        );
+        assert_eq!(manifest_path_from_token(&token).unwrap(), path);
+        for malformed in [
+            "m1_",
+            "m1_a",
+            "m1_abc=",
+            "m1_abc&whoami",
+            "m1_abc\"def",
+            "m1_abc def",
+            "m2_YQ",
+        ] {
+            assert!(manifest_path_from_token(malformed).is_err(), "{malformed}");
+        }
+    }
+
+    #[test]
+    fn proxy_windows_command_has_only_the_leading_executable_quote_pair() {
+        let command = proxy_command_windows(
+            Path::new("C:/Program Files/HookStat/hookstat.exe"),
+            Path::new("C:/Users/\u{6d4b}\u{8bd5}/App Data/HookStat/manifests/a.json"),
+            "hk_0123abcd",
+        )
+        .unwrap();
+        let first_close = command[1..].find('"').unwrap() + 1;
+        assert!(command.starts_with('"'));
+        assert!(!command[(first_close + 1)..].contains('"'));
+        assert_eq!(command.matches('"').count(), 2);
+        assert!(command.contains("--manifest-token m1_"));
+        assert!(
+            proxy_command_windows(Path::new("hookstat.exe"), Path::new("a"), "bad&key").is_err()
+        );
+    }
+
+    #[test]
+    fn handler_key_grammar_rejects_shell_injection_shapes() {
+        for valid in ["hk_0123abcd", "active-tree", "compat_1"] {
+            assert!(is_safe_handler_key(valid), "{valid}");
+        }
+        for invalid in [
+            "",
+            "handler key",
+            "handler&whoami",
+            "handler|more",
+            "handler\"x",
+            "handler%PATH%",
+            "\u{6d4b}\u{8bd5}",
+        ] {
+            assert!(!is_safe_handler_key(invalid), "{invalid}");
+        }
     }
 
     #[test]

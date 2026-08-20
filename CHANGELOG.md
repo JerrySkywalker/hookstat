@@ -16,6 +16,17 @@ proxy termination while preserving legitimate descendants after normal handler
 root completion. Unix does not claim this Windows-specific containment guarantee
 in v0.1.
 
+### Windows Codex 0.147 quote compatibility recovery
+
+- writes a Windows-only proxy command using a canonical URL-safe manifest token
+  and strict safe handler key, avoiding embedded quotes under Codex's
+  `cmd.exe /C "<command>"` launch form;
+- preserves the portable quoted command and exact byte-for-byte restore while
+  adding `commandWindows` for every wrapped command handler;
+- adds a local Codex-spawn-form regression covering spaces, non-ASCII paths,
+  receipt start/completion, original exit propagation, malformed tokens, and
+  handler-key injection rejection.
+
 ### Pre-activation hardening
 
 - adds read-only Codex App Server effective-hook discovery and static/effective
