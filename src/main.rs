@@ -1,4 +1,6 @@
 use hookstat::analytics::TimeWindow;
+#[cfg(windows)]
+use hookstat::codex::require_windows_path_identity;
 use hookstat::codex::{
     apply, default_data_root, default_dry_run, discover_paths, is_safe_handler_key,
     manifest_path_from_token, restore, trust,
@@ -205,6 +207,14 @@ fn instrument_command(arguments: &[String]) -> ExitCode {
         Ok(path) => path,
         Err(_) => {
             eprintln!("hookstat: cannot locate HookStat executable");
+            return ExitCode::from(1);
+        }
+    };
+    #[cfg(windows)]
+    let executable = match require_windows_path_identity(&executable) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("hookstat: {error}");
             return ExitCode::from(1);
         }
     };
