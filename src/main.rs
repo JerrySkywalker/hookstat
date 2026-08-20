@@ -1,5 +1,8 @@
 use hookstat::analytics::TimeWindow;
-use hookstat::codex::{apply, default_data_root, default_dry_run, discover_paths, restore, trust};
+use hookstat::codex::{
+    apply, default_data_root, default_dry_run, discover_paths, is_safe_handler_key,
+    manifest_path_from_token, restore, trust,
+};
 use hookstat::ledger::Ledger;
 use hookstat::proxy;
 use hookstat::receipt::ReceiptSpool;
@@ -218,14 +221,31 @@ fn instrument_command(arguments: &[String]) -> ExitCode {
 }
 
 fn proxy_command(arguments: &[String]) -> ExitCode {
-    let Some(manifest) = option_path(arguments, "--manifest") else {
-        eprintln!("hookstat: internal proxy requires --manifest");
-        return ExitCode::from(2);
+    let manifest = match (
+        option_path(arguments, "--manifest"),
+        option_value(arguments, "--manifest-token"),
+    ) {
+        (Some(path), None) => path,
+        (None, Some(token)) => match manifest_path_from_token(token) {
+            Ok(path) => path,
+            Err(_) => {
+                eprintln!("hookstat: internal proxy requires a valid manifest token");
+                return ExitCode::from(2);
+            }
+        },
+        _ => {
+            eprintln!("hookstat: internal proxy requires exactly one manifest selector");
+            return ExitCode::from(2);
+        }
     };
     let Some(handler) = option_value(arguments, "--handler") else {
         eprintln!("hookstat: internal proxy requires --handler");
         return ExitCode::from(2);
     };
+    if !is_safe_handler_key(handler) {
+        eprintln!("hookstat: internal proxy requires a safe handler key");
+        return ExitCode::from(2);
+    }
     match proxy::run(&manifest, handler) {
         Ok(code) => std::process::exit(code),
         Err(error) => {

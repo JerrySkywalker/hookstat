@@ -81,6 +81,14 @@ clears that limit, allowing legitimate background descendants to survive.
 Unix keeps its native shell cancellation behavior in v0.1 and does not claim
 the Windows Job Object containment guarantee.
 
+For Codex 0.147 Windows command execution, HookStat keeps the portable quoted
+`command` and writes a separate `commandWindows`. Its private manifest pathname
+is URL-safe encoded there, so after the optional leading quoted executable the
+Windows command contains no embedded quotes. The manifest token itself has no
+whitespace or `cmd.exe` metacharacters. This keeps ordinary installations and
+data directories with spaces or non-ASCII characters compatible without
+changing the original handler's command or process-containment behavior.
+
 ## Reports and TUI
 
 ```powershell
