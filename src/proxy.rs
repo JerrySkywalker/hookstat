@@ -8,10 +8,8 @@ use crate::codex::{CodexError, load_manifest};
 use crate::domain::{EvidenceCoverage, TerminalStatus};
 use crate::receipt::{ReceiptCompletion, ReceiptSpool, ReceiptStart};
 use std::fmt;
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static INVOCATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -47,7 +45,7 @@ impl From<crate::receipt::ReceiptError> for ProxyError {
 
 /// Executes exactly one saved command handler. Receipt failures are ignored
 /// after a best-effort attempt so telemetry cannot intentionally stop a hook.
-pub fn run(manifest_path: &Path, handler_key: &str) -> Result<ExitCode, ProxyError> {
+pub fn run(manifest_path: &Path, handler_key: &str) -> Result<i32, ProxyError> {
     let manifest = load_manifest(manifest_path)?;
     let handler = manifest
         .handlers
@@ -121,10 +119,7 @@ pub fn run(manifest_path: &Path, handler_key: &str) -> Result<ExitCode, ProxyErr
     if let Ok(spool) = &spool {
         let _ = spool.write_completion(&completion);
     }
-    Ok(match status {
-        Ok(status) => exit_code_for(status.code()),
-        Err(_) => ExitCode::from(1),
-    })
+    Ok(status.ok().and_then(|status| status.code()).unwrap_or(1))
 }
 
 #[cfg(windows)]
@@ -136,7 +131,7 @@ fn platform_shell(command_line: &str) -> Command {
     // documented partial-coverage limitation rather than a guessed rewrite.
     let shell = std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into());
     let mut command = Command::new(shell);
-    command.arg("/C").raw_arg(format!("\"{command_line}\""));
+    command.arg("/C").arg(command_line);
     command
 }
 
@@ -148,22 +143,9 @@ fn platform_shell(command_line: &str) -> Command {
     command
 }
 
-fn exit_code_for(code: Option<i32>) -> ExitCode {
-    ExitCode::from(code.unwrap_or(1) as u8)
-}
 fn now_unix_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_millis() as i64)
         .unwrap_or(0)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn maps_control_code_without_reading_stderr() {
-        assert_eq!(exit_code_for(Some(7)), ExitCode::from(7));
-        assert_eq!(exit_code_for(None), ExitCode::from(1));
-    }
 }

@@ -325,4 +325,31 @@ mod tests {
             None
         );
     }
+    #[test]
+    fn window_edges_are_non_overlapping_and_previous_delta_is_exact() {
+        let now = 1_000_000_000;
+        let width = TimeWindow::Last24Hours.width_ms().unwrap();
+        let report = aggregate(
+            &[
+                invocation("old-edge", "one", TerminalStatus::Failed, now - 2 * width),
+                invocation(
+                    "previous-end",
+                    "one",
+                    TerminalStatus::Completed,
+                    now - width - 1,
+                ),
+                invocation("current-start", "one", TerminalStatus::Failed, now - width),
+                invocation("current-end", "one", TerminalStatus::Completed, now),
+                invocation("future", "one", TerminalStatus::Failed, now + 1),
+            ],
+            now,
+            TimeWindow::Last24Hours,
+        );
+        assert_eq!(report[0].runs, 2);
+        assert_eq!(report[0].failure_sample_count, 2);
+        assert_eq!(report[0].failure_rate_percent, 50.0);
+        // The previous window has two terminal samples, one failure: 50%, so
+        // a boundary-correct current window produces no artificial delta.
+        assert_eq!(report[0].previous_window_delta_percent, Some(0.0));
+    }
 }

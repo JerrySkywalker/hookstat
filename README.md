@@ -26,6 +26,16 @@ coverage/trust consequences, never raw command strings:
 hookstat codex instrument --dry-run
 ```
 
+On a supported Codex installation, this dry-run combines local static
+`hooks.json`/inline-TOML discovery with the read-only App Server `hooks/list`
+effective view. It reports source-class counts, enabled/trusted state where the
+runtime exposes it, reconciliation counts, and explicit unsupported coverage.
+The short-lived App Server request is stopped after its response; HookStat does
+not create a daemon, session, launcher wrapper, or trust change. Command text,
+source paths, matchers, and plugin identifiers are reduced to fingerprints
+before output. If the App Server is unavailable, the dry-run says so and
+retains the static view instead of inventing effective coverage.
+
 For an attended activation, select the configuration root explicitly. This is
 deliberate: `--apply` has no implicit live-default target.
 
@@ -40,6 +50,13 @@ handler twice. It supports safe `hooks.json` command handlers. Inline TOML,
 plugin, and managed sources are shown as unsupported coverage rather than
 modified optimistically. Changing a hook command can require Codex trust review;
 HookStat never approves or edits Codex trust.
+
+Effective plugin or managed handlers can be visible in discovery even when
+HookStat cannot mutate them. That is `PASS_WITH_EXPLICIT_UNSUPPORTED_COVERAGE`,
+not a healthy zero-rate claim. v0.1 instruments only enabled, trusted,
+unmanaged command handlers in safely supported user/project `hooks.json`
+layers. Inline TOML and any source that cannot be restored byte-exactly remain
+read-only coverage limitations.
 
 The proxy executes the original handler with the same stdin/stdout/stderr data
 flow and returns its exit code. It does not inspect or persist prompt text, tool

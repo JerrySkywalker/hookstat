@@ -126,6 +126,12 @@ impl ReceiptSpool {
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
+            // A process interruption may leave a same-directory temporary
+            // file. It was never atomically published as a receipt and must
+            // not fabricate malformed coverage or corrupt accepted records.
+            if name.starts_with(".hookstat-") && name.ends_with(".tmp") {
+                continue;
+            }
             let loaded = fs::read(&path).ok();
             match (
                 name.ends_with(".start.json"),
@@ -247,8 +253,20 @@ fn atomic_json(path: &Path, value: &impl Serialize) -> Result<(), ReceiptError> 
     fs::write(&temporary, bytes)?;
     // Same-directory rename gives an atomic replacement on supported local
     // filesystems. A crash leaves either a complete prior file or a temp file.
-    fs::rename(&temporary, path)?;
-    Ok(())
+    match fs::rename(&temporary, path) {
+        Ok(()) => Ok(()),
+        // Windows refuses replacement by rename. A simultaneous duplicate
+        // receipt has already been durably published, which is the desired
+        // idempotent state; discard only our unpublished temp.
+        Err(_) if path.exists() => {
+            let _ = fs::remove_file(&temporary);
+            Ok(())
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&temporary);
+            Err(ReceiptError::Io(error))
+        }
+    }
 }
 
 fn validate_start(value: &ReceiptStart) -> Result<(), ReceiptError> {
@@ -367,5 +385,63 @@ mod tests {
         for banned in ["stdin", "stdout", "stderr", "prompt", "payload", "command"] {
             assert!(!encoded.contains(banned));
         }
+    }
+    #[test]
+    fn duplicate_and_interrupted_receipts_are_idempotent_and_never_corrupt_coverage() {
+        let temp = tempdir().unwrap();
+        let spool = ReceiptSpool::open(temp.path()).unwrap();
+        spool.write_start(&start("duplicate")).unwrap();
+        spool.write_start(&start("duplicate")).unwrap();
+        spool.write_completion(&complete("duplicate")).unwrap();
+        spool.write_completion(&complete("duplicate")).unwrap();
+        fs::write(
+            temp.path().join("records/.hookstat-interrupted.tmp"),
+            b"partial",
+        )
+        .unwrap();
+        let scan = spool.scan();
+        assert_eq!(scan.malformed, 0);
+        assert_eq!(scan.invocations.len(), 1);
+        assert_eq!(
+            scan.invocations[0].terminal_status,
+            TerminalStatus::Completed
+        );
+    }
+    #[test]
+    fn concurrent_writers_and_out_of_order_completion_remain_idempotent() {
+        let temp = tempdir().unwrap();
+        let spool = ReceiptSpool::open(temp.path()).unwrap();
+        let mut workers = Vec::new();
+        for index in 0..64 {
+            let spool = spool.clone();
+            workers.push(std::thread::spawn(move || {
+                let id = format!("concurrent-{index}");
+                spool.write_start(&start(&id)).unwrap();
+                spool.write_completion(&complete(&id)).unwrap();
+            }));
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        spool
+            .write_completion(&complete("completion-first"))
+            .unwrap();
+        let before_start = spool.scan();
+        assert!(
+            before_start
+                .invocations
+                .iter()
+                .any(|value| value.source_record_id == "completion-first"
+                    && value.coverage == EvidenceCoverage::BestEffort)
+        );
+        spool.write_start(&start("completion-first")).unwrap();
+        let mut ledger = Ledger::open_in_memory().unwrap();
+        let (scan, first) = spool.ingest_into(&mut ledger).unwrap();
+        assert_eq!(scan.malformed, 0);
+        assert_eq!(scan.invocations.len(), 65);
+        assert_eq!(first.inserted, 65);
+        let (_, repeated) = spool.ingest_into(&mut ledger).unwrap();
+        assert_eq!(repeated.duplicates, 65);
+        assert_eq!(ledger.invocation_count().unwrap(), 65);
     }
 }

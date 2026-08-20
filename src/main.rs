@@ -1,5 +1,5 @@
 use hookstat::analytics::TimeWindow;
-use hookstat::codex::{apply, default_data_root, discover_default, discover_paths, restore};
+use hookstat::codex::{apply, default_data_root, default_dry_run, discover_paths, restore};
 use hookstat::ledger::Ledger;
 use hookstat::proxy;
 use hookstat::receipt::ReceiptSpool;
@@ -65,7 +65,16 @@ fn report_command(arguments: &[String]) -> ExitCode {
 fn tui_command() -> ExitCode {
     match load_current_report() {
         Ok((_, values, malformed, incomplete)) => {
-            match tui::run(values, malformed, incomplete, now_unix_ms()) {
+            match tui::run_with_refresh(values, malformed, incomplete, now_unix_ms(), || {
+                load_current_report().map(|(_, values, malformed, incomplete)| {
+                    tui::RefreshSnapshot {
+                        values,
+                        malformed,
+                        incomplete,
+                        now: now_unix_ms(),
+                    }
+                })
+            }) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(_) => {
                     eprintln!("hookstat: interactive terminal operation failed");
@@ -133,7 +142,18 @@ fn instrument_command(arguments: &[String]) -> ExitCode {
     }
     let discovery = match config_root {
         Some(root) => discover_paths(&[root.join("hooks.json"), root.join("config.toml")]),
-        None if dry_run => discover_default(),
+        None if dry_run => {
+            return match default_dry_run() {
+                Ok(report) => {
+                    print_safe_json(&report);
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("hookstat: {error}");
+                    ExitCode::from(1)
+                }
+            };
+        }
         None => {
             eprintln!(
                 "hookstat: --apply requires explicit --config-root; no live configuration is selected implicitly"
@@ -181,7 +201,7 @@ fn proxy_command(arguments: &[String]) -> ExitCode {
         return ExitCode::from(2);
     };
     match proxy::run(&manifest, handler) {
-        Ok(code) => code,
+        Ok(code) => std::process::exit(code),
         Err(error) => {
             eprintln!("hookstat: proxy setup failed: {error}");
             ExitCode::from(1)

@@ -33,3 +33,13 @@ uses stderr content to distinguish several control outcomes and HookStat is
 prohibited from inspecting it. Codex trust is never auto-approved or altered;
 an apply may require a user trust review. Passive durable receipts from future
 runtimes flow through the same canonical model.
+
+## Effective discovery refinement
+
+Codex App Server `hooks/list` is used only as a short-lived, read-only
+effective-configuration discovery plane. HookStat reconciles its positionally
+identified handlers with local static discovery using private in-memory source
+location data and emits only hashed handler identities and aggregate source
+coverage. Plugin and managed handlers may therefore be visible but remain
+explicit unsupported mutation coverage. `hooks/list` does not turn into a
+passive historical invocation ledger or a HookStat daemon dependency.

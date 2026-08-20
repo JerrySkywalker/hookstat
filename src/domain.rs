@@ -266,6 +266,9 @@ impl HookEvent {
 pub enum ExecutionMode {
     Sync,
     Async,
+    /// Runtime-effective discovery did not expose a mode. This is distinct
+    /// from an observed synchronous handler and must not be guessed.
+    Unknown,
 }
 
 impl ExecutionMode {
@@ -273,6 +276,7 @@ impl ExecutionMode {
         match self {
             Self::Sync => "sync",
             Self::Async => "async",
+            Self::Unknown => "unknown",
         }
     }
 
@@ -280,6 +284,7 @@ impl ExecutionMode {
         match value {
             "sync" => Some(Self::Sync),
             "async" => Some(Self::Async),
+            "unknown" => Some(Self::Unknown),
             _ => None,
         }
     }

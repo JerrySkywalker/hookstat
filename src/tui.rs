@@ -36,6 +36,16 @@ pub struct App {
     ingest_error: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct RefreshSnapshot {
+    pub values: Vec<HookInvocation>,
+    pub malformed: u64,
+    pub incomplete: u64,
+    pub now: i64,
+}
+
+type Refresh = Box<dyn FnMut() -> Result<RefreshSnapshot, String>>;
+
 impl App {
     pub fn new(values: Vec<HookInvocation>, malformed: u64, incomplete: u64, now: i64) -> Self {
         Self {
@@ -74,6 +84,19 @@ impl App {
         self.window = window;
         self.selected = 0;
     }
+    fn replace_snapshot(&mut self, snapshot: RefreshSnapshot) {
+        self.values = snapshot.values;
+        self.malformed = snapshot.malformed;
+        self.incomplete = snapshot.incomplete;
+        self.now = snapshot.now;
+        self.ingest_error = None;
+        let length = self.report().handlers.len();
+        if length == 0 {
+            self.selected = 0;
+        } else {
+            self.selected = self.selected.min(length - 1);
+        }
+    }
 }
 
 pub fn run(
@@ -82,19 +105,59 @@ pub fn run(
     incomplete: u64,
     now: i64,
 ) -> io::Result<()> {
-    enable_raw_mode()?;
-    let mut output = io::stdout();
-    execute!(output, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(output);
-    let mut terminal = Terminal::new(backend)?;
-    let result = run_loop(&mut terminal, App::new(values, malformed, incomplete, now));
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-    result
+    run_with_optional_refresh(values, malformed, incomplete, now, None)
 }
 
-fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> io::Result<()> {
+pub fn run_with_refresh(
+    values: Vec<HookInvocation>,
+    malformed: u64,
+    incomplete: u64,
+    now: i64,
+    refresh: impl FnMut() -> Result<RefreshSnapshot, String> + 'static,
+) -> io::Result<()> {
+    run_with_optional_refresh(values, malformed, incomplete, now, Some(Box::new(refresh)))
+}
+
+fn run_with_optional_refresh(
+    values: Vec<HookInvocation>,
+    malformed: u64,
+    incomplete: u64,
+    now: i64,
+    mut refresh: Option<Refresh>,
+) -> io::Result<()> {
+    enable_raw_mode()?;
+    let mut output = io::stdout();
+    if let Err(error) = execute!(output, EnterAlternateScreen) {
+        let _ = disable_raw_mode();
+        return Err(error);
+    }
+    let backend = CrosstermBackend::new(output);
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            let mut recovery = io::stdout();
+            let _ = execute!(recovery, LeaveAlternateScreen);
+            let _ = disable_raw_mode();
+            return Err(error);
+        }
+    };
+    let result = run_loop(
+        &mut terminal,
+        App::new(values, malformed, incomplete, now),
+        &mut refresh,
+    );
+    let cleanup = terminal
+        .show_cursor()
+        .and_then(|_| execute!(terminal.backend_mut(), LeaveAlternateScreen))
+        .and_then(|_| disable_raw_mode());
+    result.and(cleanup)
+}
+
+fn run_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    mut app: App,
+    refresh: &mut Option<Refresh>,
+) -> io::Result<()> {
     loop {
         terminal.draw(|frame| draw(frame, &app))?;
         if !event::poll(Duration::from_millis(250))? {
@@ -113,9 +176,13 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App)
             KeyCode::Char('7') => app.choose_window(TimeWindow::Last7Days),
             KeyCode::Char('3') => app.choose_window(TimeWindow::Last30Days),
             KeyCode::Char('a') => app.choose_window(TimeWindow::All),
-            // A refresh recomputes from the accepted ledger snapshot. CLI
-            // callers acquire a fresh spool/ledger snapshot before launch.
-            KeyCode::Char('r') => app.now = now_unix_ms(),
+            KeyCode::Char('r') => match refresh.as_mut() {
+                Some(refresh) => match refresh() {
+                    Ok(snapshot) => app.replace_snapshot(snapshot),
+                    Err(_) => app = app.with_ingest_error(),
+                },
+                None => app.now = now_unix_ms(),
+            },
             _ => {}
         }
     }
@@ -325,5 +392,18 @@ mod tests {
         assert!(rendered(app.clone(), 80).contains("accepted history retained"));
         app.screen = Screen::Detail;
         assert!(rendered(app, 80).contains("Hook detail"));
+    }
+    #[test]
+    fn refresh_snapshot_replaces_data_and_preserves_small_terminal_invariants() {
+        let mut app = App::new(vec![], 4, 2, 1_000).with_ingest_error();
+        app.replace_snapshot(RefreshSnapshot {
+            values: crate::report::synthetic_fixture_invocations_for_tui(2_000),
+            malformed: 0,
+            incomplete: 1,
+            now: 2_000,
+        });
+        assert!(app.ingest_error.is_none());
+        assert!(rendered(app.clone(), 44).contains("n="));
+        assert!(rendered(app, 80).contains("incomplete=1"));
     }
 }
