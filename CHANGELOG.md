@@ -9,6 +9,12 @@ analytics with opt-in transparent instrumentation. Normal daily launch remains
 instrument remain visible as explicit unsupported coverage. Receipts and
 reports retain metadata only, never prompts, tool payloads, or stream content.
 Instrumentation is backed by exact restore and does not bypass Codex trust.
+The separate explicit scoped-trust action uses Codex's official App Server
+mechanism only for current HookStat-generated supported user hooks. Windows
+proxies use Job Object containment to clean up active handler trees on forced
+proxy termination while preserving legitimate descendants after normal handler
+root completion. Unix does not claim this Windows-specific containment guarantee
+in v0.1.
 
 ### Pre-activation hardening
 

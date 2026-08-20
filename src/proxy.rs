@@ -12,6 +12,57 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Keeps the original handler's process tree bound to the proxy lifetime on
+/// Windows. The job is armed before the handler is spawned, so a forced proxy
+/// termination closes the only job handle and the kernel terminates the whole
+/// tree. On a normal root-handler exit, the kill-on-close limit is cleared
+/// before the job handle is released so intentionally surviving descendants
+/// remain alive.
+#[cfg(windows)]
+struct ProcessContainment {
+    job: win32job::Job,
+}
+
+#[cfg(windows)]
+impl ProcessContainment {
+    fn establish() -> Result<Self, ProxyError> {
+        let mut limits = win32job::ExtendedLimitInfo::new();
+        limits.limit_kill_on_job_close();
+        let job = win32job::Job::create_with_limit_info(&limits)
+            .map_err(|_| ProxyError::ProcessContainment)?;
+        // The proxy enters the job before it creates the original shell. Its
+        // descendants are therefore contained without a post-spawn race.
+        job.assign_current_process()
+            .map_err(|_| ProxyError::ProcessContainment)?;
+        Ok(Self { job })
+    }
+
+    fn release_after_normal_root_exit(&mut self) -> Result<(), ProxyError> {
+        let mut limits = self
+            .job
+            .query_extended_limit_info()
+            .map_err(|_| ProxyError::ProcessContainment)?;
+        limits.clear_limits();
+        self.job
+            .set_extended_limit_info(&limits)
+            .map_err(|_| ProxyError::ProcessContainment)
+    }
+}
+
+#[cfg(not(windows))]
+struct ProcessContainment;
+
+#[cfg(not(windows))]
+impl ProcessContainment {
+    fn establish() -> Result<Self, ProxyError> {
+        Ok(Self)
+    }
+
+    fn release_after_normal_root_exit(&mut self) -> Result<(), ProxyError> {
+        Ok(())
+    }
+}
+
 static INVOCATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
@@ -19,6 +70,7 @@ pub enum ProxyError {
     Codex(CodexError),
     Receipt(crate::receipt::ReceiptError),
     MissingHandler,
+    ProcessContainment,
 }
 impl fmt::Display for ProxyError {
     fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -28,6 +80,8 @@ impl fmt::Display for ProxyError {
             Self::MissingHandler => {
                 output.write_str("instrumentation manifest has no requested handler")
             }
+            Self::ProcessContainment => output
+                .write_str("HookStat could not establish the required handler process containment"),
         }
     }
 }
@@ -90,7 +144,14 @@ pub fn run(manifest_path: &Path, handler_key: &str) -> Result<i32, ProxyError> {
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    // Establish containment before spawning the handler. On Windows the
+    // proxy itself joins a kill-on-close Job Object, which atomically covers
+    // every subsequently spawned child and descendant.
+    let mut containment = ProcessContainment::establish()?;
     let status = child.status();
+    if status.is_ok() {
+        containment.release_after_normal_root_exit()?;
+    }
     let completed_at = now_unix_ms();
     let (exit_code, terminal_status) = match &status {
         Ok(status) => match status.code() {

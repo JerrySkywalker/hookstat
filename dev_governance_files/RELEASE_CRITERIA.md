@@ -13,12 +13,17 @@ A v0.1.0 release-ready candidate requires:
    durable evidence is unavailable, dogfood requires explicitly authorized
    opt-in live instrumentation, real metadata receipts, report/TUI validation,
    visible unsupported coverage, and a working exact restore;
-9. Windows first-class behavior; Linux CI must also pass;
+9. Windows first-class behavior, including Job Object proof that proxy-only
+   termination cleans up active handler descendants without killing unrelated
+   processes or legitimate descendants after normal root completion; Linux CI
+   must also pass and must not claim the Windows containment guarantee;
 10. no implicit mutation of Codex config/hooks/trust/history; opt-in
     instrumentation must be transparent, reversible, drift-safe, backed up
-    exactly, restricted to supported handlers, and never alter or bypass
-    trust. Any required trust review must use Codex's official scoped
-    mechanism and approve only the reconciled HookStat transformation;
+    exactly, and restricted to supported handlers. `--apply` never alters
+    trust. A separate explicit trust action may use only Codex's official
+    scoped App Server mechanism after proving the current manifest, journal,
+    configuration, source, identity, and hash; it must preserve unrelated
+    state, verify `trusted`, and never bypass trust enforcement;
 11. no raw prompts/tool payloads durably stored by default;
 12. format, Clippy, tests, locked build and exact candidate CI pass;
 13. `cargo package` and `cargo publish --dry-run` pass after versioning to 0.1.0.

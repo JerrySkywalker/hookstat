@@ -1,5 +1,5 @@
 use hookstat::analytics::TimeWindow;
-use hookstat::codex::{apply, default_data_root, default_dry_run, discover_paths, restore};
+use hookstat::codex::{apply, default_data_root, default_dry_run, discover_paths, restore, trust};
 use hookstat::ledger::Ledger;
 use hookstat::proxy;
 use hookstat::receipt::ReceiptSpool;
@@ -11,7 +11,7 @@ use std::process::ExitCode;
 
 fn print_help() {
     println!(
-        "HookStat {version}\n\nReliability analytics for hooks across coding-agent runtimes.\n\nUsage:\n  hookstat [tui]\n  hookstat report [--json]\n  hookstat preview-fixture [--json]\n  hookstat codex instrument --dry-run [--config-root <path>]\n  hookstat codex instrument --apply --config-root <path> [--data-root <path>]\n  hookstat codex instrument --restore --config-root <path> [--data-root <path>]\n\nNormal Codex launch remains `codex`. Instrumentation is opt-in and wraps individual command handlers only after an explicit apply. `--apply` requires --config-root so HookStat never implicitly mutates a live owner configuration. HookStat never auto-approves Codex trust.",
+        "HookStat {version}\n\nReliability analytics for hooks across coding-agent runtimes.\n\nUsage:\n  hookstat [tui]\n  hookstat report [--json]\n  hookstat preview-fixture [--json]\n  hookstat codex instrument --dry-run [--config-root <path>]\n  hookstat codex instrument --apply --config-root <path> [--data-root <path>]\n  hookstat codex instrument --trust [--dry-run] --config-root <path> [--data-root <path>]\n  hookstat codex instrument --restore --config-root <path> [--data-root <path>]\n\nNormal Codex launch remains `codex`. Instrumentation is opt-in and wraps individual command handlers only after an explicit apply. `--apply` never approves trust. `--trust` is a separate explicit action that uses Codex's official App Server only after HookStat proves the current manifest, journal, and effective handlers are exact supported targets.",
         version = env!("CARGO_PKG_VERSION")
     );
 }
@@ -104,13 +104,16 @@ fn instrument_command(arguments: &[String]) -> ExitCode {
     let dry_run = arguments.iter().any(|value| value == "--dry-run");
     let apply_requested = arguments.iter().any(|value| value == "--apply");
     let restore_requested = arguments.iter().any(|value| value == "--restore");
-    if [dry_run, apply_requested, restore_requested]
+    let trust_requested = arguments.iter().any(|value| value == "--trust");
+    if [apply_requested, restore_requested, trust_requested]
         .into_iter()
         .filter(|value| *value)
         .count()
-        != 1
+        > 1
+        || (!dry_run && !apply_requested && !restore_requested && !trust_requested)
+        || (dry_run && (apply_requested || restore_requested))
     {
-        eprintln!("hookstat: choose exactly one of --dry-run, --apply, or --restore");
+        eprintln!("hookstat: choose --dry-run, --apply, --trust [--dry-run], or --restore");
         return ExitCode::from(2);
     }
     let config_root = option_path(arguments, "--config-root");
@@ -130,6 +133,29 @@ fn instrument_command(arguments: &[String]) -> ExitCode {
             return ExitCode::from(2);
         };
         return match restore(&root.join("hooks.json"), &data_root) {
+            Ok(summary) => {
+                print_safe_json(&summary);
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("hookstat: {error}");
+                ExitCode::from(1)
+            }
+        };
+    }
+    if trust_requested {
+        let Some(root) = config_root else {
+            eprintln!("hookstat: --trust requires explicit --config-root");
+            return ExitCode::from(2);
+        };
+        let cwd = match std::env::current_dir() {
+            Ok(path) => path,
+            Err(_) => {
+                eprintln!("hookstat: cannot resolve current working directory");
+                return ExitCode::from(1);
+            }
+        };
+        return match trust(&root.join("hooks.json"), &data_root, &cwd, dry_run) {
             Ok(summary) => {
                 print_safe_json(&summary);
                 ExitCode::SUCCESS

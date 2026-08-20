@@ -30,9 +30,12 @@ managed sources are reported as unsupported coverage rather than mutated.
 Coverage is explicitly partial when active sources are unsupported or an
 invocation has only a start receipt. Exit code 2 remains `unknown` because Codex
 uses stderr content to distinguish several control outcomes and HookStat is
-prohibited from inspecting it. Codex trust is never auto-approved or altered;
-an apply may require a user trust review. Passive durable receipts from future
-runtimes flow through the same canonical model.
+prohibited from inspecting it. Apply never auto-approves trust. A separate,
+explicit trust action may use Codex's official App Server only after proving the
+exact current HookStat manifest, journal, supported user-handler identity, and
+hash; it preserves unrelated state, verifies the reload, and never bypasses
+trust enforcement. Passive durable receipts from future runtimes flow through
+the same canonical model.
 
 ## Effective discovery refinement
 

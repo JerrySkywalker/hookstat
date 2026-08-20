@@ -34,10 +34,20 @@ hookstat codex instrument --apply --config-root $configRoot
 ```
 
 HookStat makes an exact local prestate backup and an atomic rollback journal.
-It never edits Codex trust. If Codex asks to review trust because hook commands
-changed, use its official review mechanism only for the exact reconciled
-HookStat changes; do not bypass it, disable enforcement, or approve unrelated
-handlers.
+If Codex marks these changes for review, first preflight then explicitly trust
+only the current reconciled HookStat targets:
+
+```powershell
+hookstat codex instrument --trust --dry-run --config-root $configRoot
+hookstat codex instrument --trust --config-root $configRoot
+```
+
+`--apply` never grants trust. `--trust` uses the official App Server
+`hooks/list` → `config/batchWrite` → reload → `hooks/list` sequence and fails
+closed unless every selected target matches HookStat's current manifest,
+journal, configuration hash, supported user source, and runtime hash. It never
+bypasses enforcement, touches plugin/managed/unrelated hooks, or edits a trust
+database manually.
 
 ## 4. Use Codex normally
 

@@ -41,6 +41,7 @@ This is deliberate: `--apply` has no implicit live-default target.
 
 ```powershell
 hookstat codex instrument --apply --config-root $env:USERPROFILE\.codex
+hookstat codex instrument --trust --config-root $env:USERPROFILE\.codex
 hookstat codex instrument --restore --config-root $env:USERPROFILE\.codex
 ```
 
@@ -48,8 +49,14 @@ Apply is atomic, creates an exact local prestate backup and rollback journal,
 is idempotent, refuses configuration drift during restore, and will not wrap a
 handler twice. It supports safe `hooks.json` command handlers. Inline TOML,
 plugin, and managed sources are shown as unsupported coverage rather than
-modified optimistically. Changing a hook command can require Codex trust review;
-HookStat never approves or edits Codex trust.
+modified optimistically. Changing a hook command can require Codex trust review.
+`--apply` never approves trust. The separate explicit `--trust` action uses
+Codex's official App Server `hooks/list` and `config/batchWrite` route only
+after it proves the exact current HookStat manifest, journal, source path,
+supported user-handler identity, and current hash. It writes only selected
+`trusted_hash` values, reloads user config, and requires every selected handler
+to return `trusted`. Plugin, managed, disabled, stale, duplicate, and unrelated
+hooks are rejected or left unchanged; it never bypasses trust enforcement.
 
 Effective plugin or managed handlers can be visible in discovery even when
 HookStat cannot mutate them. That is `PASS_WITH_EXPLICIT_UNSUPPORTED_COVERAGE`,
@@ -66,6 +73,13 @@ receipts under the platform user-data directory, then later ingests them into a
 SQLite ledger. Start-only receipts are explicitly `incomplete`, not success or
 failure. Exit code `2` is `unknown` because Codex control semantics depend on
 stderr content that HookStat intentionally does not inspect.
+
+On Windows, the proxy joins a Job Object with kill-on-close before spawning the
+original handler. Forced proxy termination therefore closes the active handler
+tree without broad process killing. After normal root-handler completion it
+clears that limit, allowing legitimate background descendants to survive.
+Unix keeps its native shell cancellation behavior in v0.1 and does not claim
+the Windows Job Object containment guarantee.
 
 ## Reports and TUI
 
