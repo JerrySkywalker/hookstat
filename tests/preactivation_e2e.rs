@@ -20,6 +20,7 @@ fn run(binary: &str, args: &[&str], local_app_data: &Path) -> std::process::Outp
         .args(args)
         .env("LOCALAPPDATA", local_app_data)
         .env("APPDATA", local_app_data)
+        .env("XDG_DATA_HOME", local_app_data)
         .output()
         .unwrap()
 }
