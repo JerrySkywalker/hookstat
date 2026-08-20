@@ -18,7 +18,11 @@ fn handler(key: &str) -> HandlerIdentity {
         event: HookEvent::Stop,
         matcher_identity: "any".into(),
         structural_identity: format!("g0:{key}"),
-        execution_mode: ExecutionMode::Sync,
+        execution_mode: if key == "async" {
+            ExecutionMode::Async
+        } else {
+            ExecutionMode::Sync
+        },
     }
 }
 
@@ -151,6 +155,8 @@ const CONTROL: &str = "echo control 1>&2 & exit /b 2";
 #[cfg(not(windows))]
 const CONTROL: &str = "printf control >&2; exit 2";
 #[cfg(windows)]
+const HIGH_EXIT: &str = "exit /b 259";
+#[cfg(windows)]
 fn large_stdout_command(path: &Path) -> String {
     format!("type {}", path.to_string_lossy())
 }
@@ -231,7 +237,7 @@ fn proxy_records_control_as_unknown_and_telemetry_failure_is_fail_open() {
 fn concurrent_proxy_processes_create_distinct_complete_receipts() {
     let temp = tempdir().unwrap();
     let manifest_path = temp.path().join("state/manifests/hooks.json");
-    let commands = ["a", "b", "c", "d"].map(|key| (key, SUCCESS));
+    let commands = ["a", "b", "c", "async"].map(|key| (key, SUCCESS));
     manifest(&manifest_path, &commands);
     let binary = env!("CARGO_BIN_EXE_hookstat");
     let mut children = Vec::new();
@@ -262,6 +268,23 @@ fn concurrent_proxy_processes_create_distinct_complete_receipts() {
             .iter()
             .all(|value| value.terminal_status == TerminalStatus::Completed)
     );
+    assert!(
+        scan.invocations
+            .iter()
+            .any(|value| value.handler.execution_mode == ExecutionMode::Async)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn proxy_preserves_full_windows_exit_code_without_u8_truncation() {
+    let temp = tempdir().unwrap();
+    let manifest_path = temp.path().join("state/manifests/hooks.json");
+    manifest(&manifest_path, &[("high-exit", HIGH_EXIT)]);
+    let expected = shell_output(HIGH_EXIT, b"");
+    let actual = proxy_output(&manifest_path, "high-exit", b"");
+    assert_eq!(expected.status.code(), Some(259));
+    assert_eq!(actual.status.code(), expected.status.code());
 }
 
 #[test]
