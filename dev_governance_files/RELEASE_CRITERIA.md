@@ -9,11 +9,18 @@ A v0.1.0 release-ready candidate requires:
 5. local incremental/idempotent ledger;
 6. 24h/7d/30d/All reliability views;
 7. frozen-baseline TUI with sample counts and visible coverage limitations;
-8. sanitized fixture tests and read-only real owner Codex dogfood;
+8. sanitized fixture tests and real ordinary-Codex dogfood. When passive
+   durable evidence is unavailable, dogfood requires explicitly authorized
+   opt-in live instrumentation, real metadata receipts, report/TUI validation,
+   visible unsupported coverage, and a working exact restore;
 9. Windows first-class behavior; Linux CI must also pass;
-10. no implicit mutation of Codex config/hooks/trust/history; opt-in instrumentation must be transparent, reversible, drift-safe, and never alter trust;
+10. no implicit mutation of Codex config/hooks/trust/history; opt-in
+    instrumentation must be transparent, reversible, drift-safe, backed up
+    exactly, restricted to supported handlers, and never alter or bypass
+    trust. Any required trust review must use Codex's official scoped
+    mechanism and approve only the reconciled HookStat transformation;
 11. no raw prompts/tool payloads durably stored by default;
 12. format, Clippy, tests, locked build and exact candidate CI pass;
 13. `cargo package` and `cargo publish --dry-run` pass after versioning to 0.1.0.
 
-Actual crates.io publication, tag, or public GitHub Release is not authorized by repository development goals alone.
+Actual crates.io publication, tag, or public GitHub Release is not authorized by repository development goals alone; it requires separate explicit Owner authorization for the exact version.

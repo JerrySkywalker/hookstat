@@ -7,7 +7,7 @@ HookStat processes local coding-agent runtime evidence that may contain sensitiv
 - local-first and offline by default;
 - no telemetry or network export in v0.1;
 - normal operation never mutates Codex configuration, hooks, trust state, or
-  session records; an attended explicit `hookstat codex instrument --apply`
+  session records; an explicitly authorized `hookstat codex instrument --apply`
   may atomically update only the selected supported configuration root and
   creates a local exact backup for restore;
 - ingest only the minimum fields needed for reliability analytics;

@@ -36,8 +36,8 @@ source paths, matchers, and plugin identifiers are reduced to fingerprints
 before output. If the App Server is unavailable, the dry-run says so and
 retains the static view instead of inventing effective coverage.
 
-For an attended activation, select the configuration root explicitly. This is
-deliberate: `--apply` has no implicit live-default target.
+For an explicit authorized activation, select the configuration root explicitly.
+This is deliberate: `--apply` has no implicit live-default target.
 
 ```powershell
 hookstat codex instrument --apply --config-root $env:USERPROFILE\.codex

@@ -1,7 +1,9 @@
 # HookStat v0.1 Owner activation runbook
 
-This is the short attended sequence for the release candidate. It changes only
-the Codex configuration root you explicitly pass to `--apply`. Normal use stays
+This is the short explicit-authorization sequence for the release candidate.
+It is normally owner-attended; an active Goal may instead grant the same
+bounded authority for a named controlled release train. It changes only the
+Codex configuration root you explicitly pass to `--apply`. Normal use stays
 `codex`; do not launch `hookstat codex`.
 
 ## 1. Sync and install the candidate
@@ -33,7 +35,9 @@ hookstat codex instrument --apply --config-root $configRoot
 
 HookStat makes an exact local prestate backup and an atomic rollback journal.
 It never edits Codex trust. If Codex asks to review trust because hook commands
-changed, perform that review in Codex; do not bypass or auto-approve it.
+changed, use its official review mechanism only for the exact reconciled
+HookStat changes; do not bypass it, disable enforcement, or approve unrelated
+handlers.
 
 ## 4. Use Codex normally
 

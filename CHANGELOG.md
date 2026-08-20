@@ -1,6 +1,16 @@
 # Changelog
 
-## 0.1.0 — pre-activation hardening
+## 0.1.0
+
+First public HookStat release: Codex-first, local-first hook reliability
+analytics with opt-in transparent instrumentation. Normal daily launch remains
+`codex`; HookStat reports per-handler runs, failures, and failure rates with
+24h/7d/30d/All views and a Ratatui TUI. Plugin/managed sources that v0.1 cannot
+instrument remain visible as explicit unsupported coverage. Receipts and
+reports retain metadata only, never prompts, tool payloads, or stream content.
+Instrumentation is backed by exact restore and does not bypass Codex trust.
+
+### Pre-activation hardening
 
 - adds read-only Codex App Server effective-hook discovery and static/effective
   coverage reconciliation without exposing commands or paths;
