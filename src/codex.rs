@@ -244,6 +244,7 @@ pub enum CodexError {
     AppServerProtocol,
     TrustPrecondition,
     TrustTargetMismatch,
+    WindowsPathIdentity,
 }
 impl fmt::Display for CodexError {
     fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -270,6 +271,9 @@ impl fmt::Display for CodexError {
             Self::TrustTargetMismatch => {
                 output.write_str("HookStat could not prove an exact supported hook trust target")
             }
+            Self::WindowsPathIdentity => output.write_str(
+                "Windows instrumentation requires hookstat.exe on PATH to resolve exactly to the running HookStat executable; install HookStat on PATH and retry",
+            ),
         }
     }
 }
@@ -1232,13 +1236,14 @@ pub fn apply(
                 &item.discovered.handler.key,
             );
             handler["command"] = Value::String(command.clone());
-            // Codex 0.147 invokes Windows hook commands as `cmd.exe /C
-            // "<command_line>"`. `command` deliberately preserves the
-            // portable quoted form, while `commandWindows` must have no
-            // embedded quote after the optional leading executable quote.
-            // Always set it, including for handlers that did not originally
-            // define commandWindows; the exact original bytes remain in the
-            // authoritative backup used by restore.
+            // `command` preserves the established portable absolute-path
+            // form. `commandWindows` is intentionally shell-neutral: Codex
+            // may choose cmd.exe or PowerShell from TurnEnvironment.shell,
+            // and only a bare PATH-resolved executable works in both without
+            // an intermediate shell wrapper. The CLI proves exact PATH
+            // identity before it calls apply. Always set commandWindows,
+            // including for handlers that did not originally define it; the
+            // authoritative backup retains the exact original bytes.
             handler["commandWindows"] = Value::String(proxy_command_windows(
                 proxy_executable,
                 &manifest_path,
@@ -1321,6 +1326,41 @@ pub fn default_data_root() -> Result<PathBuf, CodexError> {
     Ok(base.join("HookStat"))
 }
 
+/// Resolves the first `hookstat.exe` supplied by PATH and requires it to be
+/// the exact executable performing `--apply`. Windows hook commands use the
+/// bare executable name so that both cmd.exe and PowerShell can invoke them;
+/// this admission prevents a later shell from resolving a different binary.
+///
+/// The literal `.exe` name avoids PATHEXT ambiguity. Canonical paths collapse
+/// junctions and symlinks before comparison. The first existing PATH entry is
+/// decisive, so an earlier shadowing candidate fails closed rather than being
+/// skipped.
+#[cfg(windows)]
+pub fn require_windows_path_identity(current_exe: &Path) -> Result<PathBuf, CodexError> {
+    let current = current_exe
+        .canonicalize()
+        .map_err(|_| CodexError::WindowsPathIdentity)?;
+    let entries = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let candidate = entries
+        .iter()
+        .map(|entry| entry.join("hookstat.exe"))
+        .find(|candidate| candidate.is_file())
+        .ok_or(CodexError::WindowsPathIdentity)?;
+    let resolved = candidate
+        .canonicalize()
+        .map_err(|_| CodexError::WindowsPathIdentity)?;
+    if resolved
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&current.to_string_lossy())
+    {
+        Ok(current)
+    } else {
+        Err(CodexError::WindowsPathIdentity)
+    }
+}
+
 fn parse_event(value: &str) -> Option<HookEvent> {
     match value {
         "SessionStart" | "session_start" | "sessionStart" => Some(HookEvent::SessionStart),
@@ -1378,13 +1418,16 @@ fn proxy_command(exe: &Path, manifest: &Path, handler: &str) -> String {
     )
 }
 
-fn proxy_command_windows(exe: &Path, manifest: &Path, handler: &str) -> Result<String, CodexError> {
+fn proxy_command_windows(
+    _proxy_executable: &Path,
+    manifest: &Path,
+    handler: &str,
+) -> Result<String, CodexError> {
     if !is_safe_handler_key(handler) {
         return Err(CodexError::Invalid("handler key"));
     }
     Ok(format!(
-        "\"{}\" codex proxy --manifest-token {} --handler {} {MARKER}",
-        quote_component(exe),
+        "hookstat.exe codex proxy --manifest-token {} --handler {} {MARKER}",
         manifest_token(manifest),
         handler
     ))
@@ -1723,17 +1766,25 @@ mod tests {
     }
 
     #[test]
-    fn proxy_windows_command_has_only_the_leading_executable_quote_pair() {
+    fn proxy_windows_command_is_shell_neutral() {
         let command = proxy_command_windows(
             Path::new("C:/Program Files/HookStat/hookstat.exe"),
             Path::new("C:/Users/\u{6d4b}\u{8bd5}/App Data/HookStat/manifests/a.json"),
             "hk_0123abcd",
         )
         .unwrap();
-        let first_close = command[1..].find('"').unwrap() + 1;
-        assert!(command.starts_with('"'));
-        assert!(!command[(first_close + 1)..].contains('"'));
-        assert_eq!(command.matches('"').count(), 2);
+        assert!(command.starts_with("hookstat.exe codex proxy "));
+        assert_eq!(command.matches('"').count(), 0);
+        assert_eq!(
+            command
+                .bytes()
+                .filter(|byte| matches!(
+                    byte,
+                    b'&' | b'|' | b'<' | b'>' | b'^' | b'(' | b')' | b'%' | b'!'
+                ))
+                .count(),
+            0
+        );
         assert!(command.contains("--manifest-token m1_"));
         assert!(
             proxy_command_windows(Path::new("hookstat.exe"), Path::new("a"), "bad&key").is_err()
