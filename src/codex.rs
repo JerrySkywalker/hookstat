@@ -13,9 +13,12 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
 
 const MARKER: &str = "--hookstat-instrumentation-v1";
 const MANIFEST_SCHEMA_VERSION: u8 = 1;
@@ -96,6 +99,65 @@ pub struct Discovery {
     handlers: Vec<LocatedHandler>,
 }
 
+/// Sanitized runtime-effective view returned by Codex App Server `hooks/list`.
+/// It deliberately does not retain or serialize command strings, source paths,
+/// plugin identifiers, or raw matcher expressions.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct EffectiveHandler {
+    pub handler: HandlerIdentity,
+    pub source_class: String,
+    pub handler_type: String,
+    pub enabled: Option<bool>,
+    pub trusted: Option<bool>,
+    pub managed: Option<bool>,
+    pub disposition: InstrumentationDisposition,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct EffectiveDiscoverySummary {
+    pub discovered: usize,
+    pub command_handlers: usize,
+    pub instrumentable: usize,
+    pub unsupported_or_uninstrumentable: usize,
+    pub source_class_counts: BTreeMap<String, usize>,
+    pub sync_count: usize,
+    pub async_count: usize,
+    pub execution_mode_unknown_count: usize,
+    pub handlers: Vec<EffectiveHandler>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EffectiveDiscovery {
+    pub summary: EffectiveDiscoverySummary,
+    reconciliation_keys: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct DiscoveryReconciliation {
+    pub static_handlers: usize,
+    pub effective_handlers: usize,
+    pub matched_handlers: usize,
+    pub static_only: usize,
+    pub effective_only: usize,
+    pub coverage_classification: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReconciledDiscovery {
+    pub static_discovery: Discovery,
+    pub effective_discovery: EffectiveDiscovery,
+    pub reconciliation: DiscoveryReconciliation,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DryRunReport {
+    pub static_discovery: DiscoverySummary,
+    pub effective_runtime: Option<EffectiveDiscoverySummary>,
+    pub reconciliation: Option<DiscoveryReconciliation>,
+    pub effective_runtime_error: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ProxyManifest {
     pub schema_version: u8,
@@ -143,6 +205,9 @@ pub enum CodexError {
     Toml(toml::de::Error),
     Invalid(&'static str),
     DriftDetected,
+    AppServerUnavailable,
+    AppServerTimeout,
+    AppServerProtocol,
 }
 impl fmt::Display for CodexError {
     fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -154,6 +219,15 @@ impl fmt::Display for CodexError {
             Self::Invalid(field) => write!(output, "Codex hook configuration has invalid {field}"),
             Self::DriftDetected => output
                 .write_str("Codex hook configuration drift detected; no modification was made"),
+            Self::AppServerUnavailable => {
+                output.write_str("Codex App Server effective hook discovery is unavailable")
+            }
+            Self::AppServerTimeout => {
+                output.write_str("Codex App Server effective hook discovery timed out")
+            }
+            Self::AppServerProtocol => {
+                output.write_str("Codex App Server returned an unusable hook-discovery response")
+            }
         }
     }
 }
@@ -195,6 +269,375 @@ pub fn discover_default() -> Result<Discovery, CodexError> {
             .map_err(CodexError::Io)?
             .join(".codex/config.toml"),
     ])
+}
+
+/// Uses the official read-only App Server `hooks/list` surface. The child is
+/// terminated after its single response; no thread, session, trust, or config
+/// write request is ever sent. Raw response values are parsed in-memory only
+/// and immediately reduced to the privacy-preserving structures above.
+pub fn discover_effective(cwd: &Path) -> Result<EffectiveDiscovery, CodexError> {
+    let mut child = app_server_command()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| CodexError::AppServerUnavailable)?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or(CodexError::AppServerUnavailable)?;
+    let mut stdin = child.stdin.take().ok_or(CodexError::AppServerUnavailable)?;
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                let _ = sender.send(value);
+            }
+        }
+    });
+    let response = (|| {
+        let initialize = serde_json::json!({
+            "method": "initialize",
+            "id": 1,
+            "params": {"clientInfo": {"name": "hookstat", "version": env!("CARGO_PKG_VERSION")}}
+        });
+        send_app_server(&mut stdin, &initialize)?;
+        receive_response(&receiver, 1)?;
+        send_app_server(
+            &mut stdin,
+            &serde_json::json!({"method": "initialized", "params": {}}),
+        )?;
+        send_app_server(
+            &mut stdin,
+            &serde_json::json!({"method": "hooks/list", "id": 2, "params": {"cwds": [cwd]}}),
+        )?;
+        receive_response(&receiver, 2)
+    })();
+    drop(stdin);
+    // App Server is a long-lived protocol host. The single read-only request
+    // is complete, so terminate this temporary child instead of waiting for a
+    // server lifetime that is unrelated to discovery.
+    let _ = child.kill();
+    let _ = child.wait();
+    let response = response?;
+    parse_effective_response(&response)
+}
+
+#[cfg(windows)]
+fn app_server_command() -> Command {
+    // npm commonly exposes Codex as a .cmd shim. Resolve it explicitly from
+    // PATH and let Rust's Windows `Command` support invoke the batch shim; this
+    // avoids an extra cmd.exe layer that can interfere with JSONL pipes. This
+    // is still the ordinary `codex app-server` command, not a HookStat launcher
+    // wrapper.
+    let path_entries = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let shim = path_entries
+        .iter()
+        .map(|path| path.join("codex.cmd"))
+        .find(|path| path.is_file())
+        .or_else(|| {
+            path_entries
+                .iter()
+                .map(|path| path.join("codex.bat"))
+                .find(|path| path.is_file())
+        });
+    let mut command = Command::new(shim.unwrap_or_else(|| PathBuf::from("codex")));
+    command.arg("app-server");
+    command
+}
+
+#[cfg(not(windows))]
+fn app_server_command() -> Command {
+    let mut command = Command::new("codex");
+    command.arg("app-server");
+    command
+}
+
+pub fn discover_reconciled_default() -> Result<ReconciledDiscovery, CodexError> {
+    let static_discovery = discover_default()?;
+    let effective_discovery =
+        discover_effective(&std::env::current_dir().map_err(CodexError::Io)?)?;
+    let static_keys = static_discovery
+        .handlers
+        .iter()
+        .map(|item| {
+            runtime_location_key(
+                &item.path,
+                item.discovered.handler.event,
+                item.group_index,
+                item.handler_index,
+            )
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let effective_keys = effective_discovery
+        .reconciliation_keys
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let matched_handlers = static_keys.intersection(&effective_keys).count();
+    let static_only = static_keys.difference(&effective_keys).count();
+    let effective_only = effective_keys.difference(&static_keys).count();
+    let coverage_classification = if static_only == 0 && effective_only == 0 {
+        "complete_effective_coverage".to_owned()
+    } else if static_only == 0 {
+        "pass_with_explicit_unsupported_runtime_coverage".to_owned()
+    } else {
+        "partial_reconciliation".to_owned()
+    };
+    Ok(ReconciledDiscovery {
+        static_discovery,
+        effective_discovery,
+        reconciliation: DiscoveryReconciliation {
+            static_handlers: static_keys.len(),
+            effective_handlers: effective_keys.len(),
+            matched_handlers,
+            static_only,
+            effective_only,
+            coverage_classification,
+        },
+    })
+}
+
+pub fn default_dry_run() -> Result<DryRunReport, CodexError> {
+    match discover_reconciled_default() {
+        Ok(value) => Ok(DryRunReport {
+            static_discovery: value.static_discovery.summary,
+            effective_runtime: Some(value.effective_discovery.summary),
+            reconciliation: Some(value.reconciliation),
+            effective_runtime_error: None,
+        }),
+        Err(
+            error @ (CodexError::AppServerUnavailable
+            | CodexError::AppServerTimeout
+            | CodexError::AppServerProtocol),
+        ) => Ok(DryRunReport {
+            static_discovery: discover_default()?.summary,
+            effective_runtime: None,
+            reconciliation: None,
+            effective_runtime_error: Some(error.to_string()),
+        }),
+        Err(error) => Err(error),
+    }
+}
+
+fn send_app_server(stdin: &mut impl Write, value: &Value) -> Result<(), CodexError> {
+    serde_json::to_writer(&mut *stdin, value).map_err(CodexError::Json)?;
+    stdin.write_all(b"\n").map_err(CodexError::Io)?;
+    stdin.flush().map_err(CodexError::Io)
+}
+
+fn receive_response(receiver: &mpsc::Receiver<Value>, id: u64) -> Result<Value, CodexError> {
+    let deadline = Duration::from_secs(12);
+    loop {
+        let value = receiver
+            .recv_timeout(deadline)
+            .map_err(|_| CodexError::AppServerTimeout)?;
+        if value.get("id").and_then(Value::as_u64) == Some(id) {
+            if value.get("error").is_some() {
+                return Err(CodexError::AppServerProtocol);
+            }
+            return Ok(value);
+        }
+    }
+}
+
+fn parse_effective_response(response: &Value) -> Result<EffectiveDiscovery, CodexError> {
+    let contexts = response
+        .get("result")
+        .and_then(|value| value.get("data"))
+        .and_then(Value::as_array)
+        .ok_or(CodexError::AppServerProtocol)?;
+    let mut summary = EffectiveDiscoverySummary::default();
+    let mut reconciliation_keys = Vec::new();
+    for context in contexts {
+        let Some(hooks) = context.get("hooks").and_then(Value::as_array) else {
+            continue;
+        };
+        for item in hooks {
+            let Some(raw_key) = item.get("key").and_then(Value::as_str) else {
+                continue;
+            };
+            let event = item
+                .get("eventName")
+                .and_then(Value::as_str)
+                .and_then(parse_event)
+                .ok_or(CodexError::AppServerProtocol)?;
+            let raw_matcher = item
+                .get("matcher")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let matcher_identity = if raw_matcher.is_empty() {
+                "any".to_owned()
+            } else {
+                format!("m_{}", short_hash(raw_matcher.as_bytes()))
+            };
+            let source_class = effective_source_class(item.get("source").and_then(Value::as_str));
+            let raw_type = item
+                .get("handlerType")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let handler_type = if raw_type.eq_ignore_ascii_case("command") {
+                "command"
+            } else {
+                "other"
+            }
+            .to_owned();
+            let enabled = item.get("enabled").and_then(Value::as_bool);
+            let managed = item.get("isManaged").and_then(Value::as_bool);
+            let trusted = trust_status(item.get("trustStatus").and_then(Value::as_str), managed);
+            let execution_mode = match item.get("async").and_then(Value::as_bool) {
+                Some(true) => ExecutionMode::Async,
+                Some(false) => ExecutionMode::Sync,
+                None => ExecutionMode::Unknown,
+            };
+            let display_order = item
+                .get("displayOrder")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            let structural_identity =
+                format!("runtime:{display_order}:{}", short_hash(raw_key.as_bytes()));
+            let handler_key = format!("hk_{}", short_hash(raw_key.as_bytes()));
+            let raw_revision = item
+                .get("currentHash")
+                .and_then(Value::as_str)
+                .unwrap_or(raw_key);
+            let handler = HandlerIdentity {
+                key: handler_key.clone(),
+                revision: format!("hr_{}", short_hash(raw_revision.as_bytes())),
+                label: format!("Codex / {} / {}", event.label(), &handler_key[3..]),
+                source_kind: format!("runtime_{source_class}"),
+                event,
+                matcher_identity,
+                structural_identity,
+                execution_mode,
+            };
+            let (disposition, reason) =
+                effective_disposition(&source_class, &handler_type, enabled, trusted, managed);
+            summary.discovered += 1;
+            if handler_type == "command" {
+                summary.command_handlers += 1;
+            }
+            *summary
+                .source_class_counts
+                .entry(source_class.clone())
+                .or_default() += 1;
+            match execution_mode {
+                ExecutionMode::Sync => summary.sync_count += 1,
+                ExecutionMode::Async => summary.async_count += 1,
+                ExecutionMode::Unknown => summary.execution_mode_unknown_count += 1,
+            }
+            match disposition {
+                InstrumentationDisposition::Instrumentable => summary.instrumentable += 1,
+                InstrumentationDisposition::AlreadyInstrumented => {
+                    summary.unsupported_or_uninstrumentable += 1
+                }
+                InstrumentationDisposition::Unsupported => {
+                    summary.unsupported_or_uninstrumentable += 1
+                }
+            }
+            summary.handlers.push(EffectiveHandler {
+                handler,
+                source_class,
+                handler_type,
+                enabled,
+                trusted,
+                managed,
+                disposition,
+                reason,
+            });
+            reconciliation_keys.push(effective_location_key(item, raw_key, event));
+        }
+    }
+    summary
+        .handlers
+        .sort_by(|left, right| left.handler.key.cmp(&right.handler.key));
+    Ok(EffectiveDiscovery {
+        summary,
+        reconciliation_keys,
+    })
+}
+
+fn effective_location_key(item: &Value, raw_key: &str, event: HookEvent) -> String {
+    let parts = raw_key.split(':').collect::<Vec<_>>();
+    let group_index = parts
+        .get(parts.len().saturating_sub(2))
+        .and_then(|value| value.parse::<usize>().ok());
+    let handler_index = parts.last().and_then(|value| value.parse::<usize>().ok());
+    match (
+        item.get("sourcePath").and_then(Value::as_str),
+        group_index,
+        handler_index,
+    ) {
+        (Some(path), Some(group_index), Some(handler_index)) => {
+            runtime_location_key(Path::new(path), event, group_index, handler_index)
+        }
+        _ => short_hash(raw_key.as_bytes()),
+    }
+}
+
+fn effective_source_class(value: Option<&str>) -> String {
+    match value.unwrap_or_default().to_ascii_lowercase().as_str() {
+        "user" => "user".into(),
+        "project" => "project".into(),
+        "plugin" => "plugin".into(),
+        "managed" => "managed".into(),
+        _ => "other".into(),
+    }
+}
+
+fn trust_status(value: Option<&str>, managed: Option<bool>) -> Option<bool> {
+    if managed == Some(true) {
+        return Some(true);
+    }
+    match value.unwrap_or_default().to_ascii_lowercase().as_str() {
+        "trusted" | "not_required" => Some(true),
+        "untrusted" | "modified" => Some(false),
+        _ => None,
+    }
+}
+
+fn effective_disposition(
+    source_class: &str,
+    handler_type: &str,
+    enabled: Option<bool>,
+    trusted: Option<bool>,
+    managed: Option<bool>,
+) -> (InstrumentationDisposition, Option<String>) {
+    if handler_type != "command" {
+        return (
+            InstrumentationDisposition::Unsupported,
+            Some("runtime handler is not an executable command handler".into()),
+        );
+    }
+    if managed == Some(true) || matches!(source_class, "plugin" | "managed") {
+        return (
+            InstrumentationDisposition::Unsupported,
+            Some(
+                "managed or plugin runtime source is visible but HookStat never mutates it".into(),
+            ),
+        );
+    }
+    if enabled != Some(true) {
+        return (
+            InstrumentationDisposition::Unsupported,
+            Some("runtime handler is disabled or its enabled state is unavailable".into()),
+        );
+    }
+    if trusted != Some(true) {
+        return (
+            InstrumentationDisposition::Unsupported,
+            Some("runtime handler is not currently trusted or trust is unavailable".into()),
+        );
+    }
+    if !matches!(source_class, "user" | "project") {
+        return (
+            InstrumentationDisposition::Unsupported,
+            Some("runtime source has no safe HookStat mutation path".into()),
+        );
+    }
+    (InstrumentationDisposition::Instrumentable, None)
 }
 
 pub fn discover_paths(paths: &[PathBuf]) -> Result<Discovery, CodexError> {
@@ -283,18 +726,13 @@ fn discover_one(path: &Path) -> Result<Vec<LocatedHandler>, CodexError> {
                     ExecutionMode::Sync
                 };
                 let structural_identity = format!("g{group_index}:h{handler_index}");
+                // Codex's effective `hooks/list` key is positional. Hash the
+                // equivalent local location instead of the command so static
+                // and runtime discovery can reconcile without exposing either
+                // source paths or command text.
                 let handler_key = format!(
                     "hk_{}",
-                    short_hash(
-                        format!(
-                            "{}|{}|{}|{}",
-                            source_kind.label(),
-                            event.as_storage(),
-                            matcher_identity,
-                            structural_identity
-                        )
-                        .as_bytes()
-                    )
+                    runtime_location_key(path, event, group_index, handler_index)
                 );
                 let revision = format!("hr_{}", short_hash(canonical_json(handler).as_bytes()));
                 let identity = HandlerIdentity {
@@ -530,17 +968,21 @@ pub fn default_data_root() -> Result<PathBuf, CodexError> {
 
 fn parse_event(value: &str) -> Option<HookEvent> {
     match value {
-        "SessionStart" => Some(HookEvent::SessionStart),
-        "SessionEnd" => Some(HookEvent::SessionEnd),
-        "UserPromptSubmit" => Some(HookEvent::UserPromptSubmit),
-        "PreToolUse" => Some(HookEvent::PreToolUse),
-        "PostToolUse" => Some(HookEvent::PostToolUse),
-        "PermissionRequest" => Some(HookEvent::PermissionRequest),
-        "PreCompact" => Some(HookEvent::PreCompact),
-        "PostCompact" => Some(HookEvent::PostCompact),
-        "Stop" => Some(HookEvent::Stop),
-        "SubagentStart" => Some(HookEvent::SubagentStart),
-        "SubagentStop" => Some(HookEvent::SubagentStop),
+        "SessionStart" | "session_start" | "sessionStart" => Some(HookEvent::SessionStart),
+        "SessionEnd" | "session_end" | "sessionEnd" => Some(HookEvent::SessionEnd),
+        "UserPromptSubmit" | "user_prompt_submit" | "userPromptSubmit" => {
+            Some(HookEvent::UserPromptSubmit)
+        }
+        "PreToolUse" | "pre_tool_use" | "preToolUse" => Some(HookEvent::PreToolUse),
+        "PostToolUse" | "post_tool_use" | "postToolUse" => Some(HookEvent::PostToolUse),
+        "PermissionRequest" | "permission_request" | "permissionRequest" => {
+            Some(HookEvent::PermissionRequest)
+        }
+        "PreCompact" | "pre_compact" | "preCompact" => Some(HookEvent::PreCompact),
+        "PostCompact" | "post_compact" | "postCompact" => Some(HookEvent::PostCompact),
+        "Stop" | "stop" => Some(HookEvent::Stop),
+        "SubagentStart" | "subagent_start" | "subagentStart" => Some(HookEvent::SubagentStart),
+        "SubagentStop" | "subagent_stop" | "subagentStop" => Some(HookEvent::SubagentStop),
         _ => None,
     }
 }
@@ -552,6 +994,25 @@ fn sha256(bytes: &[u8]) -> String {
 }
 fn short_hash(bytes: &[u8]) -> String {
     sha256(bytes)[..16].to_owned()
+}
+fn runtime_location_key(
+    path: &Path,
+    event: HookEvent,
+    group_index: usize,
+    handler_index: usize,
+) -> String {
+    let path = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned();
+    short_hash(
+        format!(
+            "{path}:{}:{group_index}:{handler_index}",
+            event.as_storage()
+        )
+        .as_bytes(),
+    )
 }
 fn proxy_command(exe: &Path, manifest: &Path, handler: &str) -> String {
     format!(
@@ -642,5 +1103,110 @@ mod tests {
         .unwrap();
         let plan = discover_paths(&[config]).unwrap();
         assert_eq!(plan.summary.unsupported_or_uninstrumentable, 1);
+    }
+    #[test]
+    fn effective_runtime_discovery_is_sanitized_and_keeps_plugin_coverage_explicit() {
+        let response = serde_json::json!({"id": 2, "result": {"data": [{"hooks": [
+            {"key": "runtime:user:stop:0:0", "sourcePath":"C:/private/source/path", "eventName": "stop", "handlerType": "command", "command": "private command", "matcher": "private matcher", "source": "user", "enabled": true, "isManaged": false, "trustStatus": "trusted", "currentHash": "private-current-hash", "displayOrder": 0, "async": false},
+            {"key": "private/plugin/path:stop:0:1", "eventName": "stop", "handlerType": "command", "command": "private plugin command", "source": "plugin", "enabled": true, "isManaged": false, "trustStatus": "trusted", "displayOrder": 1}
+        ]}]}});
+        let parsed = parse_effective_response(&response).unwrap();
+        assert_eq!(parsed.summary.discovered, 2);
+        assert_eq!(parsed.summary.instrumentable, 1);
+        assert_eq!(parsed.summary.unsupported_or_uninstrumentable, 1);
+        assert_eq!(parsed.summary.source_class_counts.get("plugin"), Some(&1));
+        assert_eq!(parsed.summary.sync_count, 1);
+        assert_eq!(parsed.summary.execution_mode_unknown_count, 1);
+        assert_eq!(
+            parsed.reconciliation_keys[0],
+            runtime_location_key(Path::new("C:/private/source/path"), HookEvent::Stop, 0, 0)
+        );
+        let json = serde_json::to_string(&parsed.summary).unwrap();
+        assert!(!json.contains("private command"));
+        assert!(!json.contains("private/source/path"));
+        assert!(!json.contains("private matcher"));
+    }
+    #[test]
+    fn transformation_preserves_semantics_unknown_fields_and_partial_installation() {
+        let temp = tempdir().unwrap();
+        let config = temp.path().join("hooks.json");
+        fs::write(
+            &config,
+            r#"{"unrelated":{"keep":[1,2]},"hooks":{"Stop":[{"matcher":"^Bash$","groupUnknown":"keep","hooks":[{"type":"command","command":"same","commandWindows":"windows","async":true,"timeout":9,"statusMessage":"status","additionalContextLimit":42,"unknownHandlerField":{"keep":true}},{"type":"command","command":"same","timeout":7}]}]}}"#,
+        )
+        .unwrap();
+        let before = discover_paths(std::slice::from_ref(&config)).unwrap();
+        assert_eq!(before.summary.instrumentable, 2);
+        assert_ne!(
+            before.summary.handlers[0].handler.key,
+            before.summary.handlers[1].handler.key
+        );
+        let second_revision = before
+            .summary
+            .handlers
+            .iter()
+            .find(|item| item.handler.structural_identity == "g0:h1")
+            .unwrap()
+            .handler
+            .revision
+            .clone();
+        let state = temp.path().join("state");
+        apply(&before, &state, Path::new("hookstat-test")).unwrap();
+        let applied: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+        let first = &applied["hooks"]["Stop"][0]["hooks"][0];
+        assert_eq!(applied["unrelated"]["keep"], serde_json::json!([1, 2]));
+        assert_eq!(applied["hooks"]["Stop"][0]["groupUnknown"], "keep");
+        assert_eq!(first["commandWindows"], first["command"]);
+        assert_eq!(first["async"], true);
+        assert_eq!(first["timeout"], 9);
+        assert_eq!(first["statusMessage"], "status");
+        assert_eq!(first["additionalContextLimit"], 42);
+        assert_eq!(first["unknownHandlerField"]["keep"], true);
+        let partially = discover_paths(std::slice::from_ref(&config)).unwrap();
+        assert_eq!(partially.summary.already_instrumented, 2);
+        assert_eq!(restore(&config, &state).unwrap().restored, 1);
+        let mut changed: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+        changed["hooks"]["Stop"][0]["hooks"][1]["command"] = Value::String("changed".into());
+        fs::write(&config, serde_json::to_vec(&changed).unwrap()).unwrap();
+        let revised = discover_paths(std::slice::from_ref(&config)).unwrap();
+        assert_ne!(
+            revised
+                .summary
+                .handlers
+                .iter()
+                .find(|item| item.handler.structural_identity == "g0:h1")
+                .unwrap()
+                .handler
+                .revision,
+            second_revision
+        );
+    }
+    #[test]
+    fn malformed_empty_and_unsupported_configs_fail_closed_without_rewrite() {
+        let temp = tempdir().unwrap();
+        let malformed = temp.path().join("hooks.json");
+        fs::write(&malformed, b"{").unwrap();
+        assert!(matches!(
+            discover_paths(&[malformed]),
+            Err(CodexError::Json(_))
+        ));
+        let empty = temp.path().join("empty/hooks.json");
+        fs::create_dir_all(empty.parent().unwrap()).unwrap();
+        fs::write(&empty, b"{\"unrelated\":true}").unwrap();
+        assert_eq!(discover_paths(&[empty]).unwrap().summary.discovered, 0);
+        let unsupported = temp.path().join("unsupported/hooks.json");
+        fs::create_dir_all(unsupported.parent().unwrap()).unwrap();
+        fs::write(
+            &unsupported,
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"mcp","server":"fixture"}]}]}}"#,
+        )
+        .unwrap();
+        let plan = discover_paths(std::slice::from_ref(&unsupported)).unwrap();
+        assert_eq!(plan.summary.unsupported_or_uninstrumentable, 1);
+        let original = fs::read(&unsupported).unwrap();
+        let state = temp.path().join("unsupported-state");
+        let result = apply(&plan, &state, Path::new("hookstat-test")).unwrap();
+        assert_eq!(result.applied, 0);
+        assert_eq!(fs::read(unsupported).unwrap(), original);
     }
 }

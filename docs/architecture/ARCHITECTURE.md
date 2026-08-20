@@ -31,6 +31,13 @@ sufficient passive per-handler ledger. Both normalize into exactly the same
 sources such as App Server are supplementary unless qualification proves them
 durable.
 
+For Codex v0.1, the read-only App Server `hooks/list` surface is a discovery
+and coverage-reconciliation plane, not a historical evidence source. It can
+classify effective user/project/plugin/managed handlers and exposed
+enabled/trust state without putting command/path/matcher text in HookStat
+output. The receipt spool remains the admitted durable invocation plane after
+explicit opt-in instrumentation.
+
 ## Canonical concepts
 
 `Runtime`: Codex, DeepSeek Harness, OpenCode, future runtimes.
