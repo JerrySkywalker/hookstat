@@ -53,11 +53,17 @@ Implement the frozen `docs/design/TUI_SPEC.md` with Ratatui or a justified equiv
 
 ### HS-G06 — Real Codex Dogfood & Hardening
 
-Validate against sanitized fixtures plus real owner Codex history, concurrent read while Codex is active, archived history where applicable, same-event multiple handlers, repeated refresh/idempotence, Windows paths, and explicit coverage rendering.
+Validate sanitized fixtures plus real ordinary Codex use. When passive durable
+evidence is unavailable and the Owner explicitly authorizes activation, this
+means: live opt-in instrumentation, a scoped official Codex trust review if
+required, normal `codex` sessions, real metadata receipts, report/TUI
+validation, repeated refresh/idempotence, visible unsupported coverage, and a
+proven restore. It must preserve the normal `codex` launch and never bypass
+trust.
 
 ### HS-G07 — Usable v0.1 Release Candidate
 
-Polish README/help, version to 0.1.0, validate package metadata and `cargo package`/`cargo publish --dry-run`, create a release-ready candidate. Actual crates.io publication and public GitHub Release require separate owner authorization.
+Polish README/help, version to 0.1.0, validate package metadata and `cargo package`/`cargo publish --dry-run`, create a release-ready candidate. Actual crates.io publication and public GitHub Release require separate explicit Owner authorization for the named release train.
 
 ## v0.2 — Reliability depth
 

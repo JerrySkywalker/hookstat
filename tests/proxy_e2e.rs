@@ -384,10 +384,53 @@ fn proxy_preserves_non_utf8_output_without_decoding_it() {
 
 #[cfg(windows)]
 #[test]
-fn cancellation_kills_the_proxy_process_tree_and_leaves_incomplete_coverage() {
+fn proxy_only_termination_kills_active_tree_without_touching_unrelated_processes() {
     let temp = tempdir().unwrap();
     let manifest_path = temp.path().join("state/manifests/hooks.json");
-    manifest(&manifest_path, &[("slow", "ping -n 20 127.0.0.1 > NUL")]);
+    let started = temp.path().join("active-started.txt");
+    let completed = temp.path().join("active-completed.txt");
+    let unrelated = temp.path().join("unrelated-completed.txt");
+    let grandchild = temp.path().join("grandchild.cmd");
+    let child_script = temp.path().join("child.cmd");
+    let root_script = temp.path().join("root.cmd");
+    write_windows_script(
+        &grandchild,
+        &format!(
+            "@echo off\r\nping -n 3 127.0.0.1 > NUL\r\n> \"{}\" echo completed\r\n",
+            completed.display()
+        ),
+    );
+    write_windows_script(
+        &child_script,
+        &format!(
+            "@echo off\r\n{}\r\nping -n 6 127.0.0.1 > NUL\r\n",
+            start_windows_script(&grandchild)
+        ),
+    );
+    write_windows_script(
+        &root_script,
+        &format!(
+            "@echo off\r\n> \"{}\" echo started\r\n{}\r\nping -n 7 127.0.0.1 > NUL\r\n",
+            started.display(),
+            start_windows_script(&child_script)
+        ),
+    );
+    manifest(
+        &manifest_path,
+        &[("active-tree", &call_windows_script(&root_script))],
+    );
+    let unrelated_script = temp.path().join("unrelated.cmd");
+    write_windows_script(
+        &unrelated_script,
+        &format!(
+            "@echo off\r\nping -n 2 127.0.0.1 > NUL\r\n> \"{}\" echo unrelated\r\n",
+            unrelated.display()
+        ),
+    );
+    let mut unrelated_child = Command::new("cmd.exe")
+        .args(["/D", "/C", &call_windows_script(&unrelated_script)])
+        .spawn()
+        .unwrap();
     let binary = env!("CARGO_BIN_EXE_hookstat");
     let mut child = Command::new(binary)
         .args([
@@ -396,17 +439,25 @@ fn cancellation_kills_the_proxy_process_tree_and_leaves_incomplete_coverage() {
             "--manifest",
             manifest_path.to_str().unwrap(),
             "--handler",
-            "slow",
+            "active-tree",
         ])
         .spawn()
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(250));
-    let status = Command::new("taskkill")
-        .args(["/PID", &child.id().to_string(), "/T", "/F"])
-        .status()
-        .unwrap();
-    assert!(status.success());
+    wait_for_file(&started);
+    // Child::kill terminates the proxy PID only. It deliberately does not use
+    // taskkill /T, so the asserted cleanup is the Job Object's responsibility.
+    child.kill().unwrap();
     let _ = child.wait();
+    let _ = unrelated_child.wait();
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(
+        !completed.exists(),
+        "a handler descendant survived proxy-only termination"
+    );
+    assert!(
+        unrelated.exists(),
+        "an unrelated process was affected by proxy containment"
+    );
     let spool = ReceiptSpool::open(temp.path().join("state/receipts")).unwrap();
     let scan = spool.scan();
     assert_eq!(scan.starts_without_completion, 1);
@@ -414,4 +465,67 @@ fn cancellation_kills_the_proxy_process_tree_and_leaves_incomplete_coverage() {
         scan.invocations[0].terminal_status,
         TerminalStatus::Incomplete
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn normal_root_exit_preserves_intentionally_surviving_descendant() {
+    let temp = tempdir().unwrap();
+    let manifest_path = temp.path().join("state/manifests/hooks.json");
+    let survived = temp.path().join("survived.txt");
+    let background = temp.path().join("background.cmd");
+    let launcher = temp.path().join("launcher.ps1");
+    write_windows_script(
+        &background,
+        &format!(
+            "@echo off\r\nping -n 2 127.0.0.1 > NUL\r\n> \"{}\" echo survived\r\n",
+            survived.display()
+        ),
+    );
+    write_windows_powershell_script(
+        &launcher,
+        &format!(
+            "Start-Process -WindowStyle Hidden -FilePath 'cmd.exe' -ArgumentList @('/D', '/C', 'call {}')\r\nexit 0\r\n",
+            background.display()
+        ),
+    );
+    let handler = format!("powershell.exe -NoProfile -File {}", launcher.display());
+    manifest(&manifest_path, &[("background", &handler)]);
+    let output = proxy_output(&manifest_path, "background", b"");
+    assert_eq!(output.status.code(), Some(0));
+    wait_for_file(&survived);
+    let spool = ReceiptSpool::open(temp.path().join("state/receipts")).unwrap();
+    assert_eq!(spool.scan().starts_without_completion, 0);
+}
+
+#[cfg(windows)]
+fn call_windows_script(path: &Path) -> String {
+    // tempfile paths in this fixture are whitespace-free. Keeping this
+    // argument unquoted avoids cmd.exe's nested `/C call "..."` escaping
+    // ambiguity while still exercising HookStat's normal shell path.
+    format!("call {}", path.display())
+}
+
+#[cfg(windows)]
+fn start_windows_script(path: &Path) -> String {
+    format!("start \"\" /b cmd.exe /d /c {}", call_windows_script(path))
+}
+
+#[cfg(windows)]
+fn write_windows_script(path: &Path, contents: &str) {
+    fs::write(path, contents).unwrap();
+}
+
+#[cfg(windows)]
+fn write_windows_powershell_script(path: &Path, contents: &str) {
+    fs::write(path, contents).unwrap();
+}
+
+#[cfg(windows)]
+fn wait_for_file(path: &Path) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while !path.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(path.exists(), "fixture did not reach its expected state");
 }

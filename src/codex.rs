@@ -15,7 +15,7 @@ use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -197,6 +197,37 @@ pub struct RestoreSummary {
     pub already_restored: usize,
     pub drift_detected: usize,
 }
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct TrustSummary {
+    pub targets: usize,
+    pub writes: usize,
+    pub already_trusted: usize,
+    pub verified: usize,
+    pub dry_run: bool,
+}
+
+/// Private, in-memory App Server hook data used only to prove an exact trust
+/// target. It is deliberately never serialized or returned to the CLI.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeTrustHook {
+    key: String,
+    current_hash: Option<String>,
+    source_path: Option<PathBuf>,
+    location_key: String,
+    source_class: String,
+    handler_type: String,
+    enabled: Option<bool>,
+    managed: Option<bool>,
+    trust_status: String,
+    event: HookEvent,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TrustTarget {
+    key: String,
+    current_hash: String,
+    already_trusted: bool,
+}
 
 #[derive(Debug)]
 pub enum CodexError {
@@ -208,6 +239,8 @@ pub enum CodexError {
     AppServerUnavailable,
     AppServerTimeout,
     AppServerProtocol,
+    TrustPrecondition,
+    TrustTargetMismatch,
 }
 impl fmt::Display for CodexError {
     fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -227,6 +260,12 @@ impl fmt::Display for CodexError {
             }
             Self::AppServerProtocol => {
                 output.write_str("Codex App Server returned an unusable hook-discovery response")
+            }
+            Self::TrustPrecondition => output.write_str(
+                "HookStat trust requires an exact current instrumentation manifest and journal",
+            ),
+            Self::TrustTargetMismatch => {
+                output.write_str("HookStat could not prove an exact supported hook trust target")
             }
         }
     }
@@ -420,6 +459,310 @@ pub fn default_dry_run() -> Result<DryRunReport, CodexError> {
         }),
         Err(error) => Err(error),
     }
+}
+
+/// Explicitly trusts only the exact HookStat-generated handlers named by the
+/// current private manifest and journal. This is deliberately separate from
+/// `apply`: a user must opt in to the official App Server config write.
+pub fn trust(
+    config_path: &Path,
+    data_root: &Path,
+    cwd: &Path,
+    dry_run: bool,
+) -> Result<TrustSummary, CodexError> {
+    let manifest = load_trust_material(config_path, data_root)?;
+    validate_trust_configuration(config_path, &manifest)?;
+    with_initialized_app_server(|stdin, receiver| {
+        let initial = app_server_request(
+            stdin,
+            receiver,
+            2,
+            "hooks/list",
+            serde_json::json!({"cwds": [cwd]}),
+        )?;
+        let targets = select_trust_targets(&manifest, config_path, &initial)?;
+        let already_trusted = targets
+            .iter()
+            .filter(|target| target.already_trusted)
+            .count();
+        if dry_run {
+            return Ok(TrustSummary {
+                targets: targets.len(),
+                already_trusted,
+                dry_run: true,
+                ..TrustSummary::default()
+            });
+        }
+        let writes = targets
+            .iter()
+            .filter(|target| !target.already_trusted)
+            .collect::<Vec<_>>();
+        if !writes.is_empty() {
+            let values = writes
+                .iter()
+                .map(|target| {
+                    (
+                        target.key.clone(),
+                        serde_json::json!({"trusted_hash": target.current_hash}),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>();
+            app_server_request(
+                stdin,
+                receiver,
+                3,
+                "config/batchWrite",
+                serde_json::json!({
+                    "edits": [{
+                        "keyPath": "hooks.state",
+                        "value": Value::Object(values),
+                        "mergeStrategy": "upsert"
+                    }],
+                    "reloadUserConfig": true
+                }),
+            )?;
+        }
+        let after = app_server_request(
+            stdin,
+            receiver,
+            4,
+            "hooks/list",
+            serde_json::json!({"cwds": [cwd]}),
+        )?;
+        let verified = select_trust_targets(&manifest, config_path, &after)?;
+        if verified.len() != targets.len()
+            || verified.iter().any(|target| {
+                !target.already_trusted
+                    || targets
+                        .iter()
+                        .find(|before| before.key == target.key)
+                        .is_none_or(|before| before.current_hash != target.current_hash)
+            })
+        {
+            return Err(CodexError::TrustTargetMismatch);
+        }
+        Ok(TrustSummary {
+            targets: targets.len(),
+            writes: writes.len(),
+            already_trusted,
+            verified: verified.len(),
+            dry_run: false,
+        })
+    })
+}
+
+fn with_initialized_app_server<T>(
+    operation: impl FnOnce(&mut ChildStdin, &mpsc::Receiver<Value>) -> Result<T, CodexError>,
+) -> Result<T, CodexError> {
+    let mut child = app_server_command()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| CodexError::AppServerUnavailable)?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or(CodexError::AppServerUnavailable)?;
+    let mut stdin = child.stdin.take().ok_or(CodexError::AppServerUnavailable)?;
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                let _ = sender.send(value);
+            }
+        }
+    });
+    let result = (|| {
+        let initialize = serde_json::json!({
+            "method": "initialize",
+            "id": 1,
+            "params": {"clientInfo": {"name": "hookstat", "version": env!("CARGO_PKG_VERSION")}}
+        });
+        send_app_server(&mut stdin, &initialize)?;
+        receive_response(&receiver, 1)?;
+        send_app_server(
+            &mut stdin,
+            &serde_json::json!({"method": "initialized", "params": {}}),
+        )?;
+        operation(&mut stdin, &receiver)
+    })();
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    result
+}
+
+fn app_server_request(
+    stdin: &mut ChildStdin,
+    receiver: &mpsc::Receiver<Value>,
+    id: u64,
+    method: &str,
+    params: Value,
+) -> Result<Value, CodexError> {
+    send_app_server(
+        stdin,
+        &serde_json::json!({"method": method, "id": id, "params": params}),
+    )?;
+    receive_response(receiver, id)
+}
+
+fn load_trust_material(config_path: &Path, data_root: &Path) -> Result<ProxyManifest, CodexError> {
+    let path_fingerprint = short_hash(config_path.to_string_lossy().as_bytes());
+    let journal_path = data_root
+        .join("journals")
+        .join(format!("{path_fingerprint}.json"));
+    let journal: Journal =
+        serde_json::from_slice(&fs::read(journal_path).map_err(|_| CodexError::TrustPrecondition)?)
+            .map_err(|_| CodexError::TrustPrecondition)?;
+    let current = fs::read(config_path).map_err(|_| CodexError::TrustPrecondition)?;
+    if sha256(&current) != journal.applied_config_sha256 {
+        return Err(CodexError::TrustPrecondition);
+    }
+    let backup = fs::read(data_root.join("backups").join(&journal.backup_file))
+        .map_err(|_| CodexError::TrustPrecondition)?;
+    if sha256(&backup) != journal.original_config_sha256 {
+        return Err(CodexError::TrustPrecondition);
+    }
+    let manifest = load_manifest(&data_root.join("manifests").join(&journal.manifest_file))
+        .map_err(|_| CodexError::TrustPrecondition)?;
+    if manifest.config_path_fingerprint != path_fingerprint
+        || manifest.original_config_sha256 != journal.original_config_sha256
+        || manifest.handlers.is_empty()
+    {
+        return Err(CodexError::TrustPrecondition);
+    }
+    Ok(manifest)
+}
+
+fn validate_trust_configuration(
+    config_path: &Path,
+    manifest: &ProxyManifest,
+) -> Result<(), CodexError> {
+    let discovery = discover_paths(&[config_path.to_path_buf()])?;
+    let actual = discovery
+        .handlers
+        .iter()
+        .filter(|item| {
+            item.path == config_path
+                && item.discovered.source_kind == SourceKind::UserHooksJson
+                && item.discovered.disposition == InstrumentationDisposition::AlreadyInstrumented
+        })
+        .map(|item| item.discovered.handler.key.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected = manifest.handlers.keys().cloned().collect();
+    if actual != expected || actual.len() != discovery.handlers.len() {
+        return Err(CodexError::TrustPrecondition);
+    }
+    Ok(())
+}
+
+fn select_trust_targets(
+    manifest: &ProxyManifest,
+    config_path: &Path,
+    response: &Value,
+) -> Result<Vec<TrustTarget>, CodexError> {
+    let hooks = parse_runtime_trust_hooks(response)?;
+    let mut targets = BTreeMap::new();
+    for hook in hooks {
+        let manifest_key = format!("hk_{}", hook.location_key);
+        let Some(_) = manifest.handlers.get(&manifest_key) else {
+            continue;
+        };
+        if hook.source_class != "user"
+            || hook.handler_type != "command"
+            || hook.managed != Some(false)
+            || hook.enabled != Some(true)
+            || hook
+                .source_path
+                .as_deref()
+                .is_none_or(|path| !same_path(path, config_path))
+        {
+            return Err(CodexError::TrustTargetMismatch);
+        }
+        let current_hash = hook
+            .current_hash
+            .filter(|hash| !hash.trim().is_empty())
+            .ok_or(CodexError::TrustTargetMismatch)?;
+        if targets
+            .insert(
+                manifest_key,
+                TrustTarget {
+                    key: hook.key,
+                    current_hash,
+                    already_trusted: hook.trust_status.eq_ignore_ascii_case("trusted"),
+                },
+            )
+            .is_some()
+        {
+            return Err(CodexError::TrustTargetMismatch);
+        }
+    }
+    if targets.len() != manifest.handlers.len() {
+        return Err(CodexError::TrustTargetMismatch);
+    }
+    Ok(targets.into_values().collect())
+}
+
+fn parse_runtime_trust_hooks(response: &Value) -> Result<Vec<RuntimeTrustHook>, CodexError> {
+    let contexts = response
+        .get("result")
+        .and_then(|value| value.get("data"))
+        .and_then(Value::as_array)
+        .ok_or(CodexError::AppServerProtocol)?;
+    let mut hooks = Vec::new();
+    for context in contexts {
+        let Some(entries) = context.get("hooks").and_then(Value::as_array) else {
+            continue;
+        };
+        for item in entries {
+            let raw_key = item
+                .get("key")
+                .and_then(Value::as_str)
+                .ok_or(CodexError::AppServerProtocol)?;
+            let event = item
+                .get("eventName")
+                .and_then(Value::as_str)
+                .and_then(parse_event)
+                .ok_or(CodexError::AppServerProtocol)?;
+            hooks.push(RuntimeTrustHook {
+                key: raw_key.to_owned(),
+                current_hash: item
+                    .get("currentHash")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                source_path: item
+                    .get("sourcePath")
+                    .and_then(Value::as_str)
+                    .map(PathBuf::from),
+                location_key: effective_location_key(item, raw_key, event),
+                source_class: effective_source_class(item.get("source").and_then(Value::as_str)),
+                handler_type: if item
+                    .get("handlerType")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case("command"))
+                {
+                    "command".to_owned()
+                } else {
+                    "other".to_owned()
+                },
+                enabled: item.get("enabled").and_then(Value::as_bool),
+                managed: item.get("isManaged").and_then(Value::as_bool),
+                trust_status: item
+                    .get("trustStatus")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                event,
+            });
+        }
+    }
+    Ok(hooks)
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    left.canonicalize().unwrap_or_else(|_| left.to_path_buf())
+        == right.canonicalize().unwrap_or_else(|_| right.to_path_buf())
 }
 
 fn send_app_server(stdin: &mut impl Write, value: &Value) -> Result<(), CodexError> {
@@ -667,7 +1010,7 @@ pub fn discover_paths(paths: &[PathBuf]) -> Result<Discovery, CodexError> {
         );
     }
     if summary.instrumentable > 0 {
-        summary.trust_consequences.push("Wrapping changes hook commands and may require a Codex trust review; HookStat never approves or edits trust.".into());
+        summary.trust_consequences.push("Wrapping changes hook commands and may require trust. Apply never grants trust; a separate explicit scoped action may use Codex's official App Server only after exact manifest and runtime reconciliation.".into());
     }
     Ok(Discovery {
         summary,
@@ -1208,5 +1551,240 @@ mod tests {
         let result = apply(&plan, &state, Path::new("hookstat-test")).unwrap();
         assert_eq!(result.applied, 0);
         assert_eq!(fs::read(unsupported).unwrap(), original);
+    }
+
+    #[test]
+    fn scoped_trust_selects_only_manifest_targets_and_is_idempotent() {
+        let temp = tempdir().unwrap();
+        let config = temp.path().join("hooks.json");
+        let manifest = trust_manifest_fixture(&config);
+        let mut hooks = (0..12)
+            .map(|index| {
+                trust_runtime_hook(
+                    &config,
+                    index,
+                    "user",
+                    true,
+                    false,
+                    if index == 0 { "trusted" } else { "untrusted" },
+                    format!("hash-{index}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        // Effective plugin hooks and unrelated user hooks may be visible, but
+        // cannot become trust targets merely by being in hooks/list.
+        for index in 0..4 {
+            hooks.push(serde_json::json!({
+                "key": format!("plugin:{index}:0:0"),
+                "eventName": "stop",
+                "handlerType": "command",
+                "source": "plugin",
+                "enabled": true,
+                "isManaged": false,
+                "trustStatus": "untrusted",
+                "currentHash": format!("plugin-hash-{index}"),
+                "sourcePath": format!("C:/plugin/{index}/hooks.json")
+            }));
+        }
+        for (index, status) in ["trusted", "untrusted"].into_iter().enumerate() {
+            hooks.push(serde_json::json!({
+                "key": format!("unrelated:{index}:0:0"),
+                "eventName": "stop",
+                "handlerType": "command",
+                "source": "user",
+                "enabled": true,
+                "isManaged": false,
+                "trustStatus": status,
+                "currentHash": format!("unrelated-hash-{index}"),
+                "sourcePath": format!("C:/unrelated/{index}/hooks.json")
+            }));
+        }
+        let response = trust_response(hooks);
+        let targets = select_trust_targets(&manifest, &config, &response).unwrap();
+        assert_eq!(targets.len(), 12);
+        assert_eq!(
+            targets
+                .iter()
+                .filter(|target| target.already_trusted)
+                .count(),
+            1
+        );
+        assert!(targets.iter().all(|target| {
+            target
+                .key
+                .starts_with(&format!("{}:stop:0:", config.display()))
+        }));
+        assert_eq!(
+            targets
+                .iter()
+                .filter(|target| !target.already_trusted)
+                .count(),
+            11
+        );
+        let all_trusted = trust_response(
+            (0..12)
+                .map(|index| {
+                    trust_runtime_hook(
+                        &config,
+                        index,
+                        "user",
+                        true,
+                        false,
+                        "trusted",
+                        format!("hash-{index}"),
+                    )
+                })
+                .collect(),
+        );
+        assert!(
+            select_trust_targets(&manifest, &config, &all_trusted)
+                .unwrap()
+                .iter()
+                .all(|target| target.already_trusted)
+        );
+    }
+
+    #[test]
+    fn scoped_trust_rejects_duplicate_or_disabled_manifest_targets() {
+        let temp = tempdir().unwrap();
+        let config = temp.path().join("hooks.json");
+        let manifest = trust_manifest_fixture(&config);
+        let mut hooks = (0..12)
+            .map(|index| {
+                trust_runtime_hook(
+                    &config,
+                    index,
+                    "user",
+                    true,
+                    false,
+                    "untrusted",
+                    format!("hash-{index}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        hooks.push(trust_runtime_hook(
+            &config,
+            0,
+            "user",
+            true,
+            false,
+            "untrusted",
+            "duplicate-hash".into(),
+        ));
+        assert!(matches!(
+            select_trust_targets(&manifest, &config, &trust_response(hooks)),
+            Err(CodexError::TrustTargetMismatch)
+        ));
+        let disabled = trust_response(
+            (0..12)
+                .map(|index| {
+                    trust_runtime_hook(
+                        &config,
+                        index,
+                        "user",
+                        index != 3,
+                        false,
+                        "untrusted",
+                        format!("hash-{index}"),
+                    )
+                })
+                .collect(),
+        );
+        assert!(matches!(
+            select_trust_targets(&manifest, &config, &disabled),
+            Err(CodexError::TrustTargetMismatch)
+        ));
+    }
+
+    #[test]
+    fn scoped_trust_material_rejects_missing_or_stale_manifest_state() {
+        let temp = tempdir().unwrap();
+        let config = temp.path().join("hooks.json");
+        fixture(&config);
+        let state = temp.path().join("state");
+        let discovery = discover_paths(std::slice::from_ref(&config)).unwrap();
+        apply(&discovery, &state, Path::new("hookstat-test")).unwrap();
+        assert!(load_trust_material(&config, &state).is_ok());
+        fs::write(&config, b"{}\n").unwrap();
+        assert!(matches!(
+            load_trust_material(&config, &state),
+            Err(CodexError::TrustPrecondition)
+        ));
+        let missing_config = temp.path().join("missing/hooks.json");
+        fs::create_dir_all(missing_config.parent().unwrap()).unwrap();
+        fixture(&missing_config);
+        let missing_state = temp.path().join("missing-state");
+        let discovery = discover_paths(std::slice::from_ref(&missing_config)).unwrap();
+        apply(&discovery, &missing_state, Path::new("hookstat-test")).unwrap();
+        let missing_fingerprint = short_hash(missing_config.to_string_lossy().as_bytes());
+        fs::remove_file(
+            missing_state
+                .join("manifests")
+                .join(format!("{missing_fingerprint}.json")),
+        )
+        .unwrap();
+        assert!(matches!(
+            load_trust_material(&missing_config, &missing_state),
+            Err(CodexError::TrustPrecondition)
+        ));
+    }
+
+    fn trust_manifest_fixture(config: &Path) -> ProxyManifest {
+        let mut handlers = BTreeMap::new();
+        for index in 0..12 {
+            let key = format!(
+                "hk_{}",
+                runtime_location_key(config, HookEvent::Stop, 0, index)
+            );
+            handlers.insert(
+                key.clone(),
+                ProxyHandler {
+                    handler: HandlerIdentity {
+                        key,
+                        revision: format!("fixture-revision-{index}"),
+                        label: format!("fixture-{index}"),
+                        source_kind: "user_hooks_json".into(),
+                        event: HookEvent::Stop,
+                        matcher_identity: "any".into(),
+                        structural_identity: format!("g0:h{index}"),
+                        execution_mode: ExecutionMode::Sync,
+                    },
+                    command: "fixture command".into(),
+                    command_windows: None,
+                },
+            );
+        }
+        ProxyManifest {
+            schema_version: MANIFEST_SCHEMA_VERSION,
+            config_path_fingerprint: short_hash(config.to_string_lossy().as_bytes()),
+            original_config_sha256: "fixture".into(),
+            handlers,
+        }
+    }
+
+    fn trust_runtime_hook(
+        config: &Path,
+        index: usize,
+        source: &str,
+        enabled: bool,
+        managed: bool,
+        trust_status: &str,
+        current_hash: String,
+    ) -> Value {
+        serde_json::json!({
+            "key": format!("{}:stop:0:{index}", config.display()),
+            "eventName": "stop",
+            "handlerType": "command",
+            "source": source,
+            "enabled": enabled,
+            "isManaged": managed,
+            "trustStatus": trust_status,
+            "currentHash": current_hash,
+            "sourcePath": config
+        })
+    }
+
+    fn trust_response(hooks: Vec<Value>) -> Value {
+        serde_json::json!({"id": 2, "result": {"data": [{"hooks": hooks}]}})
     }
 }

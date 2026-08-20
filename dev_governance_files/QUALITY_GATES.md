@@ -20,9 +20,11 @@ Required when parser/adapters/status normalization/coverage change:
 - sanitized fixture family covering admitted statuses;
 - same-event multi-handler identity proof where applicable;
 - malformed/unknown record behavior;
-- at least one read-only real-runtime owner smoke for claims not provable synthetically, or an explicit owner-activation-required receipt when live instrumentation is prohibited;
+- at least one read-only real-runtime owner smoke for claims not provable synthetically, or an explicit owner-activation-required receipt when live instrumentation is prohibited. When a goal expressly authorizes live instrumentation, prove dry-run/reconciliation, exact backup, scoped official trust review when required, real receipts/report/TUI, and restore;
 - explicit coverage statement;
-- no live runtime mutation.
+- no live runtime mutation unless the active goal explicitly authorizes the
+  bounded activation and all of its preflight, trust, privacy, and restore
+  gates pass.
 
 ## S — Persistent HookStat state
 
@@ -60,5 +62,6 @@ Release candidate must freshly pass package metadata, `cargo package`, `cargo pu
 
 Failure to prove passive durable Codex evidence is not permission to silently
 add a daemon or launcher wrapper. An instrumented source requires an explicit
-owner architecture decision, transparent proxy semantics, fixture-proven
-apply/restore, and no unattended live-owner configuration mutation.
+Owner architecture decision, transparent proxy semantics, fixture-proven
+apply/restore, and no live-owner configuration mutation unless the active goal
+expressly authorizes that bounded activation.

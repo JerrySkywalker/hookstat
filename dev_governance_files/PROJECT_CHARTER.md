@@ -32,13 +32,16 @@ breakdown, time windows, recent failures, and latency only when supported.
 
 HookStat v0.1 is offline by default and does not persist raw prompts, tool
 payloads, stdin/stdout/stderr, or raw hook commands in its reliability ledger.
-Passive ingestion is read-only. Instrumentation is opt-in, never changes Codex
-trust, and retains exact private backups only locally for restore. Incomplete
-evidence must remain visibly incomplete.
+Passive ingestion is read-only. Instrumentation is opt-in and retains exact
+private backups only locally for restore. Apply never changes Codex trust; a
+separate explicit scoped trust action may use Codex's official App Server only
+after exact target proof and reload verification. Incomplete evidence must
+remain visibly incomplete.
 
 ## Non-goals for v0.1
 
 No daemon, Codex launcher wrapper, system tray, Web UI, notifications,
-automatic repair, active probe, trust automation, DeepSeek Harness
+automatic repair, active probe, generic trust automation, DeepSeek Harness
 implementation, OpenCode implementation, error clustering, or crates.io
-publication without a separate release authorization.
+publication without a separate release authorization. The narrowly scoped
+explicit Codex trust action is not a generic trust mechanism.

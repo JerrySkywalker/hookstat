@@ -15,9 +15,11 @@ The primary v0.1 user value is: after ordinary `codex` usage, `hookstat` reports
 - Normal analysis is read-only toward Codex. An explicit, opt-in per-handler
   instrumentation plan may install a transparent proxy only after dry-run and
   explicit apply; it must never be a `hookstat codex` launcher wrapper, daemon,
-  trust modifier, or implicit default mutation. Unmanaged/owner-live Codex
-  configuration remains untouched during unattended development trains unless a
-  goal expressly authorizes an attended apply.
+  implicit default mutation. `--apply` must never grant trust; an explicit
+  `--trust` action may use Codex's official App Server only after it proves the
+  exact current HookStat manifest, journal, and supported user-handler targets.
+  Unmanaged/owner-live Codex configuration remains untouched during unattended
+  development trains unless a goal expressly authorizes bounded activation.
 - Do not report incomplete coverage as `0.00% healthy`.
 - `Blocked`/`Stopped`/policy denial are not automatically execution failures.
 - Every displayed failure rate must be accompanied by its sample count.
