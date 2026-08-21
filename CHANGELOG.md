@@ -1,11 +1,10 @@
 # Changelog
 
-## 0.2.0 — Release candidate draft
+## 0.2.0
 
 HookStat v0.2 turns the v0.1 report into the Reliability Center: a
 TabBeacon-aligned, local-first terminal UI for interpreting admitted hook
-evidence. This is an unpublished release-candidate draft; it does not
-authorize a crates.io publication, tag, or GitHub Release.
+evidence.
 
 ### Reliability Center and Human interface
 

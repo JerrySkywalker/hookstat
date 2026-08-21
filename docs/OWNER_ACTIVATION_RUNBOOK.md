@@ -1,12 +1,12 @@
 # HookStat v0.1 Owner activation runbook
 
-This is the short explicit-authorization sequence for the release candidate.
+This is the short explicit-authorization sequence for a released build.
 It is normally owner-attended; an active Goal may instead grant the same
 bounded authority for a named controlled release train. It changes only the
 Codex configuration root you explicitly pass to `--apply`. Normal use stays
 `codex`; do not launch `hookstat codex`.
 
-## 1. Sync and install the candidate
+## 1. Sync and install the release
 
 ```powershell
 git switch main
