@@ -18,7 +18,7 @@ struct RefreshResponse<T> {
 #[derive(Debug)]
 pub enum RefreshPoll<T> {
     Pending,
-    Ready(T),
+    Ready { generation: u64, value: T },
     Failed,
     Stale,
     WorkerUnavailable,
@@ -83,8 +83,9 @@ where
     }
 
     fn dispatch(&mut self, request: RefreshRequest<R>) {
+        let generation = request.generation;
         match self.sender.try_send(request) {
-            Ok(()) => self.active_generation = Some(self.next_generation),
+            Ok(()) => self.active_generation = Some(generation),
             Err(TrySendError::Full(request)) => self.pending = Some(request),
             Err(TrySendError::Disconnected(_)) => self.worker_unavailable = true,
         }
@@ -102,7 +103,10 @@ where
             return RefreshPoll::Stale;
         }
         match response.result {
-            Ok(value) => RefreshPoll::Ready(value),
+            Ok(value) => RefreshPoll::Ready {
+                generation: response.generation,
+                value,
+            },
             Err(_) => RefreshPoll::Failed,
         }
     }

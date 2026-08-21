@@ -128,7 +128,19 @@ instrumentation/trust state, spool and SQLite health, receipt integrity,
 coverage, PATH identity, and evidence freshness. It never applies
 instrumentation, repairs hooks, writes trust, or mutates Codex.
 
-Reports and the UI provide deterministic 24h/7d/30d/All selections,
+For local development performance evidence, `hookstat --timing-output` emits
+sanitized phase timing and work counters after the terminal restores. The
+output contains no paths, receipt bodies, commands, prompts, payloads, or
+standard-stream content; it is not telemetry and is never sent remotely.
+
+Reports and the UI provide deterministic Today/24h/7d/30d/All selections.
+Today is the local civil-calendar interval from midnight to now and is never
+an alias for rolling 24h. Finite-period views use bounded SQLite working sets;
+All remains the explicit full-history view. Startup first draws a loading shell
+while reliability reconciliation and diagnostics refresh on independent
+background paths.
+
+They also provide
 previous-period comparisons, per-handler counts, terminal states, and
 coverage warnings. Trend, regression, and revision panels explicitly say when
 history, samples, coverage, or a prior revision are unavailable; they never
@@ -153,7 +165,7 @@ without creating a ledger or spool.
 | `PgUp`/`PgDn` | Page a long Hooks list or Detail. |
 | `Enter` / `Esc` | Open the selected hook / return to Hooks. |
 | `/`, `f`, `s` | Search, toggle failed-only, or change Hooks sort. |
-| `1`, `7`, `3`, `a` | Request 24h, 7d, 30d, or All history (or apply Settings with `a`). |
+| `t`, `1`, `7`, `3`, `a` | Request Today, 24h, 7d, 30d, or All history (or apply Settings with `a`). |
 | `r`, `q` | Request asynchronous refresh / cleanly quit. |
 
 Settings stages `auto`, `en-US`, or `zh-CN` and a color preference. Applying

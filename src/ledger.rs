@@ -1,15 +1,17 @@
 //! HookStat-owned SQLite storage for source-neutral canonical metadata only.
 
+use crate::analytics::{PeriodMetrics, RevisionMetrics, TimeBounds, TimeWindow};
 use crate::domain::{
     EvidenceCoverage, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent, HookInvocation,
     Runtime, TerminalStatus, ValidationError,
 };
 use crate::identity::{generated_label, sanitize_display_name};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 pub struct Ledger {
     connection: Connection,
@@ -27,6 +29,30 @@ pub struct HandlerAlias {
     pub runtime: Runtime,
     pub handler_key: String,
     pub display_name: String,
+}
+
+/// Durable state for the append-only receipt reconciliation journal. The
+/// cursor is committed in the same SQLite transaction as its accepted rows,
+/// so interruption can only replay idempotent evidence on restart.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReceiptReconciliationState {
+    pub journal_offset: u64,
+    pub malformed_receipts: u64,
+}
+
+/// Work returned by the normal analysis query. Its row count is a real count
+/// of materialized canonical rows, not a wall-clock estimate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LedgerQuery {
+    pub invocations: Vec<HookInvocation>,
+    pub rows_materialized: u64,
+    pub bounds: TimeBounds,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RevisionEpochMetrics {
+    pub current: RevisionMetrics,
+    pub previous: Option<RevisionMetrics>,
 }
 
 #[derive(Debug)]
@@ -84,7 +110,8 @@ impl Ledger {
             "
             PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS hookstat_schema (version INTEGER PRIMARY KEY);
-            INSERT OR IGNORE INTO hookstat_schema (version) VALUES (2);
+            INSERT OR IGNORE INTO hookstat_schema (version) VALUES (3);
+            UPDATE hookstat_schema SET version = 3 WHERE version < 3;
             CREATE TABLE IF NOT EXISTS hook_invocations (
                 source_key TEXT NOT NULL, source_record_id TEXT NOT NULL,
                 runtime TEXT NOT NULL, evidence_kind TEXT NOT NULL, coverage TEXT NOT NULL,
@@ -97,6 +124,7 @@ impl Ledger {
                 PRIMARY KEY (source_key, source_record_id)
             );
             CREATE INDEX IF NOT EXISTS hook_invocations_handler_time ON hook_invocations (handler_key, occurred_at_unix_ms);
+            CREATE INDEX IF NOT EXISTS hook_invocations_time ON hook_invocations (occurred_at_unix_ms, handler_key);
             CREATE TABLE IF NOT EXISTS source_cursors (source_key TEXT PRIMARY KEY, cursor TEXT NOT NULL, updated_at_unix_ms INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS handler_catalog (
                 runtime TEXT NOT NULL,
@@ -116,6 +144,12 @@ impl Ledger {
                 display_name TEXT NOT NULL,
                 updated_at_unix_ms INTEGER NOT NULL,
                 PRIMARY KEY (runtime, handler_key)
+            );
+            CREATE TABLE IF NOT EXISTS receipt_reconciliation (
+                source_key TEXT PRIMARY KEY,
+                journal_offset INTEGER NOT NULL,
+                malformed_receipts INTEGER NOT NULL,
+                updated_at_unix_ms INTEGER NOT NULL
             );
             ",
         )?;
@@ -140,6 +174,214 @@ impl Ledger {
             value.validate()?;
         }
         let transaction = self.connection.transaction()?;
+        let receipt = Self::ingest_transaction(&transaction, values)?;
+        transaction.commit()?;
+        Ok(receipt)
+    }
+
+    /// Atomically accepts a batch of receipt evidence and advances the durable
+    /// journal cursor. A process interruption leaves the prior cursor intact,
+    /// which makes replay safe through the normal duplicate/upgrading ingest
+    /// semantics rather than silently skipping evidence.
+    pub fn ingest_receipt_reconciliation(
+        &mut self,
+        source_key: &str,
+        journal_offset: u64,
+        malformed_receipts: u64,
+        updated_at_unix_ms: i64,
+        values: &[HookInvocation],
+    ) -> Result<IngestReceipt, LedgerError> {
+        if source_key.trim().is_empty() || source_key.len() > 256 {
+            return Err(ValidationError::new("source_key").into());
+        }
+        for value in values {
+            value.validate()?;
+        }
+        let transaction = self.connection.transaction()?;
+        let receipt = Self::ingest_transaction(&transaction, values)?;
+        transaction.execute(
+            "INSERT INTO receipt_reconciliation (
+                source_key, journal_offset, malformed_receipts, updated_at_unix_ms
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(source_key) DO UPDATE SET
+                journal_offset = excluded.journal_offset,
+                malformed_receipts = excluded.malformed_receipts,
+                updated_at_unix_ms = excluded.updated_at_unix_ms",
+            params![
+                source_key,
+                i64::try_from(journal_offset)
+                    .map_err(|_| ValidationError::new("journal_offset"))?,
+                i64::try_from(malformed_receipts)
+                    .map_err(|_| ValidationError::new("malformed_receipts"))?,
+                updated_at_unix_ms,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(receipt)
+    }
+
+    pub fn receipt_reconciliation_state(
+        &self,
+        source_key: &str,
+    ) -> Result<Option<ReceiptReconciliationState>, LedgerError> {
+        self.connection
+            .query_row(
+                "SELECT journal_offset, malformed_receipts
+                 FROM receipt_reconciliation WHERE source_key = ?1",
+                [source_key],
+                |row| {
+                    let offset: i64 = row.get(0)?;
+                    let malformed: i64 = row.get(1)?;
+                    Ok(ReceiptReconciliationState {
+                        journal_offset: u64::try_from(offset)
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        malformed_receipts: u64::try_from(malformed)
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Read-only compatibility helper for v0.2 ledgers that predate the
+    /// receipt catalog. Absence is reported as unobserved rather than being
+    /// fabricated into a clean zero-integrity claim.
+    pub fn receipt_reconciliation_state_if_present(
+        &self,
+        source_key: &str,
+    ) -> Result<Option<ReceiptReconciliationState>, LedgerError> {
+        let present: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'receipt_reconciliation')",
+            [],
+            |row| row.get(0),
+        )?;
+        if present {
+            self.receipt_reconciliation_state(source_key)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn incomplete_receipt_count(&self) -> Result<u64, LedgerError> {
+        self.connection
+            .query_row(
+                "SELECT count(*) FROM hook_invocations
+                 WHERE source_key = 'codex_instrumented_receipts_v1'
+                   AND terminal_status = 'incomplete'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|value| value as u64)
+            .map_err(Into::into)
+    }
+
+    /// Reads the bounded working set needed for every finite reliability view.
+    /// The maximum rolling intelligence comparison is 30d + its predecessor,
+    /// therefore finite requests materialize at most the most recent 60d.
+    /// `All` remains the explicit full-history mode.
+    pub fn invocations_for_reliability(
+        &self,
+        now_unix_ms: i64,
+        selected_window: TimeWindow,
+    ) -> Result<LedgerQuery, LedgerError> {
+        let bounds = match selected_window {
+            TimeWindow::All => TimeWindow::All.bounds_at(now_unix_ms),
+            TimeWindow::Today
+            | TimeWindow::Last24Hours
+            | TimeWindow::Last7Days
+            | TimeWindow::Last30Days => {
+                let widest = TimeWindow::Last30Days.bounds_at(now_unix_ms);
+                TimeBounds {
+                    current_start_unix_ms: widest.previous_start_unix_ms,
+                    current_end_unix_ms: now_unix_ms,
+                    previous_start_unix_ms: None,
+                    previous_end_unix_ms: None,
+                }
+            }
+        };
+        let invocations = self.invocations_in_bounds(bounds)?;
+        Ok(LedgerQuery {
+            rows_materialized: invocations.len() as u64,
+            invocations,
+            bounds,
+        })
+    }
+
+    /// Database-side `All` aggregates for the visible finite-window handlers.
+    /// This returns one compact row per handler rather than historical
+    /// invocations, preserving the released All-time trend semantics.
+    pub fn all_time_period_metrics(
+        &self,
+        now_unix_ms: i64,
+    ) -> Result<BTreeMap<String, PeriodMetrics>, LedgerError> {
+        let mut statement = self.connection.prepare(
+            "SELECT handler_key, count(*),
+                    COALESCE(SUM(CASE WHEN terminal_status IN
+                        ('completed', 'failed', 'blocked', 'stopped', 'timed_out', 'protocol_failure')
+                        THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN terminal_status IN
+                        ('failed', 'timed_out', 'protocol_failure') THEN 1 ELSE 0 END), 0)
+             FROM hook_invocations
+             WHERE occurred_at_unix_ms <= ?1
+             GROUP BY handler_key",
+        )?;
+        let rows = statement.query_map([now_unix_ms], |row| {
+            let metrics = period_metrics_from_counts(row.get(1)?, row.get(2)?, row.get(3)?)?;
+            Ok((row.get::<_, String>(0)?, metrics))
+        })?;
+        rows.collect::<Result<BTreeMap<_, _>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// Returns the current and immediately preceding contiguous revision epoch
+    /// through indexed timeline boundary lookups and SQL aggregates. It never
+    /// materializes the handler's historical invocation rows in Rust.
+    pub fn revision_epoch_metrics(
+        &self,
+        handler_keys: &[String],
+    ) -> Result<BTreeMap<String, RevisionEpochMetrics>, LedgerError> {
+        let mut result = BTreeMap::new();
+        for key in handler_keys {
+            let Some(latest) = self.latest_timeline_point(key)? else {
+                continue;
+            };
+            let current_boundary = self.last_different_revision(key, &latest.revision, None)?;
+            let current_metrics = self.metrics_after(key, current_boundary.as_ref())?;
+            let current = RevisionMetrics {
+                revision: latest.revision.clone(),
+                runs: current_metrics.runs,
+                failure_sample_count: current_metrics.failure_sample_count,
+                failed_runs: current_metrics.failed_runs,
+                failure_rate_percent: current_metrics.failure_rate_percent,
+            };
+            let previous = if let Some(current_boundary) = current_boundary {
+                let prior_boundary = self.last_different_revision(
+                    key,
+                    &current_boundary.revision,
+                    Some(&current_boundary),
+                )?;
+                let previous_metrics =
+                    self.metrics_between(key, prior_boundary.as_ref(), &current_boundary)?;
+                Some(RevisionMetrics {
+                    revision: current_boundary.revision,
+                    runs: previous_metrics.runs,
+                    failure_sample_count: previous_metrics.failure_sample_count,
+                    failed_runs: previous_metrics.failed_runs,
+                    failure_rate_percent: previous_metrics.failure_rate_percent,
+                })
+            } else {
+                None
+            };
+            result.insert(key.clone(), RevisionEpochMetrics { current, previous });
+        }
+        Ok(result)
+    }
+
+    fn ingest_transaction(
+        transaction: &rusqlite::Transaction<'_>,
+        values: &[HookInvocation],
+    ) -> Result<IngestReceipt, LedgerError> {
         let mut receipt = IngestReceipt::default();
         for value in values {
             let prior: Option<String> = transaction.query_row("SELECT terminal_status FROM hook_invocations WHERE source_key = ?1 AND source_record_id = ?2", [&value.source_key, &value.source_record_id], |row| row.get(0)).optional()?;
@@ -157,7 +399,8 @@ impl Ledger {
                     handler_structural_identity = excluded.handler_structural_identity,
                     handler_execution_mode = excluded.handler_execution_mode, terminal_status = excluded.terminal_status,
                     duration_ms = excluded.duration_ms, error_fingerprint = excluded.error_fingerprint
-                WHERE hook_invocations.terminal_status = 'incomplete' AND excluded.terminal_status != 'incomplete'",
+                WHERE (hook_invocations.terminal_status = 'incomplete' AND excluded.terminal_status != 'incomplete')
+                   OR (hook_invocations.coverage = 'best_effort' AND excluded.coverage != 'best_effort')",
                 params![
                     &value.source_key, &value.source_record_id, value.runtime.as_storage(), value.evidence_kind.as_storage(), value.coverage.as_storage(),
                     &value.handler.key, &value.handler.revision, &value.handler.label, &value.handler.source_kind, value.handler.event.as_storage(),
@@ -197,7 +440,6 @@ impl Ledger {
                 ],
             )?;
         }
-        transaction.commit()?;
         Ok(receipt)
     }
 
@@ -298,13 +540,40 @@ impl Ledger {
     }
 
     pub fn invocations(&self) -> Result<Vec<HookInvocation>, LedgerError> {
-        let mut statement = self.connection.prepare(
-            "SELECT source_key, source_record_id, runtime, evidence_kind, coverage, handler_key, handler_revision,
-                    handler_label, handler_source_kind, handler_event, handler_matcher_identity,
-                    handler_structural_identity, handler_execution_mode, occurred_at_unix_ms, terminal_status,
-                    duration_ms, error_fingerprint FROM hook_invocations ORDER BY occurred_at_unix_ms, source_record_id",
-        )?;
-        let rows = statement.query_map([], |row| {
+        self.invocations_in_bounds(TimeBounds {
+            current_start_unix_ms: None,
+            current_end_unix_ms: i64::MAX,
+            previous_start_unix_ms: None,
+            previous_end_unix_ms: None,
+        })
+    }
+
+    fn invocations_in_bounds(
+        &self,
+        bounds: TimeBounds,
+    ) -> Result<Vec<HookInvocation>, LedgerError> {
+        let (sql, parameters): (&str, Vec<i64>) = match bounds.current_start_unix_ms {
+            Some(start) => (
+                "SELECT source_key, source_record_id, runtime, evidence_kind, coverage, handler_key, handler_revision,
+                        handler_label, handler_source_kind, handler_event, handler_matcher_identity,
+                        handler_structural_identity, handler_execution_mode, occurred_at_unix_ms, terminal_status,
+                        duration_ms, error_fingerprint FROM hook_invocations
+                 WHERE occurred_at_unix_ms >= ?1 AND occurred_at_unix_ms <= ?2
+                 ORDER BY occurred_at_unix_ms, source_key, source_record_id",
+                vec![start, bounds.current_end_unix_ms],
+            ),
+            None => (
+                "SELECT source_key, source_record_id, runtime, evidence_kind, coverage, handler_key, handler_revision,
+                        handler_label, handler_source_kind, handler_event, handler_matcher_identity,
+                        handler_structural_identity, handler_execution_mode, occurred_at_unix_ms, terminal_status,
+                        duration_ms, error_fingerprint FROM hook_invocations
+                 WHERE occurred_at_unix_ms <= ?1
+                 ORDER BY occurred_at_unix_ms, source_key, source_record_id",
+                vec![bounds.current_end_unix_ms],
+            ),
+        };
+        let mut statement = self.connection.prepare(sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(parameters), |row| {
             let invalid = || rusqlite::Error::InvalidQuery;
             let runtime = Runtime::from_storage(&row.get::<_, String>(2)?).ok_or_else(invalid)?;
             let evidence_kind =
@@ -342,6 +611,127 @@ impl Ledger {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    fn latest_timeline_point(
+        &self,
+        handler_key: &str,
+    ) -> Result<Option<TimelinePoint>, LedgerError> {
+        self.connection
+            .query_row(
+                "SELECT occurred_at_unix_ms, source_key, source_record_id, handler_revision
+                 FROM hook_invocations WHERE handler_key = ?1
+                 ORDER BY occurred_at_unix_ms DESC, source_key DESC, source_record_id DESC LIMIT 1",
+                [handler_key],
+                timeline_point_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn last_different_revision(
+        &self,
+        handler_key: &str,
+        revision: &str,
+        before: Option<&TimelinePoint>,
+    ) -> Result<Option<TimelinePoint>, LedgerError> {
+        let value = match before {
+            Some(before) => self
+                .connection
+                .query_row(
+                    "SELECT occurred_at_unix_ms, source_key, source_record_id, handler_revision
+                 FROM hook_invocations
+                 WHERE handler_key = ?1 AND handler_revision != ?2
+                   AND (occurred_at_unix_ms < ?3
+                        OR (occurred_at_unix_ms = ?3 AND (source_key < ?4
+                            OR (source_key = ?4 AND source_record_id < ?5))))
+                 ORDER BY occurred_at_unix_ms DESC, source_key DESC, source_record_id DESC LIMIT 1",
+                    params![
+                        handler_key,
+                        revision,
+                        before.occurred_at_unix_ms,
+                        &before.source_key,
+                        &before.source_record_id
+                    ],
+                    timeline_point_from_row,
+                )
+                .optional()?,
+            None => self
+                .connection
+                .query_row(
+                    "SELECT occurred_at_unix_ms, source_key, source_record_id, handler_revision
+                 FROM hook_invocations WHERE handler_key = ?1 AND handler_revision != ?2
+                 ORDER BY occurred_at_unix_ms DESC, source_key DESC, source_record_id DESC LIMIT 1",
+                    params![handler_key, revision],
+                    timeline_point_from_row,
+                )
+                .optional()?,
+        };
+        Ok(value)
+    }
+
+    fn metrics_after(
+        &self,
+        handler_key: &str,
+        boundary: Option<&TimelinePoint>,
+    ) -> Result<PeriodMetrics, LedgerError> {
+        match boundary {
+            Some(boundary) => self.connection.query_row(
+                "SELECT count(*),
+                        COALESCE(SUM(CASE WHEN terminal_status IN ('completed', 'failed', 'blocked', 'stopped', 'timed_out', 'protocol_failure') THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN terminal_status IN ('failed', 'timed_out', 'protocol_failure') THEN 1 ELSE 0 END), 0)
+                 FROM hook_invocations WHERE handler_key = ?1
+                   AND (occurred_at_unix_ms > ?2
+                        OR (occurred_at_unix_ms = ?2 AND (source_key > ?3
+                            OR (source_key = ?3 AND source_record_id > ?4))))",
+                params![handler_key, boundary.occurred_at_unix_ms, &boundary.source_key, &boundary.source_record_id],
+                period_metrics_from_row,
+            ).map_err(Into::into),
+            None => self.connection.query_row(
+                "SELECT count(*),
+                        COALESCE(SUM(CASE WHEN terminal_status IN ('completed', 'failed', 'blocked', 'stopped', 'timed_out', 'protocol_failure') THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN terminal_status IN ('failed', 'timed_out', 'protocol_failure') THEN 1 ELSE 0 END), 0)
+                 FROM hook_invocations WHERE handler_key = ?1",
+                [handler_key],
+                period_metrics_from_row,
+            ).map_err(Into::into),
+        }
+    }
+
+    fn metrics_between(
+        &self,
+        handler_key: &str,
+        lower: Option<&TimelinePoint>,
+        upper: &TimelinePoint,
+    ) -> Result<PeriodMetrics, LedgerError> {
+        match lower {
+            Some(lower) => self.connection.query_row(
+                "SELECT count(*),
+                        COALESCE(SUM(CASE WHEN terminal_status IN ('completed', 'failed', 'blocked', 'stopped', 'timed_out', 'protocol_failure') THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN terminal_status IN ('failed', 'timed_out', 'protocol_failure') THEN 1 ELSE 0 END), 0)
+                 FROM hook_invocations WHERE handler_key = ?1
+                   AND (occurred_at_unix_ms > ?2
+                        OR (occurred_at_unix_ms = ?2 AND (source_key > ?3
+                            OR (source_key = ?3 AND source_record_id > ?4))))
+                   AND (occurred_at_unix_ms < ?5
+                        OR (occurred_at_unix_ms = ?5 AND (source_key < ?6
+                            OR (source_key = ?6 AND source_record_id <= ?7))))",
+                params![handler_key, lower.occurred_at_unix_ms, &lower.source_key, &lower.source_record_id,
+                    upper.occurred_at_unix_ms, &upper.source_key, &upper.source_record_id],
+                period_metrics_from_row,
+            ).map_err(Into::into),
+            None => self.connection.query_row(
+                "SELECT count(*),
+                        COALESCE(SUM(CASE WHEN terminal_status IN ('completed', 'failed', 'blocked', 'stopped', 'timed_out', 'protocol_failure') THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN terminal_status IN ('failed', 'timed_out', 'protocol_failure') THEN 1 ELSE 0 END), 0)
+                 FROM hook_invocations WHERE handler_key = ?1
+                   AND (occurred_at_unix_ms < ?2
+                        OR (occurred_at_unix_ms = ?2 AND (source_key < ?3
+                            OR (source_key = ?3 AND source_record_id <= ?4))))",
+                params![handler_key, upper.occurred_at_unix_ms, &upper.source_key, &upper.source_record_id],
+                period_metrics_from_row,
+            ).map_err(Into::into),
+        }
+    }
+
     #[cfg(test)]
     fn invocation_columns(&self) -> Result<Vec<String>, LedgerError> {
         let mut statement = self
@@ -363,6 +753,48 @@ impl Ledger {
             )
             .map_err(Into::into)
     }
+}
+
+#[derive(Clone, Debug)]
+struct TimelinePoint {
+    occurred_at_unix_ms: i64,
+    source_key: String,
+    source_record_id: String,
+    revision: String,
+}
+
+fn timeline_point_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TimelinePoint> {
+    Ok(TimelinePoint {
+        occurred_at_unix_ms: row.get(0)?,
+        source_key: row.get(1)?,
+        source_record_id: row.get(2)?,
+        revision: row.get(3)?,
+    })
+}
+
+fn period_metrics_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PeriodMetrics> {
+    period_metrics_from_counts(row.get(0)?, row.get(1)?, row.get(2)?)
+}
+
+fn period_metrics_from_counts(
+    runs: i64,
+    terminal_samples: i64,
+    failures: i64,
+) -> rusqlite::Result<PeriodMetrics> {
+    let runs = u64::try_from(runs).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let failure_sample_count =
+        u64::try_from(terminal_samples).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let failed_runs = u64::try_from(failures).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    Ok(PeriodMetrics {
+        runs,
+        failure_sample_count,
+        failed_runs,
+        failure_rate_percent: if failure_sample_count == 0 {
+            0.0
+        } else {
+            failed_runs as f64 * 100.0 / failure_sample_count as f64
+        },
+    })
 }
 
 #[cfg(test)]
@@ -470,5 +902,128 @@ mod tests {
         drop(ledger);
         let read_only = Ledger::open_read_only(&path).unwrap();
         assert!(read_only.handler_aliases_if_present().unwrap().is_empty());
+    }
+
+    #[test]
+    fn finite_reliability_queries_materialize_only_the_recent_bounded_range() {
+        let mut ledger = Ledger::open_in_memory().unwrap();
+        let now = 90_i64 * 24 * 60 * 60 * 1_000;
+        let mut values = Vec::new();
+        for index in 0..200 {
+            let mut value = fixture(&format!("old-{index}"));
+            value.occurred_at_unix_ms = now - 70_i64 * 24 * 60 * 60 * 1_000 - index;
+            values.push(value);
+        }
+        for index in 0..4 {
+            let mut value = fixture(&format!("recent-{index}"));
+            value.occurred_at_unix_ms = now - index;
+            values.push(value);
+        }
+        ledger.ingest(&values).unwrap();
+
+        let finite = ledger
+            .invocations_for_reliability(now, TimeWindow::Last7Days)
+            .unwrap();
+        assert_eq!(finite.rows_materialized, 4);
+        assert!(finite.bounds.current_start_unix_ms.is_some());
+        let all = ledger
+            .invocations_for_reliability(now, TimeWindow::All)
+            .unwrap();
+        assert_eq!(all.rows_materialized, 204);
+    }
+
+    #[test]
+    fn receipt_reconciliation_cursor_and_rows_commit_together() {
+        let mut ledger = Ledger::open_in_memory().unwrap();
+        let first = fixture("receipt-one");
+        let receipt = ledger
+            .ingest_receipt_reconciliation(
+                "receipt_catalog_journal_v1",
+                42,
+                1,
+                1_000,
+                std::slice::from_ref(&first),
+            )
+            .unwrap();
+        assert_eq!(receipt.inserted, 1);
+        assert_eq!(
+            ledger
+                .receipt_reconciliation_state("receipt_catalog_journal_v1")
+                .unwrap(),
+            Some(ReceiptReconciliationState {
+                journal_offset: 42,
+                malformed_receipts: 1,
+            })
+        );
+        let replay = ledger
+            .ingest_receipt_reconciliation("receipt_catalog_journal_v1", 42, 1, 1_001, &[first])
+            .unwrap();
+        assert_eq!(replay.duplicates, 1);
+        assert_eq!(ledger.invocation_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn bounded_query_plus_specialized_aggregates_matches_full_v02_analytics() {
+        let mut ledger = Ledger::open_in_memory().unwrap();
+        let now = 90_i64 * 24 * 60 * 60 * 1_000;
+        let mut values = Vec::new();
+        for index in 0..8 {
+            let mut value = fixture(&format!("old-r1-{index}"));
+            value.occurred_at_unix_ms = now - 75_i64 * 24 * 60 * 60 * 1_000 + index;
+            value.handler.revision = "r1".into();
+            value.terminal_status = TerminalStatus::Completed;
+            values.push(value);
+        }
+        for index in 0..8 {
+            let mut value = fixture(&format!("recent-r2-{index}"));
+            value.occurred_at_unix_ms = now - 2_i64 * 24 * 60 * 60 * 1_000 + index;
+            value.handler.revision = "r2".into();
+            value.terminal_status = if index % 2 == 0 {
+                TerminalStatus::Failed
+            } else {
+                TerminalStatus::Completed
+            };
+            values.push(value);
+        }
+        ledger.ingest(&values).unwrap();
+        let full = crate::report::instrumented_report(&values, now, TimeWindow::Last7Days, 0, 0);
+        let bounded = ledger
+            .invocations_for_reliability(now, TimeWindow::Last7Days)
+            .unwrap();
+        assert_eq!(bounded.rows_materialized, 8);
+        let mut optimized = crate::report::instrumented_report(
+            &bounded.invocations,
+            now,
+            TimeWindow::Last7Days,
+            0,
+            0,
+        );
+        let all_time = ledger.all_time_period_metrics(now).unwrap();
+        let keys = optimized
+            .intelligence
+            .iter()
+            .map(|item| item.handler_key.clone())
+            .collect::<Vec<_>>();
+        let revisions = ledger.revision_epoch_metrics(&keys).unwrap();
+        for item in &mut optimized.intelligence {
+            let trend = item
+                .trends
+                .iter_mut()
+                .find(|trend| trend.window == TimeWindow::All)
+                .unwrap();
+            *trend = crate::analytics::all_time_trend(
+                all_time.get(&item.handler_key).unwrap().clone(),
+                optimized.qualification.coverage,
+            );
+            let epochs = revisions.get(&item.handler_key).unwrap();
+            item.revision_comparison = crate::analytics::revision_comparison_from_epochs(
+                epochs.current.clone(),
+                epochs.previous.clone(),
+                optimized.qualification.coverage,
+            );
+        }
+        assert_eq!(optimized.handlers, full.handlers);
+        assert_eq!(optimized.recent_failures, full.recent_failures);
+        assert_eq!(optimized.intelligence, full.intelligence);
     }
 }

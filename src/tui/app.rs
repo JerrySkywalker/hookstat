@@ -134,6 +134,7 @@ pub struct App {
     requested_window: TimeWindow,
     selected_handler: Option<HandlerRef>,
     view: ResourceState<ReliabilityCenterViewModel>,
+    diagnostics: ResourceState<DiagnosticsReport>,
     hooks_query: HooksQuery,
     visible_hooks: Vec<HookRowViewModel>,
     search_editing: bool,
@@ -156,6 +157,34 @@ impl App {
         Self::from_view_model(snapshot.into_view_model())
     }
 
+    /// Creates an interactive shell before any receipt, SQLite, diagnostics,
+    /// or analytics work has completed.
+    pub fn loading(window: TimeWindow) -> Self {
+        Self {
+            navigation: NavigationState::new(),
+            focus: Focus::Content,
+            screen: Screen::Overview,
+            requested_window: window,
+            selected_handler: None,
+            view: ResourceState::Loading {
+                last_accepted: None,
+            },
+            diagnostics: ResourceState::Loading {
+                last_accepted: None,
+            },
+            hooks_query: HooksQuery::default(),
+            visible_hooks: Vec::new(),
+            search_editing: false,
+            detail_scroll_lines: 0,
+            accepted_language: InterfaceLanguage::Auto,
+            draft_language: InterfaceLanguage::Auto,
+            accepted_color: InterfaceColor::Auto,
+            draft_color: InterfaceColor::Auto,
+            settings_field: SettingsField::Language,
+            settings_save_state: SettingsSaveState::Clean,
+        }
+    }
+
     fn from_view_model(view_model: ReliabilityCenterViewModel) -> Self {
         let hooks_query = HooksQuery::default();
         let visible_hooks = view_model.filtered_hooks(&hooks_query);
@@ -165,6 +194,7 @@ impl App {
             .first()
             .or_else(|| visible_hooks.first())
             .map(|row| row.internal_ref.clone());
+        let diagnostics = view_model.diagnostics.clone();
         Self {
             navigation: NavigationState::new(),
             focus: Focus::Content,
@@ -172,6 +202,7 @@ impl App {
             requested_window: view_model.overview.window,
             selected_handler,
             view: ResourceState::Ready(view_model),
+            diagnostics: ResourceState::Ready(diagnostics),
             hooks_query,
             visible_hooks,
             search_editing: false,
@@ -203,6 +234,18 @@ impl App {
 
     pub fn view_model(&self) -> Option<&ReliabilityCenterViewModel> {
         self.view.accepted()
+    }
+
+    pub const fn requested_window(&self) -> TimeWindow {
+        self.requested_window
+    }
+
+    pub const fn diagnostics_state(&self) -> &ResourceState<DiagnosticsReport> {
+        &self.diagnostics
+    }
+
+    pub fn diagnostics(&self) -> Option<&DiagnosticsReport> {
+        self.diagnostics.accepted()
     }
 
     pub fn selected_handler(&self) -> Option<&HandlerRef> {
@@ -419,6 +462,12 @@ impl App {
     }
 
     pub fn apply_refresh(&mut self, snapshot: RefreshSnapshot) {
+        if snapshot.view_model.overview.window != self.requested_window {
+            // Belt-and-braces request ownership: a worker response for an old
+            // period cannot overwrite a newer visible request even if a future
+            // transport implementation becomes concurrent.
+            return;
+        }
         self.requested_window = snapshot.view_model.overview.window;
         self.view =
             std::mem::replace(&mut self.view, ResourceState::Empty).ready(snapshot.view_model);
@@ -433,6 +482,16 @@ impl App {
     pub fn worker_unavailable(&mut self) {
         self.view =
             std::mem::replace(&mut self.view, ResourceState::Empty).error("worker_unavailable");
+    }
+
+    pub fn apply_diagnostics(&mut self, diagnostics: DiagnosticsReport) {
+        self.diagnostics =
+            std::mem::replace(&mut self.diagnostics, ResourceState::Empty).ready(diagnostics);
+    }
+
+    pub fn reject_diagnostics(&mut self) {
+        self.diagnostics = std::mem::replace(&mut self.diagnostics, ResourceState::Empty)
+            .error("diagnostics_refresh_failed");
     }
 
     fn request_refresh(&mut self, reason: RefreshReason) -> AppEffect {
@@ -640,6 +699,41 @@ mod tests {
         assert!(app.view_state().is_loading());
         app.reject_refresh();
         assert!(app.view_model().is_some());
+    }
+
+    #[test]
+    fn loading_shell_accepts_input_before_initial_data_arrives() {
+        let mut app = App::loading(TimeWindow::Last7Days);
+        assert!(app.view_model().is_none());
+        assert_eq!(app.requested_window(), TimeWindow::Last7Days);
+        assert_eq!(
+            app.handle(Command::Window(TimeWindow::Today)),
+            AppEffect::RequestRefresh(RefreshReason::Window(TimeWindow::Today))
+        );
+        assert_eq!(app.requested_window(), TimeWindow::Today);
+        assert_eq!(app.handle(Command::Quit), AppEffect::Quit);
+    }
+
+    #[test]
+    fn latest_requested_period_rejects_out_of_order_snapshot_completion() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.handle(Command::Window(TimeWindow::Last7Days));
+        app.handle(Command::Window(TimeWindow::Last30Days));
+        app.handle(Command::Window(TimeWindow::Today));
+
+        let mut stale = synthetic_fixture_report(1_000);
+        stale.window = TimeWindow::Last30Days;
+        app.apply_refresh(RefreshSnapshot::from_report(stale));
+        assert_eq!(app.requested_window(), TimeWindow::Today);
+        assert_eq!(
+            app.view_model().unwrap().overview.window,
+            TimeWindow::Last7Days
+        );
+
+        let mut newest = synthetic_fixture_report(1_000);
+        newest.window = TimeWindow::Today;
+        app.apply_refresh(RefreshSnapshot::from_report(newest));
+        assert_eq!(app.view_model().unwrap().overview.window, TimeWindow::Today);
     }
 
     #[test]

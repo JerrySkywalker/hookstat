@@ -12,6 +12,7 @@ pub mod domain;
 pub mod identity;
 pub mod interface_preferences;
 pub mod ledger;
+pub mod observability;
 pub mod proxy;
 pub mod receipt;
 pub mod render;

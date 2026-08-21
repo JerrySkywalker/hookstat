@@ -18,10 +18,12 @@ mod widgets;
 
 pub use app::{RefreshReason, RefreshSnapshot};
 
+use crate::diagnostics::DiagnosticsReport;
 use crate::domain::HookInvocation;
 use crate::interface_preferences::{
     InterfacePreferenceSnapshot, InterfacePreferencesStore, PreferenceSaveOutcome,
 };
+use crate::observability::{StartupObservatory, StartupPhase};
 use app::{App, AppEffect};
 use crossterm::event::{self, Event};
 use ratatui::{Terminal, backend::CrosstermBackend};
@@ -31,6 +33,15 @@ use std::time::Duration;
 
 type Refresh =
     Box<dyn FnMut(RefreshRequest<RefreshReason>) -> Result<RefreshSnapshot, String> + Send>;
+type DiagnosticsRefresh =
+    Box<dyn FnMut(RefreshRequest<()>) -> Result<DiagnosticsReport, String> + Send>;
+
+struct RunLoopOptions {
+    explicit_language: Option<localization::InterfaceLanguage>,
+    store: Option<InterfacePreferencesStore>,
+    preference_snapshot: Option<InterfacePreferenceSnapshot>,
+    observatory: Option<StartupObservatory>,
+}
 
 pub fn run(
     values: Vec<HookInvocation>,
@@ -115,9 +126,59 @@ pub fn run_with_refresh_snapshot_language(
         &mut terminal,
         app,
         RefreshController::spawn(refresh),
-        explicit_language,
-        store,
-        snapshot,
+        None,
+        RunLoopOptions {
+            explicit_language,
+            store,
+            preference_snapshot: snapshot,
+            observatory: None,
+        },
+    );
+    drop(terminal);
+    result.and(guard.restore())
+}
+
+/// Starts from an empty/loading application model. The first terminal frame is
+/// independent of receipt reconciliation, SQLite queries, analytics, and
+/// diagnostics discovery; both worker paths publish immutable snapshots later.
+pub fn run_loading_with_refreshes_language(
+    initial_window: crate::analytics::TimeWindow,
+    explicit_language: Option<localization::InterfaceLanguage>,
+    reliability_refresh: impl FnMut(RefreshRequest<RefreshReason>) -> Result<RefreshSnapshot, String>
+    + Send
+    + 'static,
+    diagnostics_refresh: impl FnMut(RefreshRequest<()>) -> Result<DiagnosticsReport, String>
+    + Send
+    + 'static,
+    observatory: StartupObservatory,
+) -> io::Result<()> {
+    let mut guard = terminal::TerminalGuard::enter()?;
+    observatory.mark(StartupPhase::TerminalGuardEntered);
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+    let store = crate::codex::default_data_root()
+        .ok()
+        .map(|root| InterfacePreferencesStore::new(root.join("interface.toml")));
+    let snapshot = store
+        .as_ref()
+        .and_then(|store| store.snapshot_read_only().ok());
+    let mut app = App::loading(initial_window);
+    if let Some(snapshot) = &snapshot {
+        app.set_persisted_interface(snapshot.language(), snapshot.color());
+    }
+    let refresh: Refresh = Box::new(reliability_refresh);
+    let diagnostics: DiagnosticsRefresh = Box::new(diagnostics_refresh);
+    let result = run_loop(
+        &mut terminal,
+        app,
+        RefreshController::spawn(refresh),
+        Some(RefreshController::spawn(diagnostics)),
+        RunLoopOptions {
+            explicit_language,
+            store,
+            preference_snapshot: snapshot,
+            observatory: Some(observatory),
+        },
     );
     drop(terminal);
     result.and(guard.restore())
@@ -127,22 +188,49 @@ fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     mut app: App,
     mut refresh: RefreshController<RefreshReason, RefreshSnapshot>,
-    explicit_language: Option<localization::InterfaceLanguage>,
-    store: Option<InterfacePreferencesStore>,
-    mut preference_snapshot: Option<InterfacePreferenceSnapshot>,
+    mut diagnostics: Option<RefreshController<(), DiagnosticsReport>>,
+    mut options: RunLoopOptions,
 ) -> io::Result<()> {
     let environment_locale = std::env::var("HOOKSTAT_LANG").ok();
     let system_locale = std::env::var("LANG").ok();
+    if app.view_model().is_none() {
+        let generation = refresh.request(RefreshReason::Window(app.requested_window()));
+        if let Some(observatory) = options.observatory.as_ref() {
+            observatory.record_requested_generation(generation);
+        }
+    }
+    if let Some(diagnostics) = &mut diagnostics {
+        diagnostics.request(());
+    }
+    let mut first_frame_drawn = false;
     loop {
         match refresh.poll() {
-            RefreshPoll::Ready(snapshot) => app.apply_refresh(snapshot),
+            RefreshPoll::Ready { generation, value } => {
+                app.apply_refresh(value);
+                if let Some(observatory) = options.observatory.as_ref() {
+                    observatory.record_accepted_generation(generation);
+                    observatory.mark(StartupPhase::ReliabilitySnapshotReady);
+                }
+            }
             RefreshPoll::Failed => app.reject_refresh(),
             RefreshPoll::WorkerUnavailable => app.worker_unavailable(),
             RefreshPoll::Pending | RefreshPoll::Stale => {}
         }
+        if let Some(diagnostics) = &mut diagnostics {
+            match diagnostics.poll() {
+                RefreshPoll::Ready { value, .. } => {
+                    app.apply_diagnostics(value);
+                    if let Some(observatory) = options.observatory.as_ref() {
+                        observatory.mark(StartupPhase::DiagnosticsReady);
+                    }
+                }
+                RefreshPoll::Failed | RefreshPoll::WorkerUnavailable => app.reject_diagnostics(),
+                RefreshPoll::Pending | RefreshPoll::Stale => {}
+            }
+        }
         let language = resolved_language(
             &app,
-            explicit_language,
+            options.explicit_language,
             environment_locale.as_deref(),
             system_locale.as_deref(),
         );
@@ -153,6 +241,12 @@ fn run_loop(
         };
         let theme = theme::Theme::from_interface_color(color);
         terminal.draw(|frame| rendering::draw(frame, &app, language, theme))?;
+        if !first_frame_drawn {
+            first_frame_drawn = true;
+            if let Some(observatory) = options.observatory.as_ref() {
+                observatory.mark(StartupPhase::FirstFrameDrawn);
+            }
+        }
         if !event::poll(Duration::from_millis(250))? {
             continue;
         }
@@ -168,20 +262,23 @@ fn run_loop(
                     AppEffect::None => {}
                     AppEffect::Quit => return Ok(()),
                     AppEffect::RequestRefresh(reason) => {
-                        refresh.request(reason);
+                        let generation = refresh.request(reason);
+                        if let Some(observatory) = options.observatory.as_ref() {
+                            observatory.record_requested_generation(generation);
+                        }
                     }
                     AppEffect::ApplyInterface { language, color } => {
-                        let Some(store) = &store else {
+                        let Some(store) = &options.store else {
                             app.language_save_failed();
                             continue;
                         };
-                        let Some(snapshot) = &preference_snapshot else {
+                        let Some(snapshot) = &options.preference_snapshot else {
                             app.language_save_failed();
                             continue;
                         };
                         match store.save_if_unchanged(snapshot, language, color) {
                             Ok(PreferenceSaveOutcome::Saved) => {
-                                preference_snapshot = store.snapshot_read_only().ok();
+                                options.preference_snapshot = store.snapshot_read_only().ok();
                                 app.language_saved();
                             }
                             Ok(PreferenceSaveOutcome::Conflict) => app.language_save_conflict(),

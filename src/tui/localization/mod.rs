@@ -162,10 +162,12 @@ pub enum MessageKey {
     CoverageUnknown,
     CoverageNotAdmitted,
     CoverageSyntheticFixture,
+    WindowToday,
     WindowLast24Hours,
     WindowLast7Days,
     WindowLast30Days,
     WindowAll,
+    PeriodAll,
     RuntimeCodex,
     RuntimeDeepSeekHarness,
     RuntimeOpenCode,
@@ -342,10 +344,12 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::CoverageUnknown,
     MessageKey::CoverageNotAdmitted,
     MessageKey::CoverageSyntheticFixture,
+    MessageKey::WindowToday,
     MessageKey::WindowLast24Hours,
     MessageKey::WindowLast7Days,
     MessageKey::WindowLast30Days,
     MessageKey::WindowAll,
+    MessageKey::PeriodAll,
     MessageKey::RuntimeCodex,
     MessageKey::RuntimeDeepSeekHarness,
     MessageKey::RuntimeOpenCode,
@@ -535,6 +539,7 @@ pub const fn coverage_name(locale: ResolvedLocale, coverage: EvidenceCoverage) -
 
 pub const fn window_name(locale: ResolvedLocale, window: TimeWindow) -> &'static str {
     let key = match window {
+        TimeWindow::Today => MessageKey::WindowToday,
         TimeWindow::Last24Hours => MessageKey::WindowLast24Hours,
         TimeWindow::Last7Days => MessageKey::WindowLast7Days,
         TimeWindow::Last30Days => MessageKey::WindowLast30Days,

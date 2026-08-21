@@ -687,7 +687,7 @@ mod tests {
         assert_eq!(view.hooks.rows[0].internal_ref.handler_key, "hk_mature");
         assert_eq!(view.hooks.rows[0].trend.window, TimeWindow::All);
         let detail = view.detail(&view.hooks.rows[0].internal_ref).unwrap();
-        assert_eq!(detail.trends.len(), 4);
+        assert_eq!(detail.trends.len(), 5);
         assert!(detail.risk.sample_confidence_percent > 50);
         assert!(detail.revision_comparison.previous.is_none());
     }
