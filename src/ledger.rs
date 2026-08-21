@@ -4,7 +4,8 @@ use crate::domain::{
     EvidenceCoverage, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent, HookInvocation,
     Runtime, TerminalStatus, ValidationError,
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use crate::identity::{generated_label, sanitize_display_name};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::fmt;
 use std::path::Path;
 
@@ -19,6 +20,13 @@ pub struct IngestReceipt {
     pub inserted: u64,
     pub upgraded: u64,
     pub duplicates: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HandlerAlias {
+    pub runtime: Runtime,
+    pub handler_key: String,
+    pub display_name: String,
 }
 
 #[derive(Debug)]
@@ -63,6 +71,14 @@ impl Ledger {
         Self::from_connection(Connection::open_in_memory()?)
     }
 
+    /// Opens an existing ledger without running migrations or creating files.
+    /// Diagnostics uses this path so inspecting health cannot mutate state.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, LedgerError> {
+        Ok(Self {
+            connection: Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?,
+        })
+    }
+
     fn from_connection(connection: Connection) -> Result<Self, LedgerError> {
         connection.execute_batch(
             "
@@ -82,6 +98,25 @@ impl Ledger {
             );
             CREATE INDEX IF NOT EXISTS hook_invocations_handler_time ON hook_invocations (handler_key, occurred_at_unix_ms);
             CREATE TABLE IF NOT EXISTS source_cursors (source_key TEXT PRIMARY KEY, cursor TEXT NOT NULL, updated_at_unix_ms INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS handler_catalog (
+                runtime TEXT NOT NULL,
+                handler_key TEXT NOT NULL,
+                latest_revision TEXT NOT NULL,
+                explicit_name TEXT,
+                script_filename TEXT,
+                command_basename TEXT,
+                source_label_key TEXT NOT NULL,
+                resolver_version INTEGER NOT NULL,
+                observed_at_unix_ms INTEGER NOT NULL,
+                PRIMARY KEY (runtime, handler_key)
+            );
+            CREATE TABLE IF NOT EXISTS handler_annotations (
+                runtime TEXT NOT NULL,
+                handler_key TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                updated_at_unix_ms INTEGER NOT NULL,
+                PRIMARY KEY (runtime, handler_key)
+            );
             ",
         )?;
         // Additive migration for an early development ledger. Failures mean the
@@ -137,6 +172,30 @@ impl Ledger {
             } else {
                 receipt.inserted += 1;
             }
+            let safe_label = (!generated_label(&value.handler.label))
+                .then(|| sanitize_display_name(&value.handler.label))
+                .flatten();
+            transaction.execute(
+                "INSERT INTO handler_catalog (
+                    runtime, handler_key, latest_revision, explicit_name,
+                    script_filename, command_basename, source_label_key,
+                    resolver_version, observed_at_unix_ms
+                ) VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, 1, ?6)
+                ON CONFLICT(runtime, handler_key) DO UPDATE SET
+                    latest_revision = excluded.latest_revision,
+                    explicit_name = excluded.explicit_name,
+                    source_label_key = excluded.source_label_key,
+                    resolver_version = excluded.resolver_version,
+                    observed_at_unix_ms = excluded.observed_at_unix_ms",
+                params![
+                    value.runtime.as_storage(),
+                    &value.handler.key,
+                    &value.handler.revision,
+                    safe_label,
+                    &value.handler.source_kind,
+                    value.occurred_at_unix_ms,
+                ],
+            )?;
         }
         transaction.commit()?;
         Ok(receipt)
@@ -174,6 +233,51 @@ impl Ledger {
             })
             .map(|count| count as u64)
             .map_err(Into::into)
+    }
+
+    /// Stores an explicit, bounded user alias in HookStat-owned state. It has
+    /// no effect on invocation attribution, proxy routing, or trust.
+    pub fn set_handler_alias(
+        &mut self,
+        runtime: Runtime,
+        handler_key: &str,
+        display_name: &str,
+        updated_at_unix_ms: i64,
+    ) -> Result<(), LedgerError> {
+        if handler_key.trim().is_empty() || handler_key.len() > 128 {
+            return Err(ValidationError::new("handler_key").into());
+        }
+        let Some(display_name) = sanitize_display_name(display_name) else {
+            return Err(ValidationError::new("handler_alias").into());
+        };
+        self.connection.execute(
+            "INSERT INTO handler_annotations (runtime, handler_key, display_name, updated_at_unix_ms)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(runtime, handler_key) DO UPDATE SET
+                display_name = excluded.display_name,
+                updated_at_unix_ms = excluded.updated_at_unix_ms",
+            params![runtime.as_storage(), handler_key, display_name, updated_at_unix_ms],
+        )?;
+        Ok(())
+    }
+
+    /// Returns only the sanitized user-facing aliases, never raw commands or
+    /// private configuration material.
+    pub fn handler_aliases(&self) -> Result<Vec<HandlerAlias>, LedgerError> {
+        let mut statement = self.connection.prepare(
+            "SELECT runtime, handler_key, display_name
+             FROM handler_annotations ORDER BY runtime, handler_key",
+        )?;
+        let rows = statement.query_map([], |row| {
+            let invalid = || rusqlite::Error::InvalidQuery;
+            let runtime = Runtime::from_storage(&row.get::<_, String>(0)?).ok_or_else(invalid)?;
+            Ok(HandlerAlias {
+                runtime,
+                handler_key: row.get(1)?,
+                display_name: row.get(2)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn invocations(&self) -> Result<Vec<HookInvocation>, LedgerError> {
@@ -229,6 +333,17 @@ impl Ledger {
         statement
             .query_map([], |row| row.get(1))?
             .collect::<Result<Vec<String>, _>>()
+            .map_err(Into::into)
+    }
+
+    #[cfg(test)]
+    fn table_exists(&self, table: &str) -> Result<bool, LedgerError> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [table],
+                |row| row.get(0),
+            )
             .map_err(Into::into)
     }
 }
@@ -296,5 +411,33 @@ mod tests {
         for banned in ["prompt", "payload", "stdin", "stdout", "stderr", "command"] {
             assert!(!columns.iter().any(|column| column.contains(banned)));
         }
+    }
+
+    #[test]
+    fn alias_migration_is_additive_and_does_not_change_invocation_identity() {
+        let mut ledger = Ledger::open_in_memory().unwrap();
+        ledger.ingest(&[fixture("one")]).unwrap();
+        ledger
+            .set_handler_alias(
+                Runtime::Codex,
+                "fixture-handler",
+                "HAPI Session Hook",
+                1_000,
+            )
+            .unwrap();
+        assert!(ledger.table_exists("handler_catalog").unwrap());
+        assert!(ledger.table_exists("handler_annotations").unwrap());
+        assert_eq!(
+            ledger.invocations().unwrap()[0].handler.key,
+            "fixture-handler"
+        );
+        assert_eq!(
+            ledger.handler_aliases().unwrap(),
+            vec![HandlerAlias {
+                runtime: Runtime::Codex,
+                handler_key: "fixture-handler".into(),
+                display_name: "HAPI Session Hook".into(),
+            }]
+        );
     }
 }

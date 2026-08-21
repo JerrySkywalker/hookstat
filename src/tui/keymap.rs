@@ -19,6 +19,9 @@ pub enum Command {
     CloseSearch,
     Filter,
     Sort,
+    PreviousSetting,
+    NextSetting,
+    RevertSettings,
 }
 
 pub fn command_for(key: KeyEvent, search_editing: bool) -> Option<Command> {
@@ -53,6 +56,9 @@ pub fn command_for(key: KeyEvent, search_editing: bool) -> Option<Command> {
         KeyCode::Char('/') => Some(Command::Search),
         KeyCode::Char('f') => Some(Command::Filter),
         KeyCode::Char('s') => Some(Command::Sort),
+        KeyCode::Left | KeyCode::Char('h') => Some(Command::PreviousSetting),
+        KeyCode::Right | KeyCode::Char('l') => Some(Command::NextSetting),
+        KeyCode::Char('x') => Some(Command::RevertSettings),
         _ => None,
     }
 }

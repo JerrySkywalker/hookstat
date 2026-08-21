@@ -6,10 +6,12 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::NavOverview => "Overview",
         MessageKey::NavHooks => "Hooks",
         MessageKey::NavDiagnostics => "Diagnostics",
+        MessageKey::NavSettings => "Settings",
         MessageKey::ViewOverview => "Reliability overview",
         MessageKey::ViewHooks => "Hook reliability",
         MessageKey::ViewHookDetail => "Hook detail",
         MessageKey::ViewDiagnostics => "Read-only diagnostics",
+        MessageKey::ViewSettings => "Interface settings",
         MessageKey::SectionNavigation => "Navigation",
         MessageKey::SectionRuntimeSummary => "Runtime summary",
         MessageKey::SectionRiskyHooks => "Risky hooks",
@@ -17,6 +19,7 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::SectionTerminalBreakdown => "Terminal breakdown",
         MessageKey::SectionTimeline => "Timeline",
         MessageKey::SectionDiagnostics => "Operational checks",
+        MessageKey::SectionInterface => "Human interface",
         MessageKey::FieldRuntime => "Runtime",
         MessageKey::FieldCoverage => "Coverage",
         MessageKey::FieldTotalRuns => "Total runs",
@@ -35,6 +38,10 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::FieldSort => "Sort",
         MessageKey::FieldIncompleteReceipts => "Incomplete receipts",
         MessageKey::FieldMalformedReceipts => "Malformed receipts",
+        MessageKey::FieldLanguage => "Language",
+        MessageKey::FieldSavedLanguage => "Saved language",
+        MessageKey::FieldColor => "Color",
+        MessageKey::FieldSavedColor => "Saved color",
         MessageKey::ColumnName => "Name",
         MessageKey::ColumnEvent => "Event",
         MessageKey::ColumnRuntime => "Runtime",
@@ -48,38 +55,77 @@ pub const fn text(key: MessageKey) -> &'static str {
             "Timeline is unavailable until reliability intelligence is admitted."
         }
         MessageKey::StateNoRecentFailures => "No recent execution failures in this window.",
+        MessageKey::StatePreferenceClean => "No pending language change.",
+        MessageKey::StatePreferenceDirty => "Language change is staged; apply to persist it.",
+        MessageKey::StatePreferenceSaved => "Language preference saved locally.",
+        MessageKey::StatePreferenceConflict => {
+            "Language preference changed elsewhere; apply was refused."
+        }
+        MessageKey::StatePreferenceSaveFailed => "Language preference could not be saved safely.",
         MessageKey::StatusHealthy => "✓ Healthy",
         MessageKey::StatusDegraded => "! Degraded",
         MessageKey::StatusCoverageLimited => "! Coverage limited",
         MessageKey::StatusNoTerminalSamples => "! No terminal samples",
         MessageKey::StatusUnavailable => "Unavailable",
-        MessageKey::DiagnosticHealthy => "Pass",
+        MessageKey::DiagnosticPass => "Pass",
         MessageKey::DiagnosticWarning => "Attention",
-        MessageKey::DiagnosticUnavailable => "Not inspected",
-        MessageKey::DiagnosticRuntimeSnapshot => "Runtime snapshot",
-        MessageKey::DiagnosticEvidenceCoverage => "Evidence coverage",
-        MessageKey::DiagnosticReceiptIntegrity => "Receipt integrity",
+        MessageKey::DiagnosticFail => "Fail",
+        MessageKey::DiagnosticUnknown => "Unknown",
+        MessageKey::DiagnosticUnsupported => "Unsupported",
+        MessageKey::DiagnosticHookStatBinary => "HookStat binary",
+        MessageKey::DiagnosticCodexBinary => "Codex binary",
+        MessageKey::DiagnosticEffectiveRuntime => "Effective runtime",
         MessageKey::DiagnosticInstrumentation => "Instrumentation",
         MessageKey::DiagnosticTrust => "Trust",
-        MessageKey::DiagnosticReceiptStorage => "Receipt storage",
-        MessageKey::DiagnosticRuntimeSnapshotExplanation => {
-            "Shown from the accepted reliability snapshot; no runtime probe is run."
+        MessageKey::DiagnosticReceiptSpool => "Receipt spool",
+        MessageKey::DiagnosticLedger => "SQLite ledger",
+        MessageKey::DiagnosticReceiptIntegrity => "Receipt integrity",
+        MessageKey::DiagnosticEvidenceCoverage => "Evidence coverage",
+        MessageKey::DiagnosticPathIdentity => "Windows PATH identity",
+        MessageKey::DiagnosticEvidenceFreshness => "Latest evidence",
+        MessageKey::DiagnosticHookStatBinaryExplanation => {
+            "Confirms the running HookStat build only."
         }
-        MessageKey::DiagnosticEvidenceCoverageExplanation => {
-            "Coverage is reported as admitted and is never treated as healthy zero by default."
+        MessageKey::DiagnosticCodexBinaryExplanation => {
+            "Runs a bounded Codex version check; no configuration is changed."
         }
-        MessageKey::DiagnosticReceiptIntegrityExplanation => {
-            "Counts come from the accepted snapshot; malformed or incomplete receipts remain visible."
+        MessageKey::DiagnosticEffectiveRuntimeExplanation => {
+            "Uses Codex's read-only effective hook view when available."
         }
         MessageKey::DiagnosticInstrumentationExplanation => {
-            "Not inspected in G01. This view does not read or change Codex configuration."
+            "Reads supported configuration only; it never applies or repairs hooks."
         }
         MessageKey::DiagnosticTrustExplanation => {
-            "Not inspected in G01. This view does not query or change Codex trust."
+            "Reports the read-only effective trust state and never writes trust."
         }
-        MessageKey::DiagnosticReceiptStorageExplanation => {
-            "Storage probing is deferred to G04; this view performs no filesystem inspection."
+        MessageKey::DiagnosticReceiptSpoolExplanation => {
+            "Checks an existing spool without creating, repairing, or writing records."
         }
+        MessageKey::DiagnosticLedgerExplanation => {
+            "Opens an existing ledger read-only; missing state is never treated as healthy."
+        }
+        MessageKey::DiagnosticReceiptIntegrityExplanation => {
+            "Malformed and incomplete receipt counts remain explicit."
+        }
+        MessageKey::DiagnosticEvidenceCoverageExplanation => {
+            "Supported and unsupported coverage stays visible; unknown is never healthy."
+        }
+        MessageKey::DiagnosticPathIdentityExplanation => {
+            "Relevant only for Windows proxy execution; other platforms are unsupported."
+        }
+        MessageKey::DiagnosticEvidenceFreshnessExplanation => {
+            "Measures only the latest sanitized evidence timestamp when one exists."
+        }
+        MessageKey::DiagnosticHandlerCounts => {
+            "{discovered} discovered / {instrumented} instrumented / {unsupported} unsupported"
+        }
+        MessageKey::DiagnosticEvidenceAgeMinutes => "{minutes} min ago",
+        MessageKey::LanguageAuto => "Auto",
+        MessageKey::LanguageEnUs => "English (en-US)",
+        MessageKey::LanguageZhCn => "Simplified Chinese (zh-CN)",
+        MessageKey::ColorAuto => "Auto",
+        MessageKey::ColorAlways => "Always",
+        MessageKey::ColorNever => "Never",
         MessageKey::CoverageComplete => "Complete",
         MessageKey::CoveragePartial => "Partial",
         MessageKey::CoverageSyncOnly => "Sync only",
@@ -131,6 +177,9 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::FooterSearch => "search",
         MessageKey::FooterFilter => "filter",
         MessageKey::FooterSort => "sort",
+        MessageKey::FooterChange => "change",
+        MessageKey::FooterApply => "apply",
+        MessageKey::FooterRevert => "revert",
         MessageKey::MinimumTerminal => "Resize to at least 24x10",
     }
 }

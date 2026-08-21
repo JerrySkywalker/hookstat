@@ -1,10 +1,13 @@
 //! Terminal-independent Reliability Center state.
 
 use crate::analytics::TimeWindow;
+use crate::diagnostics::DiagnosticsReport;
 use crate::domain::HookInvocation;
+use crate::interface_preferences::InterfaceColor;
 use crate::report::{MachineReport, instrumented_report};
 
 use super::keymap::Command;
+use super::localization::InterfaceLanguage;
 use super::navigation::{NavigationState, Route};
 use super::state::ResourceState;
 #[cfg(test)]
@@ -23,6 +26,7 @@ pub enum Screen {
     Hooks,
     HookDetail,
     Diagnostics,
+    Settings,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,6 +70,15 @@ impl RefreshSnapshot {
         }
     }
 
+    pub fn from_report_with_diagnostics(
+        report: MachineReport,
+        diagnostics: DiagnosticsReport,
+    ) -> Self {
+        let mut view_model = ReliabilityCenterViewModel::from_report(report);
+        view_model.diagnostics = diagnostics;
+        Self { view_model }
+    }
+
     fn into_view_model(self) -> ReliabilityCenterViewModel {
         self.view_model
     }
@@ -76,6 +89,41 @@ pub enum AppEffect {
     None,
     Quit,
     RequestRefresh(RefreshReason),
+    ApplyInterface {
+        language: InterfaceLanguage,
+        color: InterfaceColor,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettingsSaveState {
+    Clean,
+    Dirty,
+    Saved,
+    Conflict,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettingsField {
+    Language,
+    Color,
+}
+
+impl SettingsField {
+    const ALL: [Self; 2] = [Self::Language, Self::Color];
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Language => 0,
+            Self::Color => 1,
+        }
+    }
+
+    fn move_by(self, delta: isize) -> Self {
+        let index = (self.index() as isize + delta).rem_euclid(Self::ALL.len() as isize) as usize;
+        Self::ALL[index]
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -89,6 +137,12 @@ pub struct App {
     hooks_query: HooksQuery,
     visible_hooks: Vec<HookRowViewModel>,
     search_editing: bool,
+    accepted_language: InterfaceLanguage,
+    draft_language: InterfaceLanguage,
+    accepted_color: InterfaceColor,
+    draft_color: InterfaceColor,
+    settings_field: SettingsField,
+    settings_save_state: SettingsSaveState,
 }
 
 impl App {
@@ -120,6 +174,12 @@ impl App {
             hooks_query,
             visible_hooks,
             search_editing: false,
+            accepted_language: InterfaceLanguage::Auto,
+            draft_language: InterfaceLanguage::Auto,
+            accepted_color: InterfaceColor::Auto,
+            draft_color: InterfaceColor::Auto,
+            settings_field: SettingsField::Language,
+            settings_save_state: SettingsSaveState::Clean,
         }
     }
 
@@ -159,6 +219,56 @@ impl App {
         self.search_editing
     }
 
+    pub const fn accepted_language(&self) -> InterfaceLanguage {
+        self.accepted_language
+    }
+
+    pub const fn draft_language(&self) -> InterfaceLanguage {
+        self.draft_language
+    }
+
+    pub const fn accepted_color(&self) -> InterfaceColor {
+        self.accepted_color
+    }
+
+    pub const fn draft_color(&self) -> InterfaceColor {
+        self.draft_color
+    }
+
+    pub const fn settings_field(&self) -> SettingsField {
+        self.settings_field
+    }
+
+    pub const fn settings_save_state(&self) -> SettingsSaveState {
+        self.settings_save_state
+    }
+
+    pub fn settings_dirty(&self) -> bool {
+        self.draft_language != self.accepted_language || self.draft_color != self.accepted_color
+    }
+
+    pub fn set_persisted_interface(&mut self, language: InterfaceLanguage, color: InterfaceColor) {
+        self.accepted_language = language;
+        self.draft_language = language;
+        self.accepted_color = color;
+        self.draft_color = color;
+        self.settings_save_state = SettingsSaveState::Clean;
+    }
+
+    pub fn language_saved(&mut self) {
+        self.accepted_language = self.draft_language;
+        self.accepted_color = self.draft_color;
+        self.settings_save_state = SettingsSaveState::Saved;
+    }
+
+    pub fn language_save_conflict(&mut self) {
+        self.settings_save_state = SettingsSaveState::Conflict;
+    }
+
+    pub fn language_save_failed(&mut self) {
+        self.settings_save_state = SettingsSaveState::Failed;
+    }
+
     pub fn handle(&mut self, command: Command) -> AppEffect {
         match command {
             Command::Quit => AppEffect::Quit,
@@ -194,8 +304,11 @@ impl App {
                         Route::Overview => Screen::Overview,
                         Route::Hooks => Screen::Hooks,
                         Route::Diagnostics => Screen::Diagnostics,
+                        Route::Settings => Screen::Settings,
                     };
                     self.repair_handler_selection();
+                } else if self.screen == Screen::Settings {
+                    self.cycle_current_setting(1);
                 } else if matches!(self.screen, Screen::Overview | Screen::Hooks)
                     && self.selected_handler.is_some()
                 {
@@ -218,6 +331,9 @@ impl App {
             }
             Command::Refresh => self.request_refresh(RefreshReason::Manual(self.requested_window)),
             Command::Window(window) => {
+                if self.screen == Screen::Settings {
+                    return self.apply_interface();
+                }
                 self.requested_window = window;
                 self.request_refresh(RefreshReason::Window(window))
             }
@@ -263,6 +379,26 @@ impl App {
                 }
                 AppEffect::None
             }
+            Command::PreviousSetting => {
+                if self.screen == Screen::Settings {
+                    self.cycle_current_setting(-1);
+                }
+                AppEffect::None
+            }
+            Command::NextSetting => {
+                if self.screen == Screen::Settings {
+                    self.cycle_current_setting(1);
+                }
+                AppEffect::None
+            }
+            Command::RevertSettings => {
+                if self.screen == Screen::Settings {
+                    self.draft_language = self.accepted_language;
+                    self.draft_color = self.accepted_color;
+                    self.settings_save_state = SettingsSaveState::Clean;
+                }
+                AppEffect::None
+            }
         }
     }
 
@@ -288,8 +424,68 @@ impl App {
         AppEffect::RequestRefresh(reason)
     }
 
+    fn cycle_current_setting(&mut self, delta: isize) {
+        match self.settings_field {
+            SettingsField::Language => self.cycle_language(delta),
+            SettingsField::Color => self.cycle_color(delta),
+        }
+    }
+
+    fn cycle_language(&mut self, delta: isize) {
+        const ALL: [InterfaceLanguage; 3] = [
+            InterfaceLanguage::Auto,
+            InterfaceLanguage::EnUs,
+            InterfaceLanguage::ZhCn,
+        ];
+        let current = ALL
+            .iter()
+            .position(|language| *language == self.draft_language)
+            .unwrap_or_default();
+        let next = (current as isize + delta).rem_euclid(ALL.len() as isize) as usize;
+        self.draft_language = ALL[next];
+        self.settings_save_state = if self.settings_dirty() {
+            SettingsSaveState::Dirty
+        } else {
+            SettingsSaveState::Clean
+        };
+    }
+
+    fn cycle_color(&mut self, delta: isize) {
+        const ALL: [InterfaceColor; 3] = [
+            InterfaceColor::Auto,
+            InterfaceColor::Always,
+            InterfaceColor::Never,
+        ];
+        let current = ALL
+            .iter()
+            .position(|color| *color == self.draft_color)
+            .unwrap_or_default();
+        let next = (current as isize + delta).rem_euclid(ALL.len() as isize) as usize;
+        self.draft_color = ALL[next];
+        self.settings_save_state = if self.settings_dirty() {
+            SettingsSaveState::Dirty
+        } else {
+            SettingsSaveState::Clean
+        };
+    }
+
+    fn apply_interface(&mut self) -> AppEffect {
+        if self.settings_dirty() {
+            AppEffect::ApplyInterface {
+                language: self.draft_language,
+                color: self.draft_color,
+            }
+        } else {
+            AppEffect::None
+        }
+    }
+
     fn move_content(&mut self, delta: isize) {
         if self.screen == Screen::Diagnostics {
+            return;
+        }
+        if self.screen == Screen::Settings {
+            self.settings_field = self.settings_field.move_by(delta);
             return;
         }
         let candidates = self
@@ -346,6 +542,7 @@ impl App {
                 .unwrap_or_default(),
             Screen::Hooks | Screen::HookDetail => self.visible_hooks.clone(),
             Screen::Diagnostics => Vec::new(),
+            Screen::Settings => Vec::new(),
         }
     }
 
@@ -416,5 +613,51 @@ mod tests {
         assert_eq!(app.navigation().active(), Route::Diagnostics);
         assert_eq!(app.screen(), Screen::Diagnostics);
         assert!(app.view_model().is_some());
+    }
+
+    #[test]
+    fn language_switch_is_staged_without_losing_hooks_state() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.handle(Command::ToggleFocus);
+        app.handle(Command::Down);
+        app.handle(Command::Enter);
+        app.handle(Command::ToggleFocus);
+        app.handle(Command::Search);
+        app.handle(Command::SearchInput('a'));
+        app.handle(Command::CloseSearch);
+        let search = app.hooks_query().search.clone();
+        let selection = app.selected_handler().cloned();
+        app.navigation.activate(Route::Settings);
+        app.screen = Screen::Settings;
+        app.handle(Command::NextSetting);
+        assert!(app.settings_dirty());
+        assert_eq!(app.hooks_query().search, search);
+        assert_eq!(app.selected_handler(), selection.as_ref());
+        assert_eq!(
+            app.handle(Command::Window(TimeWindow::All)),
+            AppEffect::ApplyInterface {
+                language: InterfaceLanguage::EnUs,
+                color: InterfaceColor::Auto,
+            }
+        );
+        app.language_saved();
+        assert!(!app.settings_dirty());
+    }
+
+    #[test]
+    fn color_policy_is_staged_and_applied_without_touching_hook_state() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.navigation.activate(Route::Settings);
+        app.screen = Screen::Settings;
+        app.settings_field = SettingsField::Color;
+        app.handle(Command::NextSetting);
+        assert_eq!(app.draft_color(), InterfaceColor::Always);
+        assert_eq!(
+            app.handle(Command::Window(TimeWindow::All)),
+            AppEffect::ApplyInterface {
+                language: InterfaceLanguage::Auto,
+                color: InterfaceColor::Always,
+            }
+        );
     }
 }

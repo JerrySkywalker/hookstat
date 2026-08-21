@@ -24,6 +24,7 @@ pub enum ResolvedLocale {
 pub enum LocaleSource {
     Explicit,
     Environment,
+    Preference,
     System,
     Fallback,
 }
@@ -41,10 +42,12 @@ pub enum MessageKey {
     NavOverview,
     NavHooks,
     NavDiagnostics,
+    NavSettings,
     ViewOverview,
     ViewHooks,
     ViewHookDetail,
     ViewDiagnostics,
+    ViewSettings,
     SectionNavigation,
     SectionRuntimeSummary,
     SectionRiskyHooks,
@@ -52,6 +55,7 @@ pub enum MessageKey {
     SectionTerminalBreakdown,
     SectionTimeline,
     SectionDiagnostics,
+    SectionInterface,
     FieldRuntime,
     FieldCoverage,
     FieldTotalRuns,
@@ -70,6 +74,10 @@ pub enum MessageKey {
     FieldSort,
     FieldIncompleteReceipts,
     FieldMalformedReceipts,
+    FieldLanguage,
+    FieldSavedLanguage,
+    FieldColor,
+    FieldSavedColor,
     ColumnName,
     ColumnEvent,
     ColumnRuntime,
@@ -81,26 +89,51 @@ pub enum MessageKey {
     StateRefreshFailed,
     StateTimelineUnavailable,
     StateNoRecentFailures,
+    StatePreferenceClean,
+    StatePreferenceDirty,
+    StatePreferenceSaved,
+    StatePreferenceConflict,
+    StatePreferenceSaveFailed,
     StatusHealthy,
     StatusDegraded,
     StatusCoverageLimited,
     StatusNoTerminalSamples,
     StatusUnavailable,
-    DiagnosticHealthy,
+    DiagnosticPass,
     DiagnosticWarning,
-    DiagnosticUnavailable,
-    DiagnosticRuntimeSnapshot,
-    DiagnosticEvidenceCoverage,
-    DiagnosticReceiptIntegrity,
+    DiagnosticFail,
+    DiagnosticUnknown,
+    DiagnosticUnsupported,
+    DiagnosticHookStatBinary,
+    DiagnosticCodexBinary,
+    DiagnosticEffectiveRuntime,
     DiagnosticInstrumentation,
     DiagnosticTrust,
-    DiagnosticReceiptStorage,
-    DiagnosticRuntimeSnapshotExplanation,
-    DiagnosticEvidenceCoverageExplanation,
-    DiagnosticReceiptIntegrityExplanation,
+    DiagnosticReceiptSpool,
+    DiagnosticLedger,
+    DiagnosticReceiptIntegrity,
+    DiagnosticEvidenceCoverage,
+    DiagnosticPathIdentity,
+    DiagnosticEvidenceFreshness,
+    DiagnosticHookStatBinaryExplanation,
+    DiagnosticCodexBinaryExplanation,
+    DiagnosticEffectiveRuntimeExplanation,
     DiagnosticInstrumentationExplanation,
     DiagnosticTrustExplanation,
-    DiagnosticReceiptStorageExplanation,
+    DiagnosticReceiptSpoolExplanation,
+    DiagnosticLedgerExplanation,
+    DiagnosticReceiptIntegrityExplanation,
+    DiagnosticEvidenceCoverageExplanation,
+    DiagnosticPathIdentityExplanation,
+    DiagnosticEvidenceFreshnessExplanation,
+    DiagnosticHandlerCounts,
+    DiagnosticEvidenceAgeMinutes,
+    LanguageAuto,
+    LanguageEnUs,
+    LanguageZhCn,
+    ColorAuto,
+    ColorAlways,
+    ColorNever,
     CoverageComplete,
     CoveragePartial,
     CoverageSyncOnly,
@@ -152,6 +185,9 @@ pub enum MessageKey {
     FooterSearch,
     FooterFilter,
     FooterSort,
+    FooterChange,
+    FooterApply,
+    FooterRevert,
     MinimumTerminal,
 }
 
@@ -161,10 +197,12 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::NavOverview,
     MessageKey::NavHooks,
     MessageKey::NavDiagnostics,
+    MessageKey::NavSettings,
     MessageKey::ViewOverview,
     MessageKey::ViewHooks,
     MessageKey::ViewHookDetail,
     MessageKey::ViewDiagnostics,
+    MessageKey::ViewSettings,
     MessageKey::SectionNavigation,
     MessageKey::SectionRuntimeSummary,
     MessageKey::SectionRiskyHooks,
@@ -172,6 +210,7 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::SectionTerminalBreakdown,
     MessageKey::SectionTimeline,
     MessageKey::SectionDiagnostics,
+    MessageKey::SectionInterface,
     MessageKey::FieldRuntime,
     MessageKey::FieldCoverage,
     MessageKey::FieldTotalRuns,
@@ -190,6 +229,10 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::FieldSort,
     MessageKey::FieldIncompleteReceipts,
     MessageKey::FieldMalformedReceipts,
+    MessageKey::FieldLanguage,
+    MessageKey::FieldSavedLanguage,
+    MessageKey::FieldColor,
+    MessageKey::FieldSavedColor,
     MessageKey::ColumnName,
     MessageKey::ColumnEvent,
     MessageKey::ColumnRuntime,
@@ -201,26 +244,51 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::StateRefreshFailed,
     MessageKey::StateTimelineUnavailable,
     MessageKey::StateNoRecentFailures,
+    MessageKey::StatePreferenceClean,
+    MessageKey::StatePreferenceDirty,
+    MessageKey::StatePreferenceSaved,
+    MessageKey::StatePreferenceConflict,
+    MessageKey::StatePreferenceSaveFailed,
     MessageKey::StatusHealthy,
     MessageKey::StatusDegraded,
     MessageKey::StatusCoverageLimited,
     MessageKey::StatusNoTerminalSamples,
     MessageKey::StatusUnavailable,
-    MessageKey::DiagnosticHealthy,
+    MessageKey::DiagnosticPass,
     MessageKey::DiagnosticWarning,
-    MessageKey::DiagnosticUnavailable,
-    MessageKey::DiagnosticRuntimeSnapshot,
-    MessageKey::DiagnosticEvidenceCoverage,
-    MessageKey::DiagnosticReceiptIntegrity,
+    MessageKey::DiagnosticFail,
+    MessageKey::DiagnosticUnknown,
+    MessageKey::DiagnosticUnsupported,
+    MessageKey::DiagnosticHookStatBinary,
+    MessageKey::DiagnosticCodexBinary,
+    MessageKey::DiagnosticEffectiveRuntime,
     MessageKey::DiagnosticInstrumentation,
     MessageKey::DiagnosticTrust,
-    MessageKey::DiagnosticReceiptStorage,
-    MessageKey::DiagnosticRuntimeSnapshotExplanation,
-    MessageKey::DiagnosticEvidenceCoverageExplanation,
-    MessageKey::DiagnosticReceiptIntegrityExplanation,
+    MessageKey::DiagnosticReceiptSpool,
+    MessageKey::DiagnosticLedger,
+    MessageKey::DiagnosticReceiptIntegrity,
+    MessageKey::DiagnosticEvidenceCoverage,
+    MessageKey::DiagnosticPathIdentity,
+    MessageKey::DiagnosticEvidenceFreshness,
+    MessageKey::DiagnosticHookStatBinaryExplanation,
+    MessageKey::DiagnosticCodexBinaryExplanation,
+    MessageKey::DiagnosticEffectiveRuntimeExplanation,
     MessageKey::DiagnosticInstrumentationExplanation,
     MessageKey::DiagnosticTrustExplanation,
-    MessageKey::DiagnosticReceiptStorageExplanation,
+    MessageKey::DiagnosticReceiptSpoolExplanation,
+    MessageKey::DiagnosticLedgerExplanation,
+    MessageKey::DiagnosticReceiptIntegrityExplanation,
+    MessageKey::DiagnosticEvidenceCoverageExplanation,
+    MessageKey::DiagnosticPathIdentityExplanation,
+    MessageKey::DiagnosticEvidenceFreshnessExplanation,
+    MessageKey::DiagnosticHandlerCounts,
+    MessageKey::DiagnosticEvidenceAgeMinutes,
+    MessageKey::LanguageAuto,
+    MessageKey::LanguageEnUs,
+    MessageKey::LanguageZhCn,
+    MessageKey::ColorAuto,
+    MessageKey::ColorAlways,
+    MessageKey::ColorNever,
     MessageKey::CoverageComplete,
     MessageKey::CoveragePartial,
     MessageKey::CoverageSyncOnly,
@@ -272,13 +340,24 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::FooterSearch,
     MessageKey::FooterFilter,
     MessageKey::FooterSort,
+    MessageKey::FooterChange,
+    MessageKey::FooterApply,
+    MessageKey::FooterRevert,
     MessageKey::MinimumTerminal,
 ];
 
 impl InterfaceLanguage {
+    pub const fn as_storage(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::EnUs => "en-US",
+            Self::ZhCn => "zh-CN",
+        }
+    }
+
     pub fn parse(value: &str) -> Option<Self> {
         let normalized = value
-            .split('.')
+            .split(['.', '@'])
             .next()
             .unwrap_or(value)
             .trim()
@@ -298,6 +377,7 @@ impl LanguageState {
     pub fn resolve(
         requested: InterfaceLanguage,
         environment_locale: Option<&str>,
+        preference_locale: Option<InterfaceLanguage>,
         system_locale: Option<&str>,
     ) -> Self {
         match requested {
@@ -311,7 +391,12 @@ impl LanguageState {
                 resolved: ResolvedLocale::ZhCn,
                 source: LocaleSource::Explicit,
             },
-            InterfaceLanguage::Auto => resolve_auto(requested, environment_locale, system_locale),
+            InterfaceLanguage::Auto => resolve_auto(
+                requested,
+                environment_locale,
+                preference_locale,
+                system_locale,
+            ),
         }
     }
 }
@@ -319,16 +404,22 @@ impl LanguageState {
 fn resolve_auto(
     requested: InterfaceLanguage,
     environment_locale: Option<&str>,
+    preference_locale: Option<InterfaceLanguage>,
     system_locale: Option<&str>,
 ) -> LanguageState {
     for (candidate, source) in [
         (environment_locale, LocaleSource::Environment),
+        (
+            preference_locale.map(InterfaceLanguage::as_storage),
+            LocaleSource::Preference,
+        ),
         (system_locale, LocaleSource::System),
     ] {
         if let Some(locale) = candidate.and_then(InterfaceLanguage::parse) {
             let resolved = match locale {
                 InterfaceLanguage::ZhCn => ResolvedLocale::ZhCn,
-                InterfaceLanguage::EnUs | InterfaceLanguage::Auto => ResolvedLocale::EnUs,
+                InterfaceLanguage::EnUs => ResolvedLocale::EnUs,
+                InterfaceLanguage::Auto => continue,
             };
             return LanguageState {
                 requested,
@@ -410,38 +501,74 @@ pub const fn health_name(locale: ResolvedLocale, health: Health) -> &'static str
     t(locale, key)
 }
 
+pub const fn interface_language_name(
+    locale: ResolvedLocale,
+    language: InterfaceLanguage,
+) -> &'static str {
+    let key = match language {
+        InterfaceLanguage::Auto => MessageKey::LanguageAuto,
+        InterfaceLanguage::EnUs => MessageKey::LanguageEnUs,
+        InterfaceLanguage::ZhCn => MessageKey::LanguageZhCn,
+    };
+    t(locale, key)
+}
+
+pub const fn interface_color_name(
+    locale: ResolvedLocale,
+    color: crate::interface_preferences::InterfaceColor,
+) -> &'static str {
+    let key = match color {
+        crate::interface_preferences::InterfaceColor::Auto => MessageKey::ColorAuto,
+        crate::interface_preferences::InterfaceColor::Always => MessageKey::ColorAlways,
+        crate::interface_preferences::InterfaceColor::Never => MessageKey::ColorNever,
+    };
+    t(locale, key)
+}
+
 pub const fn diagnostic_status_name(
     locale: ResolvedLocale,
     status: DiagnosticStatus,
 ) -> &'static str {
     let key = match status {
-        DiagnosticStatus::Healthy => MessageKey::DiagnosticHealthy,
+        DiagnosticStatus::Pass => MessageKey::DiagnosticPass,
         DiagnosticStatus::Warning => MessageKey::DiagnosticWarning,
-        DiagnosticStatus::Unavailable => MessageKey::DiagnosticUnavailable,
+        DiagnosticStatus::Fail => MessageKey::DiagnosticFail,
+        DiagnosticStatus::Unknown => MessageKey::DiagnosticUnknown,
+        DiagnosticStatus::Unsupported => MessageKey::DiagnosticUnsupported,
     };
     t(locale, key)
 }
 
 pub const fn diagnostic_title(locale: ResolvedLocale, id: DiagnosticCheckId) -> &'static str {
     let key = match id {
-        DiagnosticCheckId::RuntimeSnapshot => MessageKey::DiagnosticRuntimeSnapshot,
-        DiagnosticCheckId::EvidenceCoverage => MessageKey::DiagnosticEvidenceCoverage,
-        DiagnosticCheckId::ReceiptIntegrity => MessageKey::DiagnosticReceiptIntegrity,
+        DiagnosticCheckId::HookStatBinary => MessageKey::DiagnosticHookStatBinary,
+        DiagnosticCheckId::CodexBinary => MessageKey::DiagnosticCodexBinary,
+        DiagnosticCheckId::EffectiveRuntime => MessageKey::DiagnosticEffectiveRuntime,
         DiagnosticCheckId::Instrumentation => MessageKey::DiagnosticInstrumentation,
         DiagnosticCheckId::Trust => MessageKey::DiagnosticTrust,
-        DiagnosticCheckId::ReceiptStorage => MessageKey::DiagnosticReceiptStorage,
+        DiagnosticCheckId::ReceiptSpool => MessageKey::DiagnosticReceiptSpool,
+        DiagnosticCheckId::Ledger => MessageKey::DiagnosticLedger,
+        DiagnosticCheckId::ReceiptIntegrity => MessageKey::DiagnosticReceiptIntegrity,
+        DiagnosticCheckId::EvidenceCoverage => MessageKey::DiagnosticEvidenceCoverage,
+        DiagnosticCheckId::PathIdentity => MessageKey::DiagnosticPathIdentity,
+        DiagnosticCheckId::EvidenceFreshness => MessageKey::DiagnosticEvidenceFreshness,
     };
     t(locale, key)
 }
 
 pub const fn diagnostic_explanation(locale: ResolvedLocale, id: DiagnosticCheckId) -> &'static str {
     let key = match id {
-        DiagnosticCheckId::RuntimeSnapshot => MessageKey::DiagnosticRuntimeSnapshotExplanation,
-        DiagnosticCheckId::EvidenceCoverage => MessageKey::DiagnosticEvidenceCoverageExplanation,
-        DiagnosticCheckId::ReceiptIntegrity => MessageKey::DiagnosticReceiptIntegrityExplanation,
+        DiagnosticCheckId::HookStatBinary => MessageKey::DiagnosticHookStatBinaryExplanation,
+        DiagnosticCheckId::CodexBinary => MessageKey::DiagnosticCodexBinaryExplanation,
+        DiagnosticCheckId::EffectiveRuntime => MessageKey::DiagnosticEffectiveRuntimeExplanation,
         DiagnosticCheckId::Instrumentation => MessageKey::DiagnosticInstrumentationExplanation,
         DiagnosticCheckId::Trust => MessageKey::DiagnosticTrustExplanation,
-        DiagnosticCheckId::ReceiptStorage => MessageKey::DiagnosticReceiptStorageExplanation,
+        DiagnosticCheckId::ReceiptSpool => MessageKey::DiagnosticReceiptSpoolExplanation,
+        DiagnosticCheckId::Ledger => MessageKey::DiagnosticLedgerExplanation,
+        DiagnosticCheckId::ReceiptIntegrity => MessageKey::DiagnosticReceiptIntegrityExplanation,
+        DiagnosticCheckId::EvidenceCoverage => MessageKey::DiagnosticEvidenceCoverageExplanation,
+        DiagnosticCheckId::PathIdentity => MessageKey::DiagnosticPathIdentityExplanation,
+        DiagnosticCheckId::EvidenceFreshness => MessageKey::DiagnosticEvidenceFreshnessExplanation,
     };
     t(locale, key)
 }
@@ -498,9 +625,29 @@ mod tests {
 
     #[test]
     fn auto_falls_back_to_english_when_sources_are_unsupported() {
-        let language = LanguageState::resolve(InterfaceLanguage::Auto, Some("fr-FR"), None);
+        let language = LanguageState::resolve(InterfaceLanguage::Auto, Some("fr-FR"), None, None);
         assert_eq!(language.resolved, ResolvedLocale::EnUs);
         assert_eq!(language.source, LocaleSource::Fallback);
+    }
+
+    #[test]
+    fn locale_resolution_matches_the_environment_preference_system_order() {
+        let preference = LanguageState::resolve(
+            InterfaceLanguage::Auto,
+            None,
+            Some(InterfaceLanguage::ZhCn),
+            Some("en-US"),
+        );
+        assert_eq!(preference.resolved, ResolvedLocale::ZhCn);
+        assert_eq!(preference.source, LocaleSource::Preference);
+        let environment = LanguageState::resolve(
+            InterfaceLanguage::Auto,
+            Some("en-US"),
+            Some(InterfaceLanguage::ZhCn),
+            None,
+        );
+        assert_eq!(environment.resolved, ResolvedLocale::EnUs);
+        assert_eq!(environment.source, LocaleSource::Environment);
     }
 
     #[test]

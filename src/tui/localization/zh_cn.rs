@@ -6,10 +6,12 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::NavOverview => "概览",
         MessageKey::NavHooks => "钩子",
         MessageKey::NavDiagnostics => "诊断",
+        MessageKey::NavSettings => "设置",
         MessageKey::ViewOverview => "可靠性概览",
         MessageKey::ViewHooks => "钩子可靠性",
         MessageKey::ViewHookDetail => "钩子详情",
         MessageKey::ViewDiagnostics => "只读诊断",
+        MessageKey::ViewSettings => "界面设置",
         MessageKey::SectionNavigation => "导航",
         MessageKey::SectionRuntimeSummary => "运行时摘要",
         MessageKey::SectionRiskyHooks => "高风险钩子",
@@ -17,6 +19,7 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::SectionTerminalBreakdown => "终止状态明细",
         MessageKey::SectionTimeline => "时间线",
         MessageKey::SectionDiagnostics => "运行检查",
+        MessageKey::SectionInterface => "人机界面",
         MessageKey::FieldRuntime => "运行时",
         MessageKey::FieldCoverage => "覆盖范围",
         MessageKey::FieldTotalRuns => "总运行次数",
@@ -35,6 +38,10 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::FieldSort => "排序",
         MessageKey::FieldIncompleteReceipts => "不完整回执",
         MessageKey::FieldMalformedReceipts => "格式错误回执",
+        MessageKey::FieldLanguage => "语言",
+        MessageKey::FieldSavedLanguage => "已保存语言",
+        MessageKey::FieldColor => "颜色",
+        MessageKey::FieldSavedColor => "已保存颜色",
         MessageKey::ColumnName => "名称",
         MessageKey::ColumnEvent => "事件",
         MessageKey::ColumnRuntime => "运行时",
@@ -46,36 +53,69 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::StateRefreshFailed => "刷新失败；已接纳的历史记录仍被保留。",
         MessageKey::StateTimelineUnavailable => "可靠性智能功能尚未接纳，时间线暂不可用。",
         MessageKey::StateNoRecentFailures => "此时间范围内没有最近的执行失败。",
+        MessageKey::StatePreferenceClean => "没有待应用的语言变更。",
+        MessageKey::StatePreferenceDirty => "语言变更已暂存；应用后才会保存。",
+        MessageKey::StatePreferenceSaved => "语言偏好已保存到本地。",
+        MessageKey::StatePreferenceConflict => "语言偏好已被其他位置修改；应用被拒绝。",
+        MessageKey::StatePreferenceSaveFailed => "无法安全保存语言偏好。",
         MessageKey::StatusHealthy => "✓ 健康",
         MessageKey::StatusDegraded => "! 已降级",
         MessageKey::StatusCoverageLimited => "! 覆盖受限",
         MessageKey::StatusNoTerminalSamples => "! 没有终止样本",
         MessageKey::StatusUnavailable => "不可用",
-        MessageKey::DiagnosticHealthy => "通过",
+        MessageKey::DiagnosticPass => "通过",
         MessageKey::DiagnosticWarning => "需注意",
-        MessageKey::DiagnosticUnavailable => "未检查",
-        MessageKey::DiagnosticRuntimeSnapshot => "运行时快照",
-        MessageKey::DiagnosticEvidenceCoverage => "证据覆盖范围",
-        MessageKey::DiagnosticReceiptIntegrity => "回执完整性",
+        MessageKey::DiagnosticFail => "失败",
+        MessageKey::DiagnosticUnknown => "未知",
+        MessageKey::DiagnosticUnsupported => "不支持",
+        MessageKey::DiagnosticHookStatBinary => "HookStat 二进制",
+        MessageKey::DiagnosticCodexBinary => "Codex 二进制",
+        MessageKey::DiagnosticEffectiveRuntime => "有效运行时",
         MessageKey::DiagnosticInstrumentation => "插桩",
         MessageKey::DiagnosticTrust => "信任",
-        MessageKey::DiagnosticReceiptStorage => "回执存储",
-        MessageKey::DiagnosticRuntimeSnapshotExplanation => {
-            "来自已接纳的可靠性快照；不会运行运行时探测。"
-        }
-        MessageKey::DiagnosticEvidenceCoverageExplanation => {
-            "按已接纳状态报告覆盖范围，绝不会默认为健康的零失败。"
-        }
-        MessageKey::DiagnosticReceiptIntegrityExplanation => {
-            "计数来自已接纳的快照；格式错误或不完整回执始终可见。"
+        MessageKey::DiagnosticReceiptSpool => "回执缓冲区",
+        MessageKey::DiagnosticLedger => "SQLite 台账",
+        MessageKey::DiagnosticReceiptIntegrity => "回执完整性",
+        MessageKey::DiagnosticEvidenceCoverage => "证据覆盖范围",
+        MessageKey::DiagnosticPathIdentity => "Windows PATH 标识",
+        MessageKey::DiagnosticEvidenceFreshness => "最新证据",
+        MessageKey::DiagnosticHookStatBinaryExplanation => "只确认正在运行的 HookStat 构建版本。",
+        MessageKey::DiagnosticCodexBinaryExplanation => "执行受限的 Codex 版本检查，不会更改配置。",
+        MessageKey::DiagnosticEffectiveRuntimeExplanation => {
+            "可用时使用 Codex 的只读有效钩子视图。"
         }
         MessageKey::DiagnosticInstrumentationExplanation => {
-            "G01 未检查；此视图不会读取或更改 Codex 配置。"
+            "仅读取受支持配置，绝不会应用或修复钩子。"
         }
-        MessageKey::DiagnosticTrustExplanation => "G01 未检查；此视图不会查询或更改 Codex 信任。",
-        MessageKey::DiagnosticReceiptStorageExplanation => {
-            "存储探测延后至 G04；此视图不会检查文件系统。"
+        MessageKey::DiagnosticTrustExplanation => "报告只读有效信任状态，绝不写入信任。",
+        MessageKey::DiagnosticReceiptSpoolExplanation => {
+            "检查已有缓冲区，不会创建、修复或写入回执。"
         }
+        MessageKey::DiagnosticLedgerExplanation => {
+            "以只读方式打开已有台账；缺失状态绝不会被当作健康。"
+        }
+        MessageKey::DiagnosticReceiptIntegrityExplanation => {
+            "格式错误和不完整回执的计数始终明确显示。"
+        }
+        MessageKey::DiagnosticEvidenceCoverageExplanation => {
+            "受支持和不受支持的覆盖范围均保持可见；未知绝不等同健康。"
+        }
+        MessageKey::DiagnosticPathIdentityExplanation => {
+            "仅与 Windows 代理执行相关；其他平台显示为不支持。"
+        }
+        MessageKey::DiagnosticEvidenceFreshnessExplanation => {
+            "仅在存在时测量最新的已净化证据时间戳。"
+        }
+        MessageKey::DiagnosticHandlerCounts => {
+            "已发现 {discovered} / 已插桩 {instrumented} / 不支持 {unsupported}"
+        }
+        MessageKey::DiagnosticEvidenceAgeMinutes => "{minutes} 分钟前",
+        MessageKey::LanguageAuto => "自动",
+        MessageKey::LanguageEnUs => "英语 (en-US)",
+        MessageKey::LanguageZhCn => "简体中文 (zh-CN)",
+        MessageKey::ColorAuto => "自动",
+        MessageKey::ColorAlways => "始终使用",
+        MessageKey::ColorNever => "从不使用",
         MessageKey::CoverageComplete => "完整",
         MessageKey::CoveragePartial => "部分",
         MessageKey::CoverageSyncOnly => "仅同步",
@@ -127,6 +167,9 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::FooterSearch => "搜索",
         MessageKey::FooterFilter => "筛选",
         MessageKey::FooterSort => "排序",
+        MessageKey::FooterChange => "更改",
+        MessageKey::FooterApply => "应用",
+        MessageKey::FooterRevert => "还原",
         MessageKey::MinimumTerminal => "请调整到至少 24x10",
     }
 }

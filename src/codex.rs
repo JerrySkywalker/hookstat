@@ -7,6 +7,7 @@
 //! limitations but never modified optimistically.
 
 use crate::domain::{ExecutionMode, HandlerIdentity, HookEvent};
+use crate::identity::display_name_from_command;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -1085,10 +1086,13 @@ fn discover_one(path: &Path) -> Result<Vec<LocatedHandler>, CodexError> {
                     runtime_location_key(path, event, group_index, handler_index)
                 );
                 let revision = format!("hr_{}", short_hash(canonical_json(handler).as_bytes()));
+                let display_command = command_windows.as_deref().unwrap_or(command);
                 let identity = HandlerIdentity {
                     key: handler_key.clone(),
                     revision,
-                    label: format!("Codex / {} / {}", event.label(), &handler_key[3..]),
+                    label: display_name_from_command(display_command).unwrap_or_else(|| {
+                        format!("Codex / {} / {}", event.label(), &handler_key[3..])
+                    }),
                     source_kind: source_kind.label().into(),
                     event,
                     matcher_identity: matcher_identity.clone(),
@@ -1649,6 +1653,40 @@ mod tests {
         assert!(!json.contains("private command"));
         assert!(!json.contains("private/source/path"));
         assert!(!json.contains("private matcher"));
+    }
+
+    #[test]
+    fn duplicate_human_names_keep_distinct_stable_handler_keys() {
+        let temp = tempdir().unwrap();
+        let config = temp.path().join("hooks.json");
+        fs::write(
+            &config,
+            r#"{"hooks":{"Stop":[{"hooks":[
+                {"type":"command","command":"pwsh -File 'C:\\Program Files\\TabBeacon\\tabbeacon-stop.ps1'"},
+                {"type":"command","command":"pwsh -File 'C:\\Program Files\\TabBeacon\\tabbeacon-stop.ps1'"}
+            ]}]}}"#,
+        )
+        .unwrap();
+        let discovery = discover_paths(&[config]).unwrap();
+        assert_eq!(discovery.summary.handlers.len(), 2);
+        assert!(
+            discovery
+                .summary
+                .handlers
+                .iter()
+                .all(|item| item.handler.label == "TabBeacon Stop")
+        );
+        assert_ne!(
+            discovery.summary.handlers[0].handler.key,
+            discovery.summary.handlers[1].handler.key
+        );
+        assert!(
+            discovery
+                .summary
+                .handlers
+                .iter()
+                .all(|item| !item.handler.label.starts_with("hk_"))
+        );
     }
     #[test]
     fn transformation_preserves_semantics_unknown_fields_and_partial_installation() {

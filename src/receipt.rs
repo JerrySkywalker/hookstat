@@ -97,6 +97,17 @@ impl ReceiptSpool {
         Ok(Self { root })
     }
 
+    /// Opens an already-created spool without creating its directory. This is
+    /// deliberately separate from `open`: operational diagnostics must be
+    /// able to inspect a missing or damaged spool without repairing it.
+    pub fn open_existing(root: impl AsRef<Path>) -> Result<Self, ReceiptError> {
+        let root = root.as_ref().to_path_buf();
+        if !root.join("records").is_dir() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "receipt records").into());
+        }
+        Ok(Self { root })
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
