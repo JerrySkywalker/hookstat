@@ -9,6 +9,7 @@ use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
 
 fn run(binary: &str, arguments: &[&str], app_data: &Path) -> std::process::Output {
@@ -85,6 +86,13 @@ fn read_only_report_projects_existing_ledger_without_creating_a_receipt_spool() 
     fs::create_dir_all(&data_root).unwrap();
     let ledger_path = data_root.join("ledger.sqlite3");
     let mut ledger = Ledger::open_path(&ledger_path).unwrap();
+    // This CLI contract projects the selected (default 7d) finite period. Keep
+    // the fixture admitted to that period; Unix epoch data would be correctly
+    // excluded by the v0.2.1 bounded query and would test no useful behavior.
+    let occurred_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
     ledger
         .ingest(&[HookInvocation {
             source_key: "fixture".into(),
@@ -102,7 +110,7 @@ fn read_only_report_projects_existing_ledger_without_creating_a_receipt_spool() 
                 structural_identity: "fixture".into(),
                 execution_mode: ExecutionMode::Sync,
             },
-            occurred_at_unix_ms: 1,
+            occurred_at_unix_ms,
             terminal_status: TerminalStatus::Failed,
             duration_ms: None,
             error_fingerprint: Some("exit_nonzero".into()),

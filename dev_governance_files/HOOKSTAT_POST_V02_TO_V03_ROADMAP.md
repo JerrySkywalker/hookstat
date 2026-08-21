@@ -177,6 +177,15 @@ HS-G12R — v0.2.1 Hardening & Release
 
 Detailed plan: `../goals/HS-V021-STARTUP-PERIOD-RELIABILITY.md`.
 
+## v0.2.1 train status
+
+The HS-V021-G07-G10 startup, period, and bounded-data implementation train is
+settled locally and awaiting its exact-head hosted CI/merge evidence. It adds
+the G07 observability surface, G08 asynchronous first frame, G09 five-period
+selector, and G10 bounded ledger and incremental receipt paths. HS-G11 remains
+`NOT_STARTED`: the known Windows doctor false-negative for a PATH-resolved
+Codex binary shim is still open and is deliberately outside this train.
+
 ## v0.2.1 confirmed requirements
 
 ### P0 — startup and correctness
