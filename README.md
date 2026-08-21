@@ -21,23 +21,19 @@ daemon.
 
 ## Install and update
 
-The published stable package can be installed or updated with Cargo:
+Install the authorized stable v0.2.0 package from crates.io with Cargo:
 
 ```powershell
-cargo install hookstat --locked
-cargo install hookstat --locked --force
+cargo install hookstat --version 0.2.0 --locked
+cargo install hookstat --version 0.2.0 --locked --force
 ```
 
-To evaluate the current repository release candidate without publishing it,
-install from an owned checkout instead:
+For local development from an owned checkout instead:
 
 ```powershell
 cargo install --path . --locked
 hookstat --version
 ```
-
-The v0.2.0 candidate is not published, tagged, or released by this repository
-train. Verify the exact candidate commit before using it outside local RC work.
 
 ## Opt-in Codex instrumentation
 
