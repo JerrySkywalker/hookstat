@@ -70,14 +70,15 @@ fn report_command(arguments: &[String]) -> ExitCode {
 fn tui_command() -> ExitCode {
     match load_current_report() {
         Ok((_, values, malformed, incomplete)) => {
-            match tui::run_with_refresh(values, malformed, incomplete, now_unix_ms(), || {
+            match tui::run_with_refresh(values, malformed, incomplete, now_unix_ms(), |request| {
                 load_current_report().map(|(_, values, malformed, incomplete)| {
-                    tui::RefreshSnapshot {
+                    tui::RefreshSnapshot::from_values(
                         values,
                         malformed,
                         incomplete,
-                        now: now_unix_ms(),
-                    }
+                        now_unix_ms(),
+                        request.reason.window(),
+                    )
                 })
             }) {
                 Ok(()) => ExitCode::SUCCESS,

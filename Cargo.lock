@@ -522,6 +522,8 @@ dependencies = [
  "sha2",
  "tempfile",
  "toml",
+ "unicode-segmentation",
+ "unicode-width",
  "win32job",
 ]
 
