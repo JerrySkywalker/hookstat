@@ -7,12 +7,13 @@ use ratatui::{
     widgets::{Cell, Paragraph, Row, Table, Wrap},
 };
 
-use super::app::{App, Focus, Screen};
+use super::app::{App, Focus, Screen, SettingsField, SettingsSaveState};
 use super::layout::{ApplicationShell, ShellLayout};
 use super::localization::{
     LanguageState, MessageKey, ResolvedLocale, coverage_name, diagnostic_explanation,
     diagnostic_status_name, diagnostic_title, event_name, failure_rate_with_sample, health_name,
-    runtime_name, sort_name, t, terminal_status_name, window_name,
+    interface_color_name, interface_language_name, runtime_name, sort_name, t,
+    terminal_status_name, window_name,
 };
 use super::state::ResourceState;
 use super::theme::{ColorRole, Theme, TypographyRole};
@@ -70,6 +71,7 @@ fn render_content(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoca
         Screen::Overview => render_overview(frame, area, app, locale, theme),
         Screen::Hooks => render_hooks(frame, area, app, locale, theme),
         Screen::Diagnostics => render_diagnostics(frame, area, &view.diagnostics, locale, theme),
+        Screen::Settings => render_settings(frame, area, app, locale, theme),
         Screen::HookDetail => {
             let detail = app
                 .selected_handler()
@@ -104,6 +106,72 @@ fn render_content(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoca
             theme,
         );
     }
+}
+
+fn render_settings(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLocale, theme: Theme) {
+    let lines = vec![
+        key_value_line(
+            locale,
+            MessageKey::FieldLanguage,
+            &format!(
+                "{} {}",
+                settings_marker(app, SettingsField::Language),
+                interface_language_name(locale, app.draft_language())
+            ),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldColor,
+            &format!(
+                "{} {}",
+                settings_marker(app, SettingsField::Color),
+                interface_color_name(locale, app.draft_color())
+            ),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldSavedLanguage,
+            interface_language_name(locale, app.accepted_language()),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldSavedColor,
+            interface_color_name(locale, app.accepted_color()),
+            theme,
+        ),
+        Line::from(Span::styled(
+            settings_message(locale, app.settings_save_state()),
+            theme.typography_style(TypographyRole::Metadata),
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(themed_block(t(locale, MessageKey::SectionInterface), theme))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn settings_marker(app: &App, field: SettingsField) -> &'static str {
+    if app.settings_field() == field {
+        ">"
+    } else {
+        " "
+    }
+}
+
+fn settings_message(locale: ResolvedLocale, state: SettingsSaveState) -> &'static str {
+    let key = match state {
+        SettingsSaveState::Clean => MessageKey::StatePreferenceClean,
+        SettingsSaveState::Dirty => MessageKey::StatePreferenceDirty,
+        SettingsSaveState::Saved => MessageKey::StatePreferenceSaved,
+        SettingsSaveState::Conflict => MessageKey::StatePreferenceConflict,
+        SettingsSaveState::Failed => MessageKey::StatePreferenceSaveFailed,
+    };
+    t(locale, key)
 }
 
 fn render_diagnostics(
@@ -192,22 +260,42 @@ fn diagnostic_facts(locale: ResolvedLocale, check: &DiagnosticCheckViewModel) ->
         .facts
         .iter()
         .map(|fact| match fact {
-            DiagnosticFact::Runtime(runtime) => format!(
+            DiagnosticFact::Runtime { runtime } => format!(
                 "{}: {}",
                 t(locale, MessageKey::FieldRuntime),
                 runtime_name(locale, *runtime),
             ),
-            DiagnosticFact::Coverage(coverage) => format!(
+            DiagnosticFact::Version { value } => format!("v{value}"),
+            DiagnosticFact::HandlerCounts {
+                discovered,
+                instrumented,
+                unsupported,
+            } => t(locale, MessageKey::DiagnosticHandlerCounts)
+                .replace("{discovered}", &discovered.to_string())
+                .replace("{instrumented}", &instrumented.to_string())
+                .replace("{unsupported}", &unsupported.to_string()),
+            DiagnosticFact::LedgerInvocations { count } => {
+                format!("{}: {count}", t(locale, MessageKey::FieldTotalRuns),)
+            }
+            DiagnosticFact::ReceiptRecords { count } => {
+                format!("{}: {count}", t(locale, MessageKey::FieldRunCount),)
+            }
+            DiagnosticFact::ReceiptIntegrity {
+                incomplete,
+                malformed,
+            } => format!(
+                "{}: {incomplete} · {}: {malformed}",
+                t(locale, MessageKey::FieldIncompleteReceipts),
+                t(locale, MessageKey::FieldMalformedReceipts),
+            ),
+            DiagnosticFact::Coverage { coverage } => format!(
                 "{}: {}",
                 t(locale, MessageKey::FieldCoverage),
                 coverage_name(locale, *coverage),
             ),
-            DiagnosticFact::IncompleteReceipts(value) => format!(
-                "{}: {value}",
-                t(locale, MessageKey::FieldIncompleteReceipts),
-            ),
-            DiagnosticFact::MalformedReceipts(value) => {
-                format!("{}: {value}", t(locale, MessageKey::FieldMalformedReceipts),)
+            DiagnosticFact::EvidenceAgeMinutes { age_minutes } => {
+                t(locale, MessageKey::DiagnosticEvidenceAgeMinutes)
+                    .replace("{minutes}", &age_minutes.to_string())
             }
         })
         .collect::<Vec<_>>();
@@ -383,7 +471,11 @@ fn render_hook_rows(
                 } else {
                     " "
                 };
-                let identity = display_identity(context.locale, &row.display_identity);
+                let identity = display_identity(
+                    context.locale,
+                    &row.display_identity,
+                    row.display_disambiguator,
+                );
                 format!(
                     "{marker} {}\n  {} · {} · {} · {}",
                     truncate_to_width(&identity, area.width.saturating_sub(6) as usize),
@@ -424,7 +516,11 @@ fn render_hook_rows(
         };
         Row::new(vec![
             Cell::from(truncate_to_width(
-                &display_identity(context.locale, &row.display_identity),
+                &display_identity(
+                    context.locale,
+                    &row.display_identity,
+                    row.display_disambiguator,
+                ),
                 28,
             )),
             Cell::from(event_name(context.locale, row.event)),
@@ -468,7 +564,11 @@ fn render_hook_detail(
             Constraint::Length(3),
         ])
         .split(area);
-    let identity = display_identity(locale, &detail.display_identity);
+    let identity = display_identity(
+        locale,
+        &detail.display_identity,
+        detail.display_disambiguator,
+    );
     let facts = vec![
         key_value_line(
             locale,
@@ -608,8 +708,12 @@ fn status_line(locale: ResolvedLocale, health: Health, theme: Theme) -> Line<'st
     ])
 }
 
-fn display_identity(locale: ResolvedLocale, identity: &DisplayIdentity) -> String {
-    match identity {
+fn display_identity(
+    locale: ResolvedLocale,
+    identity: &DisplayIdentity,
+    disambiguator: Option<usize>,
+) -> String {
+    let name = match identity {
         DisplayIdentity::ExistingMetadata(value) => value.clone(),
         DisplayIdentity::EventFallback(event) => {
             format!(
@@ -618,6 +722,10 @@ fn display_identity(locale: ResolvedLocale, identity: &DisplayIdentity) -> Strin
                 t(locale, MessageKey::IdentityHook)
             )
         }
+    };
+    match disambiguator {
+        Some(index) => format!("{name} #{index}"),
+        None => name,
     }
 }
 
@@ -631,9 +739,10 @@ fn health_color(health: Health) -> ColorRole {
 
 fn diagnostic_color(status: DiagnosticStatus) -> ColorRole {
     match status {
-        DiagnosticStatus::Healthy => ColorRole::Success,
+        DiagnosticStatus::Pass => ColorRole::Success,
         DiagnosticStatus::Warning => ColorRole::Warning,
-        DiagnosticStatus::Unavailable => ColorRole::Info,
+        DiagnosticStatus::Fail => ColorRole::Danger,
+        DiagnosticStatus::Unknown | DiagnosticStatus::Unsupported => ColorRole::Info,
     }
 }
 
@@ -654,6 +763,11 @@ fn render_notice(frame: &mut Frame, area: Rect, message: &str, role: ColorRole, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analytics::TimeWindow;
+    use crate::diagnostics::{
+        DiagnosticCheck, DiagnosticCheckId, DiagnosticStatus, DiagnosticsReport,
+    };
+    use crate::report::instrumented_report;
     use crate::report::synthetic_fixture_report;
     use ratatui::{Terminal, backend::TestBackend};
 
@@ -674,6 +788,7 @@ mod tests {
                                 super::super::localization::InterfaceLanguage::ZhCn
                             }
                         },
+                        None,
                         None,
                         None,
                     ),
@@ -713,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_are_localized_and_explicitly_non_probing() {
+    fn diagnostics_are_localized_and_explicitly_read_only() {
         let mut app = App::from_report(synthetic_fixture_report(1_000));
         app.handle(super::super::keymap::Command::ToggleFocus);
         app.handle(super::super::keymap::Command::Down);
@@ -722,13 +837,72 @@ mod tests {
 
         let english = rendered(app.clone(), ResolvedLocale::EnUs, 100, 30);
         assert!(english.contains("Read-only diagnostics"));
-        assert!(english.contains("Not inspected"));
+        assert!(english.contains("Unknown"));
         assert!(english.contains("Receipt integrity"));
 
         let chinese = rendered(app, ResolvedLocale::ZhCn, 100, 30);
         let normalized = chinese.replace(' ', "");
         assert!(normalized.contains("只读诊断"));
-        assert!(normalized.contains("未检查"));
+        assert!(normalized.contains("未知"));
         assert!(normalized.contains("回执完整性"));
+    }
+
+    #[test]
+    fn representative_viewports_cover_empty_populated_and_degraded_states() {
+        let populated = App::from_report(synthetic_fixture_report(1_000));
+        assert!(rendered(populated.clone(), ResolvedLocale::EnUs, 100, 30).contains("Codex"));
+        assert!(rendered(populated.clone(), ResolvedLocale::EnUs, 44, 16).contains("n="));
+        assert!(rendered(populated, ResolvedLocale::EnUs, 100, 10).contains("n="));
+
+        let mut empty =
+            App::from_report(instrumented_report(&[], 1_000, TimeWindow::Last7Days, 0, 0));
+        empty.handle(super::super::keymap::Command::ToggleFocus);
+        empty.handle(super::super::keymap::Command::Down);
+        empty.handle(super::super::keymap::Command::Enter);
+        assert_eq!(empty.screen(), Screen::Hooks);
+        let empty_buffer = rendered(empty, ResolvedLocale::ZhCn, 100, 30);
+        assert!(empty_buffer.replace(' ', "").contains("尚无已接纳"));
+
+        let diagnostics = DiagnosticsReport {
+            schema_version: 1,
+            read_only: true,
+            generated_at_unix_ms: 1_000,
+            overall_status: DiagnosticStatus::Fail,
+            checks: vec![DiagnosticCheck {
+                id: DiagnosticCheckId::ReceiptIntegrity,
+                status: DiagnosticStatus::Fail,
+                facts: vec![],
+            }],
+        };
+        let mut degraded = App::from_snapshot(
+            super::super::app::RefreshSnapshot::from_report_with_diagnostics(
+                synthetic_fixture_report(1_000),
+                diagnostics,
+            ),
+        );
+        degraded.handle(super::super::keymap::Command::ToggleFocus);
+        degraded.handle(super::super::keymap::Command::Down);
+        degraded.handle(super::super::keymap::Command::Down);
+        degraded.handle(super::super::keymap::Command::Enter);
+        let rendered = rendered(degraded, ResolvedLocale::EnUs, 100, 30);
+        assert!(rendered.contains("Fail"));
+        assert!(rendered.contains("Receipt integrity"));
+    }
+
+    #[test]
+    fn every_top_level_view_reflows_at_normal_narrow_and_minimum_sizes() {
+        for steps in [0, 1, 2, 3] {
+            let mut app = App::from_report(synthetic_fixture_report(1_000));
+            app.handle(super::super::keymap::Command::ToggleFocus);
+            for _ in 0..steps {
+                app.handle(super::super::keymap::Command::Down);
+            }
+            app.handle(super::super::keymap::Command::Enter);
+            for locale in [ResolvedLocale::EnUs, ResolvedLocale::ZhCn] {
+                for (width, height) in [(100, 30), (44, 16), (24, 10)] {
+                    assert!(rendered(app.clone(), locale, width, height).contains("HookStat"));
+                }
+            }
+        }
     }
 }

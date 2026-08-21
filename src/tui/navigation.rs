@@ -5,16 +5,23 @@ pub enum Route {
     Overview,
     Hooks,
     Diagnostics,
+    Settings,
 }
 
 impl Route {
-    pub const ALL: [Self; 3] = [Self::Overview, Self::Hooks, Self::Diagnostics];
+    pub const ALL: [Self; 4] = [
+        Self::Overview,
+        Self::Hooks,
+        Self::Diagnostics,
+        Self::Settings,
+    ];
 
     pub const fn index(self) -> usize {
         match self {
             Self::Overview => 0,
             Self::Hooks => 1,
             Self::Diagnostics => 2,
+            Self::Settings => 3,
         }
     }
 }
@@ -75,11 +82,11 @@ mod tests {
     fn navigation_wraps_and_activates_a_typed_route() {
         let mut navigation = NavigationState::new();
         navigation.move_by(-1);
-        assert_eq!(navigation.selected(), Route::Diagnostics);
+        assert_eq!(navigation.selected(), Route::Settings);
         navigation.activate_selected();
-        assert_eq!(navigation.active(), Route::Diagnostics);
+        assert_eq!(navigation.active(), Route::Settings);
         navigation.move_by(1);
         navigation.back();
-        assert_eq!(navigation.selected(), Route::Diagnostics);
+        assert_eq!(navigation.selected(), Route::Settings);
     }
 }

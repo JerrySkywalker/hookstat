@@ -5,6 +5,10 @@
 //! database handles, receipt paths, or raw runtime payloads.
 
 use crate::analytics::{HandlerAggregate, RecentFailure, TerminalBreakdown, TimeWindow};
+pub use crate::diagnostics::{
+    DiagnosticCheck as DiagnosticCheckViewModel, DiagnosticCheckId, DiagnosticFact,
+    DiagnosticStatus, DiagnosticsReport as DiagnosticsViewModel,
+};
 use crate::domain::{EvidenceCoverage, HookEvent, Runtime, TerminalStatus};
 use crate::report::MachineReport;
 
@@ -51,50 +55,6 @@ pub enum TrendAvailability {
     Unavailable,
 }
 
-/// Stable identifiers for the bounded diagnostic facts exposed by G01.
-///
-/// These are deliberately locale-neutral. G01 only projects facts that are
-/// already present in the accepted report snapshot; live configuration, trust,
-/// and storage inspection remain G04 work.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DiagnosticCheckId {
-    RuntimeSnapshot,
-    EvidenceCoverage,
-    ReceiptIntegrity,
-    Instrumentation,
-    Trust,
-    ReceiptStorage,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DiagnosticStatus {
-    Healthy,
-    Warning,
-    Unavailable,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DiagnosticFact {
-    Runtime(Runtime),
-    Coverage(EvidenceCoverage),
-    IncompleteReceipts(u64),
-    MalformedReceipts(u64),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiagnosticCheckViewModel {
-    pub id: DiagnosticCheckId,
-    pub status: DiagnosticStatus,
-    pub facts: Vec<DiagnosticFact>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiagnosticsViewModel {
-    pub overall_status: DiagnosticStatus,
-    pub checks: Vec<DiagnosticCheckViewModel>,
-    pub refreshed_at_unix_ms: i64,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeSummaryViewModel {
     pub runtime: Runtime,
@@ -110,6 +70,7 @@ pub struct RuntimeSummaryViewModel {
 pub struct HookRowViewModel {
     pub internal_ref: HandlerRef,
     pub display_identity: DisplayIdentity,
+    pub display_disambiguator: Option<usize>,
     pub event: HookEvent,
     pub coverage: EvidenceCoverage,
     pub runs: u64,
@@ -147,6 +108,7 @@ pub struct RecentFailureViewModel {
 pub struct HookDetailViewModel {
     pub internal_ref: HandlerRef,
     pub display_identity: DisplayIdentity,
+    pub display_disambiguator: Option<usize>,
     pub revision: String,
     pub event: HookEvent,
     pub coverage: EvidenceCoverage,
@@ -209,12 +171,12 @@ impl ReliabilityCenterViewModel {
         // the stable UI reference for the later multi-runtime boundary.
         let runtime = Runtime::Codex;
         let coverage = report.qualification.coverage;
-        let rows = report
+        let mut rows = report
             .handlers
             .iter()
             .map(|aggregate| hook_row(runtime, coverage, aggregate))
             .collect::<Vec<_>>();
-        let details = report
+        let mut details = report
             .handlers
             .iter()
             .map(|aggregate| {
@@ -227,6 +189,7 @@ impl ReliabilityCenterViewModel {
                 )
             })
             .collect::<Vec<_>>();
+        assign_fallback_disambiguators(&mut rows, &mut details);
         let total_runs = rows.iter().map(|row| row.runs).sum();
         let terminal_sample_count = rows.iter().map(|row| row.sample_count).sum();
         let failed_runs = rows.iter().map(|row| row.failed_runs).sum();
@@ -334,56 +297,58 @@ fn diagnostics(
     refreshed_at_unix_ms: i64,
 ) -> DiagnosticsViewModel {
     let coverage_status = if coverage == EvidenceCoverage::Complete {
-        DiagnosticStatus::Healthy
+        DiagnosticStatus::Pass
     } else {
         DiagnosticStatus::Warning
     };
     let receipt_status = if incomplete_receipts == 0 && malformed_receipts == 0 {
-        DiagnosticStatus::Healthy
+        DiagnosticStatus::Pass
     } else {
         DiagnosticStatus::Warning
     };
     let overall_status = if matches!(summary_health, Health::Healthy)
-        && coverage_status == DiagnosticStatus::Healthy
-        && receipt_status == DiagnosticStatus::Healthy
+        && coverage_status == DiagnosticStatus::Pass
+        && receipt_status == DiagnosticStatus::Pass
     {
-        DiagnosticStatus::Healthy
+        DiagnosticStatus::Pass
     } else {
         DiagnosticStatus::Warning
     };
     DiagnosticsViewModel {
+        schema_version: crate::diagnostics::DIAGNOSTICS_SCHEMA_VERSION,
+        read_only: true,
         overall_status,
         checks: vec![
             DiagnosticCheckViewModel {
-                id: DiagnosticCheckId::RuntimeSnapshot,
-                status: DiagnosticStatus::Healthy,
-                facts: vec![DiagnosticFact::Runtime(runtime)],
+                id: DiagnosticCheckId::EffectiveRuntime,
+                status: DiagnosticStatus::Pass,
+                facts: vec![DiagnosticFact::Runtime { runtime }],
             },
             DiagnosticCheckViewModel {
                 id: DiagnosticCheckId::EvidenceCoverage,
                 status: coverage_status,
-                facts: vec![DiagnosticFact::Coverage(coverage)],
+                facts: vec![DiagnosticFact::Coverage { coverage }],
             },
             DiagnosticCheckViewModel {
                 id: DiagnosticCheckId::ReceiptIntegrity,
                 status: receipt_status,
-                facts: vec![
-                    DiagnosticFact::IncompleteReceipts(incomplete_receipts),
-                    DiagnosticFact::MalformedReceipts(malformed_receipts),
-                ],
+                facts: vec![DiagnosticFact::ReceiptIntegrity {
+                    incomplete: incomplete_receipts,
+                    malformed: malformed_receipts,
+                }],
             },
             unavailable_diagnostic(DiagnosticCheckId::Instrumentation),
             unavailable_diagnostic(DiagnosticCheckId::Trust),
-            unavailable_diagnostic(DiagnosticCheckId::ReceiptStorage),
+            unavailable_diagnostic(DiagnosticCheckId::ReceiptSpool),
         ],
-        refreshed_at_unix_ms,
+        generated_at_unix_ms: refreshed_at_unix_ms,
     }
 }
 
 fn unavailable_diagnostic(id: DiagnosticCheckId) -> DiagnosticCheckViewModel {
     DiagnosticCheckViewModel {
         id,
-        status: DiagnosticStatus::Unavailable,
+        status: DiagnosticStatus::Unknown,
         facts: Vec::new(),
     }
 }
@@ -396,6 +361,7 @@ fn hook_row(
     HookRowViewModel {
         internal_ref: HandlerRef::from_aggregate(runtime, aggregate),
         display_identity: resolve_display_identity(aggregate),
+        display_disambiguator: None,
         event: aggregate.handler.event,
         coverage,
         runs: aggregate.runs,
@@ -417,6 +383,7 @@ fn hook_detail(
     HookDetailViewModel {
         internal_ref: internal_ref.clone(),
         display_identity: resolve_display_identity(aggregate),
+        display_disambiguator: None,
         revision: aggregate.handler.revision.clone(),
         event: aggregate.handler.event,
         coverage,
@@ -432,6 +399,34 @@ fn hook_detail(
             .map(recent_failure)
             .collect(),
         trend: TrendAvailability::Unavailable,
+    }
+}
+
+fn assign_fallback_disambiguators(
+    rows: &mut [HookRowViewModel],
+    details: &mut [HookDetailViewModel],
+) {
+    let mut totals = std::collections::BTreeMap::<String, usize>::new();
+    for row in rows.iter() {
+        if matches!(row.display_identity, DisplayIdentity::EventFallback(_)) {
+            *totals.entry(row.event.as_storage().to_owned()).or_default() += 1;
+        }
+    }
+    let mut seen = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_handler = std::collections::BTreeMap::<String, usize>::new();
+    for row in rows.iter_mut() {
+        let event = row.event.as_storage().to_owned();
+        if matches!(row.display_identity, DisplayIdentity::EventFallback(_))
+            && totals.get(&event).copied().unwrap_or_default() > 1
+        {
+            let index = seen.entry(event).or_default();
+            *index += 1;
+            row.display_disambiguator = Some(*index);
+            by_handler.insert(row.internal_ref.handler_key.clone(), *index);
+        }
+    }
+    for detail in details {
+        detail.display_disambiguator = by_handler.get(&detail.internal_ref.handler_key).copied();
     }
 }
 
@@ -589,6 +584,31 @@ mod tests {
     }
 
     #[test]
+    fn same_event_fallbacks_receive_stable_human_disambiguators() {
+        let mut first = invocation("Codex / Stop / first");
+        first.handler.key = "hk_first".into();
+        first.source_record_id = "first".into();
+        let mut second = invocation("Codex / Stop / second");
+        second.handler.key = "hk_second".into();
+        second.source_record_id = "second".into();
+        let view = ReliabilityCenterViewModel::from_report(instrumented_report(
+            &[first, second],
+            1_000,
+            TimeWindow::All,
+            0,
+            0,
+        ));
+        assert_eq!(view.hooks.rows[0].display_disambiguator, Some(1));
+        assert_eq!(view.hooks.rows[1].display_disambiguator, Some(2));
+        assert!(
+            view.hooks
+                .rows
+                .iter()
+                .all(|row| !row.display_identity.searchable_text().contains("hk_"))
+        );
+    }
+
+    #[test]
     fn diagnostics_are_snapshot_only_and_do_not_claim_unchecked_owner_state() {
         let view = ReliabilityCenterViewModel::from_report(instrumented_report(
             &[],
@@ -601,19 +621,19 @@ mod tests {
         assert!(view.diagnostics.checks.iter().any(|check| {
             check.id == DiagnosticCheckId::ReceiptIntegrity
                 && check.facts
-                    == vec![
-                        DiagnosticFact::IncompleteReceipts(1),
-                        DiagnosticFact::MalformedReceipts(2),
-                    ]
+                    == vec![DiagnosticFact::ReceiptIntegrity {
+                        incomplete: 1,
+                        malformed: 2,
+                    }]
         }));
         for id in [
             DiagnosticCheckId::Instrumentation,
             DiagnosticCheckId::Trust,
-            DiagnosticCheckId::ReceiptStorage,
+            DiagnosticCheckId::ReceiptSpool,
         ] {
             assert!(view.diagnostics.checks.iter().any(|check| {
                 check.id == id
-                    && check.status == DiagnosticStatus::Unavailable
+                    && check.status == DiagnosticStatus::Unknown
                     && check.facts.is_empty()
             }));
         }

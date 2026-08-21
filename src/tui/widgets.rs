@@ -97,11 +97,17 @@ pub fn render_shortcut_footer(
                 parts.push(format!("Enter {}", t(locale, MessageKey::FooterOpen)));
             }
             Screen::Diagnostics => {}
+            Screen::Settings => {}
         }
         if app.screen() == Screen::Hooks {
             parts.push(format!("/ {}", t(locale, MessageKey::FooterSearch)));
             parts.push(format!("f {}", t(locale, MessageKey::FooterFilter)));
             parts.push(format!("s {}", t(locale, MessageKey::FooterSort)));
+        }
+        if app.screen() == Screen::Settings {
+            parts.push(format!("←/→ {}", t(locale, MessageKey::FooterChange)));
+            parts.push(format!("a {}", t(locale, MessageKey::FooterApply)));
+            parts.push(format!("x {}", t(locale, MessageKey::FooterRevert)));
         }
         parts.push(format!("r {}", t(locale, MessageKey::FooterRefresh)));
         parts.push(format!("q {}", t(locale, MessageKey::FooterQuit)));
@@ -163,6 +169,7 @@ fn route_label(locale: ResolvedLocale, route: Route) -> &'static str {
         Route::Overview => MessageKey::NavOverview,
         Route::Hooks => MessageKey::NavHooks,
         Route::Diagnostics => MessageKey::NavDiagnostics,
+        Route::Settings => MessageKey::NavSettings,
     };
     t(locale, key)
 }

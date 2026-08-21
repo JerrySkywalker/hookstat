@@ -2,6 +2,8 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::interface_preferences::InterfaceColor;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ThemeKind {
     Default,
@@ -69,6 +71,22 @@ impl Theme {
             Self::monochrome()
         } else {
             Self::default_color()
+        }
+    }
+
+    pub fn from_interface_color(color: InterfaceColor) -> Self {
+        match color {
+            InterfaceColor::Auto => Self::from_environment(),
+            InterfaceColor::Always => {
+                if std::env::var("HOOKSTAT_TUI_THEME")
+                    .is_ok_and(|value| value.eq_ignore_ascii_case("monochrome"))
+                {
+                    Self::monochrome()
+                } else {
+                    Self::default_color()
+                }
+            }
+            InterfaceColor::Never => Self::no_color(),
         }
     }
 
@@ -168,5 +186,13 @@ mod tests {
         assert_eq!(style.fg, None);
         assert_eq!(style.bg, None);
         assert!(style.add_modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn explicit_color_policy_can_override_auto_detection() {
+        assert_eq!(
+            Theme::from_interface_color(InterfaceColor::Never),
+            Theme::no_color()
+        );
     }
 }

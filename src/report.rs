@@ -17,6 +17,9 @@ pub enum ReportKind {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct MachineReport {
     pub schema_version: u8,
+    /// The machine schema keeps stable handler keys authoritative while
+    /// exposing sanitized Human label evolution as a separate contract.
+    pub display_identity_schema_version: u8,
     pub report_kind: ReportKind,
     pub generated_at_unix_ms: i64,
     pub window: TimeWindow,
@@ -41,7 +44,8 @@ pub fn instrumented_report(
     incomplete_receipts: u64,
 ) -> MachineReport {
     MachineReport {
-        schema_version: 1,
+        schema_version: 2,
+        display_identity_schema_version: 1,
         report_kind: ReportKind::InstrumentedCodex,
         generated_at_unix_ms: now,
         window,
@@ -56,7 +60,8 @@ pub fn instrumented_report(
 pub fn synthetic_fixture_report(now: i64) -> MachineReport {
     let values = synthetic_fixture_invocations(now);
     MachineReport {
-        schema_version: 1,
+        schema_version: 2,
+        display_identity_schema_version: 1,
         report_kind: ReportKind::SyntheticFixture,
         generated_at_unix_ms: now,
         window: TimeWindow::Last7Days,
