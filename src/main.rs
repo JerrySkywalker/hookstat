@@ -494,7 +494,7 @@ fn load_read_only_report(
         Ledger::open_read_only(root.join("ledger.sqlite3")).map_err(|error| error.to_string())?;
     let mut values = ledger.invocations().map_err(|error| error.to_string())?;
     let aliases = ledger
-        .handler_aliases()
+        .handler_aliases_if_present()
         .map_err(|error| error.to_string())?;
     for value in &mut values {
         if let Some(alias) = aliases
