@@ -128,11 +128,6 @@ fn synthetic_fixture_invocations(now: i64) -> Vec<HookInvocation> {
 }
 
 #[cfg(test)]
-pub(crate) fn synthetic_fixture_invocations_for_tui(now: i64) -> Vec<HookInvocation> {
-    synthetic_fixture_invocations(now)
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
