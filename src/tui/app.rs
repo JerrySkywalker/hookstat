@@ -137,6 +137,7 @@ pub struct App {
     hooks_query: HooksQuery,
     visible_hooks: Vec<HookRowViewModel>,
     search_editing: bool,
+    detail_scroll_lines: u16,
     accepted_language: InterfaceLanguage,
     draft_language: InterfaceLanguage,
     accepted_color: InterfaceColor,
@@ -174,6 +175,7 @@ impl App {
             hooks_query,
             visible_hooks,
             search_editing: false,
+            detail_scroll_lines: 0,
             accepted_language: InterfaceLanguage::Auto,
             draft_language: InterfaceLanguage::Auto,
             accepted_color: InterfaceColor::Auto,
@@ -205,6 +207,10 @@ impl App {
 
     pub fn selected_handler(&self) -> Option<&HandlerRef> {
         self.selected_handler.as_ref()
+    }
+
+    pub const fn detail_scroll_lines(&self) -> u16 {
+        self.detail_scroll_lines
     }
 
     pub const fn hooks_query(&self) -> &HooksQuery {
@@ -295,6 +301,14 @@ impl App {
                 }
                 AppEffect::None
             }
+            Command::PageUp => {
+                self.page_content(-1);
+                AppEffect::None
+            }
+            Command::PageDown => {
+                self.page_content(1);
+                AppEffect::None
+            }
             Command::Enter => {
                 if self.search_editing {
                     self.search_editing = false;
@@ -314,6 +328,7 @@ impl App {
                 {
                     self.navigation.activate(Route::Hooks);
                     self.screen = Screen::HookDetail;
+                    self.detail_scroll_lines = 0;
                 }
                 AppEffect::None
             }
@@ -323,6 +338,7 @@ impl App {
                 } else if self.screen == Screen::HookDetail {
                     self.navigation.activate(Route::Hooks);
                     self.screen = Screen::Hooks;
+                    self.detail_scroll_lines = 0;
                     self.repair_handler_selection();
                 } else {
                     self.navigation.back();
@@ -481,6 +497,10 @@ impl App {
     }
 
     fn move_content(&mut self, delta: isize) {
+        if self.screen == Screen::HookDetail {
+            self.move_detail_scroll(delta);
+            return;
+        }
         if self.screen == Screen::Diagnostics {
             return;
         }
@@ -508,6 +528,25 @@ impl App {
             .unwrap_or(0);
         let next = (current as isize + delta).rem_euclid(candidates.len() as isize) as usize;
         self.selected_handler = Some(candidates[next].clone());
+    }
+
+    fn page_content(&mut self, direction: isize) {
+        if self.focus == Focus::Navigation {
+            self.navigation.move_by(direction);
+        } else if self.screen == Screen::HookDetail {
+            self.move_detail_scroll(direction.saturating_mul(6));
+        } else {
+            self.move_content(direction.saturating_mul(5));
+        }
+    }
+
+    fn move_detail_scroll(&mut self, delta: isize) {
+        self.detail_scroll_lines = if delta.is_negative() {
+            self.detail_scroll_lines
+                .saturating_sub(delta.unsigned_abs() as u16)
+        } else {
+            self.detail_scroll_lines.saturating_add(delta as u16)
+        };
     }
 
     fn rebuild_visible_hooks(&mut self) {
@@ -659,5 +698,18 @@ mod tests {
                 color: InterfaceColor::Always,
             }
         );
+    }
+
+    #[test]
+    fn detail_scrolling_is_bounded_and_uses_press_commands() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.handle(Command::Enter);
+        assert_eq!(app.screen(), Screen::HookDetail);
+        app.handle(Command::PageDown);
+        assert_eq!(app.detail_scroll_lines(), 6);
+        app.handle(Command::Up);
+        assert_eq!(app.detail_scroll_lines(), 5);
+        app.handle(Command::PageUp);
+        assert_eq!(app.detail_scroll_lines(), 0);
     }
 }

@@ -2,11 +2,13 @@
 
 **Local-first reliability analytics for hooks across coding-agent runtimes.**
 
-HookStat v0.1.0 is Codex-first, while its canonical ledger, analytics, JSON,
+HookStat v0.2 is the Reliability Center: a TabBeacon-aligned terminal UI that
+turns admitted local hook receipts into a bilingual, human-readable operational
+view. It is Codex-first today, while its canonical ledger, analytics, JSON,
 and TUI remain evidence-source-neutral. Passive durable receipts remain the
-preferred architecture. Current Codex 0.147.0 does not provide enough passive
-retrospective per-handler terminal evidence, so v0.1 also supports an **opt-in
-transparent instrumented receipt source**.
+preferred architecture. When passive per-handler terminal evidence is not
+available, HookStat supports an **opt-in transparent instrumented receipt
+source**.
 
 Normal daily launch is unchanged:
 
@@ -16,6 +18,26 @@ codex
 
 HookStat never requires `hookstat codex` as a launcher and does not require a
 daemon.
+
+## Install and update
+
+The published stable package can be installed or updated with Cargo:
+
+```powershell
+cargo install hookstat --locked
+cargo install hookstat --locked --force
+```
+
+To evaluate the current repository release candidate without publishing it,
+install from an owned checkout instead:
+
+```powershell
+cargo install --path . --locked
+hookstat --version
+```
+
+The v0.2.0 candidate is not published, tagged, or released by this repository
+train. Verify the exact candidate commit before using it outside local RC work.
 
 ## Opt-in Codex instrumentation
 
@@ -89,19 +111,65 @@ whitespace or `cmd.exe` metacharacters. This keeps ordinary installations and
 data directories with spaces or non-ASCII characters compatible without
 changing the original handler's command or process-containment behavior.
 
-## Reports and TUI
+## Reliability Center, reports, and diagnostics
 
 ```powershell
 hookstat report
 hookstat report --json
+hookstat report --read-only --json
+hookstat doctor
+hookstat doctor --json
+hookstat diagnostics export --output .\hookstat-diagnostics.json --apply
 hookstat
 ```
 
-Reports and the Ratatui TUI provide 24h/7d/30d/All selections, per-handler
-counts, distinct terminal states, coverage warnings, and latency only when every
-terminal observation proves duration. Every failure percentage includes its
-terminal sample count. Partial/incomplete coverage never appears as `0.00%
-healthy`.
+`hookstat` opens the full-screen Reliability Center. Its Overview highlights
+coverage and the most meaningful risks; Hooks supports search, failed-only
+filtering, and sorting; Hook Detail keeps the human display identity primary
+and shows the internal key only as metadata. Diagnostics is observational and
+read-only. It can report HookStat/Codex presence, effective runtime visibility,
+instrumentation/trust state, spool and SQLite health, receipt integrity,
+coverage, PATH identity, and evidence freshness. It never applies
+instrumentation, repairs hooks, writes trust, or mutates Codex.
+
+Reports and the UI provide deterministic 24h/7d/30d/All selections,
+previous-period comparisons, per-handler counts, terminal states, and
+coverage warnings. Trend, regression, and revision panels explicitly say when
+history, samples, coverage, or a prior revision are unavailable; they never
+invent evidence. Risk ranking is not percentage-only: it presents failure rate
+with its terminal sample count and combines sample confidence, coverage,
+recency/trend, and impact so a 1/1 result does not automatically outrank a
+meaningful mature failure history. Bounded fingerprints use only admitted
+status categories such as non-zero exit, timeout, protocol failure, or
+execution failure—never raw error streams.
+
+Every failure percentage includes its terminal sample count. Partial,
+incomplete, unsupported, or unknown coverage never appears as `0.00% healthy`.
+`report --read-only` is useful for inspecting an existing HookStat data root
+without creating a ledger or spool.
+
+### Reliability Center keyboard reference
+
+| Key | Action |
+| --- | --- |
+| `Tab` | Move focus between navigation and content. |
+| `↑`/`↓` or `k`/`j` | Move the focused route or selected hook; scroll Detail. |
+| `PgUp`/`PgDn` | Page a long Hooks list or Detail. |
+| `Enter` / `Esc` | Open the selected hook / return to Hooks. |
+| `/`, `f`, `s` | Search, toggle failed-only, or change Hooks sort. |
+| `1`, `7`, `3`, `a` | Request 24h, 7d, 30d, or All history (or apply Settings with `a`). |
+| `r`, `q` | Request asynchronous refresh / cleanly quit. |
+
+Settings stages `auto`, `en-US`, or `zh-CN` and a color preference. Applying
+the setting changes the next frame and persists the choice without losing the
+current route, selection, search, filter, sort, or requested window. Locale
+precedence follows explicit `--lang`, `HOOKSTAT_LANG`, the saved preference,
+system locale, then English. Machine JSON keys and stable handler keys remain
+locale-neutral.
+
+`diagnostics export` previews by default and writes only with `--apply`. Its
+sanitized JSON excludes prompts, payloads, credentials, raw hook commands,
+stdout/stderr, and private session content.
 
 `hookstat preview-fixture [--json]` is sanitized deterministic development data,
 not Owner Codex history.
@@ -113,11 +181,11 @@ cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --locked
 cargo build --locked
-cargo package
-cargo publish --dry-run
+cargo package --locked
+cargo publish --dry-run --locked
 ```
 
-Actual crates.io publication, a `v0.1.0` tag, and GitHub Release creation remain
+Actual crates.io publication, a `v0.2.0` tag, and GitHub Release creation remain
 separate Owner-authorized actions.
 
 See the architecture, ADRs, and execution contracts under `docs/`,

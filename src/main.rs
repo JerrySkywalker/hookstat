@@ -23,6 +23,9 @@ fn print_help() {
 
 fn main() -> ExitCode {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    if let Some(arguments) = tui_arguments(&arguments) {
+        return tui_command(arguments);
+    }
     match arguments.first().map(String::as_str) {
         Some("-h" | "--help") => {
             print_help();
@@ -39,11 +42,19 @@ fn main() -> ExitCode {
         Some("identity") => identity_command(&arguments[1..]),
         Some("codex") => codex_command(&arguments[1..]),
         None => tui_command(&[]),
-        Some("tui") => tui_command(&arguments[1..]),
         Some(value) => {
             eprintln!("hookstat: unknown command '{value}'");
             ExitCode::from(2)
         }
+    }
+}
+
+fn tui_arguments(arguments: &[String]) -> Option<&[String]> {
+    match arguments.first().map(String::as_str) {
+        None => Some(arguments),
+        Some("tui") => Some(&arguments[1..]),
+        Some("--lang") => Some(arguments),
+        Some(_) => None,
     }
 }
 
@@ -571,4 +582,21 @@ fn now_unix_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tui_language_flag_matches_the_documented_invocation_forms() {
+        let implicit = vec!["--lang".to_owned(), "zh-CN".to_owned()];
+        assert_eq!(tui_arguments(&implicit), Some(implicit.as_slice()));
+
+        let explicit = vec!["tui".to_owned(), "--lang".to_owned(), "en-US".to_owned()];
+        assert_eq!(tui_arguments(&explicit), Some(&explicit[1..]));
+
+        let report = vec!["report".to_owned(), "--json".to_owned()];
+        assert_eq!(tui_arguments(&report), None);
+    }
 }

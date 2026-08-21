@@ -91,6 +91,9 @@ pub fn render_shortcut_footer(
     if app.is_search_editing() {
         parts.push(format!("Esc {}", t(locale, MessageKey::FooterBack)));
     } else {
+        if matches!(app.screen(), Screen::Hooks | Screen::HookDetail) {
+            parts.push(format!("PgUp/PgDn {}", t(locale, MessageKey::FooterPage)));
+        }
         match app.screen() {
             Screen::HookDetail => parts.push(format!("Esc {}", t(locale, MessageKey::FooterBack))),
             Screen::Overview | Screen::Hooks => {
