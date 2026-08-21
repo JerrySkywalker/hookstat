@@ -9,7 +9,7 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use super::app::Focus;
+use super::app::{App, Focus, Screen};
 use super::localization::{MessageKey, ResolvedLocale, t};
 use super::navigation::{NavigationState, Route};
 use super::theme::{ColorRole, Theme, TypographyRole};
@@ -66,7 +66,10 @@ pub fn render_navigation(
             ))
         })
         .collect::<Vec<_>>();
-    let navigation = Paragraph::new(Text::from(lines)).block(themed_block("Navigation", theme));
+    let navigation = Paragraph::new(Text::from(lines)).block(themed_block(
+        t(locale, MessageKey::SectionNavigation),
+        theme,
+    ));
     frame.render_widget(navigation, area);
 }
 
@@ -74,27 +77,37 @@ pub fn render_shortcut_footer(
     frame: &mut Frame,
     area: Rect,
     locale: ResolvedLocale,
-    focus: Focus,
-    detail_open: bool,
+    app: &App,
     theme: Theme,
 ) {
-    let focus_text = match focus {
+    let focus_text = match app.focus() {
         Focus::Content => t(locale, MessageKey::FooterFocusNavigation),
         Focus::Navigation => t(locale, MessageKey::FooterFocusContent),
     };
-    let back_or_open = if detail_open {
-        format!("Esc {}", t(locale, MessageKey::FooterBack))
+    let mut parts = vec![
+        format!("Tab {focus_text}"),
+        format!("↑/↓ {}", t(locale, MessageKey::FooterNavigate)),
+    ];
+    if app.is_search_editing() {
+        parts.push(format!("Esc {}", t(locale, MessageKey::FooterBack)));
     } else {
-        format!("Enter {}", t(locale, MessageKey::FooterOpen))
-    };
-    let text = format!(
-        "Tab {focus_text} · ↑/↓ {} · {back_or_open} · r {} · q {}",
-        t(locale, MessageKey::FooterNavigate),
-        t(locale, MessageKey::FooterRefresh),
-        t(locale, MessageKey::FooterQuit),
-    );
+        match app.screen() {
+            Screen::HookDetail => parts.push(format!("Esc {}", t(locale, MessageKey::FooterBack))),
+            Screen::Overview | Screen::Hooks => {
+                parts.push(format!("Enter {}", t(locale, MessageKey::FooterOpen)));
+            }
+            Screen::Diagnostics => {}
+        }
+        if app.screen() == Screen::Hooks {
+            parts.push(format!("/ {}", t(locale, MessageKey::FooterSearch)));
+            parts.push(format!("f {}", t(locale, MessageKey::FooterFilter)));
+            parts.push(format!("s {}", t(locale, MessageKey::FooterSort)));
+        }
+        parts.push(format!("r {}", t(locale, MessageKey::FooterRefresh)));
+        parts.push(format!("q {}", t(locale, MessageKey::FooterQuit)));
+    }
     frame.render_widget(
-        Paragraph::new(truncate_to_width(&text, area.width as usize))
+        Paragraph::new(truncate_to_width(&parts.join(" · "), area.width as usize))
             .style(theme.typography_style(TypographyRole::Metadata)),
         area,
     );
@@ -149,9 +162,7 @@ fn route_label(locale: ResolvedLocale, route: Route) -> &'static str {
     let key = match route {
         Route::Overview => MessageKey::NavOverview,
         Route::Hooks => MessageKey::NavHooks,
-        Route::Trends => MessageKey::NavTrends,
         Route::Diagnostics => MessageKey::NavDiagnostics,
-        Route::Settings => MessageKey::NavSettings,
     };
     t(locale, key)
 }

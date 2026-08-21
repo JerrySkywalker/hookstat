@@ -69,8 +69,9 @@ fn report_command(arguments: &[String]) -> ExitCode {
 }
 fn tui_command() -> ExitCode {
     match load_current_report() {
-        Ok((_, values, malformed, incomplete)) => {
-            match tui::run_with_refresh(values, malformed, incomplete, now_unix_ms(), |request| {
+        Ok((report, _, _, _)) => {
+            let initial = tui::RefreshSnapshot::from_report(report);
+            match tui::run_with_refresh_snapshot(initial, |request| {
                 load_current_report().map(|(_, values, malformed, incomplete)| {
                     tui::RefreshSnapshot::from_values(
                         values,

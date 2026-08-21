@@ -13,6 +13,7 @@ mod rendering;
 mod state;
 mod terminal;
 mod theme;
+mod view_model;
 mod widgets;
 
 pub use app::{RefreshReason, RefreshSnapshot};
@@ -35,7 +36,14 @@ pub fn run(
     now: i64,
 ) -> io::Result<()> {
     let worker_values = values.clone();
-    run_with_refresh(values, malformed, incomplete, now, move |request| {
+    let initial = RefreshSnapshot::from_values(
+        values,
+        malformed,
+        incomplete,
+        now,
+        crate::analytics::TimeWindow::Last7Days,
+    );
+    run_with_refresh_snapshot(initial, move |request| {
         Ok(RefreshSnapshot::from_values(
             worker_values.clone(),
             malformed,
@@ -57,10 +65,28 @@ pub fn run_with_refresh(
     + Send
     + 'static,
 ) -> io::Result<()> {
+    let initial = RefreshSnapshot::from_values(
+        values,
+        malformed,
+        incomplete,
+        now,
+        crate::analytics::TimeWindow::Last7Days,
+    );
+    run_with_refresh_snapshot(initial, refresh)
+}
+
+/// Start the TUI from a completed presentation snapshot. The caller prepares
+/// the initial view model before the terminal event loop is created.
+pub fn run_with_refresh_snapshot(
+    initial: RefreshSnapshot,
+    refresh: impl FnMut(RefreshRequest<RefreshReason>) -> Result<RefreshSnapshot, String>
+    + Send
+    + 'static,
+) -> io::Result<()> {
     let mut guard = terminal::TerminalGuard::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
-    let app = App::new(values, malformed, incomplete, now);
+    let app = App::from_snapshot(initial);
     let refresh: Refresh = Box::new(refresh);
     let result = run_loop(&mut terminal, app, RefreshController::spawn(refresh));
     drop(terminal);
@@ -90,19 +116,24 @@ fn run_loop(
         if !event::poll(Duration::from_millis(250))? {
             continue;
         }
-        let Event::Key(key) = event::read()? else {
-            continue;
-        };
-        let Some(command) = keymap::command_for(key) else {
-            continue;
-        };
-        match app.handle(command) {
-            AppEffect::None => {}
-            AppEffect::Quit => return Ok(()),
-            AppEffect::RequestRefresh(reason) => {
-                refresh.request(reason);
+        match event::read()? {
+            Event::Resize(_, _) => {
+                terminal.autoresize()?;
             }
-        }
+            Event::Key(key) => {
+                let Some(command) = keymap::command_for(key, app.is_search_editing()) else {
+                    continue;
+                };
+                match app.handle(command) {
+                    AppEffect::None => {}
+                    AppEffect::Quit => return Ok(()),
+                    AppEffect::RequestRefresh(reason) => {
+                        refresh.request(reason);
+                    }
+                }
+            }
+            _ => {}
+        };
     }
 }
 
