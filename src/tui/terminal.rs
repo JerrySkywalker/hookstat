@@ -84,18 +84,18 @@ impl<O: TerminalOperations> LifecycleGuard<O> {
             if let Err(error) = self.operations.show_cursor() {
                 first_error = Some(error);
             }
-            if let Err(error) = self.operations.leave_alternate_screen() {
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
+            if let Err(error) = self.operations.leave_alternate_screen()
+                && first_error.is_none()
+            {
+                first_error = Some(error);
             }
             self.alternate_screen_active = false;
         }
         if self.raw_mode_active {
-            if let Err(error) = self.operations.disable_raw_mode() {
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
+            if let Err(error) = self.operations.disable_raw_mode()
+                && first_error.is_none()
+            {
+                first_error = Some(error);
             }
             self.raw_mode_active = false;
         }

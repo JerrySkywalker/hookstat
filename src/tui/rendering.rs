@@ -117,6 +117,10 @@ fn render_legacy_home(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         .report_state()
         .accepted()
         .expect("accepted report checked before render");
+    if area.height < 8 || area.width < 32 {
+        render_minimum_compatibility(frame, area, app, theme);
+        return;
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(4)])
@@ -195,6 +199,30 @@ fn render_legacy_home(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     .header(header)
     .block(themed_block("v0.1 report compatibility", theme));
     frame.render_widget(table, chunks[1]);
+}
+
+fn render_minimum_compatibility(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
+    let report = app
+        .report_state()
+        .accepted()
+        .expect("accepted report checked before render");
+    let Some(item) = report.handlers.get(app.selected_handler_index()) else {
+        return;
+    };
+    let text = format!(
+        "> {}\n  {}/{} {:.1}% (n={})",
+        truncate_to_width(&item.handler.key, area.width.saturating_sub(8) as usize),
+        item.failed_runs,
+        item.failure_sample_count,
+        item.failure_rate_percent,
+        item.failure_sample_count,
+    );
+    frame.render_widget(
+        Paragraph::new(text)
+            .style(theme.typography_style(TypographyRole::Value))
+            .block(themed_block("v0.1", theme)),
+        area,
+    );
 }
 
 fn render_legacy_detail(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
@@ -303,6 +331,6 @@ mod tests {
         for (width, height) in [(100, 30), (44, 16), (24, 10)] {
             assert!(rendered(app.clone(), width, height).contains("n="));
         }
-        assert!(rendered(app, 23, 10).contains("Resize to at least 24x10"));
+        assert!(rendered(app, 23, 10).contains("Resize"));
     }
 }

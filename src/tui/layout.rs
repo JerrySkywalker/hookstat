@@ -40,7 +40,13 @@ impl ApplicationShell {
                 Constraint::Length(2),
             ])
             .split(area);
-        let navigation_width = if vertical[1].width >= 52 { 21 } else { 12 };
+        let navigation_width = if vertical[1].width >= 52 {
+            21
+        } else if vertical[1].width >= 40 {
+            12
+        } else {
+            4
+        };
         let horizontal = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(navigation_width), Constraint::Min(10)])
@@ -76,7 +82,7 @@ mod tests {
         else {
             panic!("minimum terminal must have a shell");
         };
-        assert_eq!(areas.navigation.width, 12);
+        assert_eq!(areas.navigation.width, 4);
         assert!(areas.content.width >= 10);
     }
 
