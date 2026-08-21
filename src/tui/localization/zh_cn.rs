@@ -182,6 +182,7 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::FingerprintProtocolFailure => "协议失败",
         MessageKey::FingerprintExecutionFailed => "执行失败",
         MessageKey::FooterNavigate => "导航",
+        MessageKey::FooterPage => "翻页",
         MessageKey::FooterOpen => "打开",
         MessageKey::FooterBack => "返回",
         MessageKey::FooterRefresh => "刷新",

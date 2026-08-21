@@ -7,6 +7,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 pub enum Command {
     Up,
     Down,
+    PageUp,
+    PageDown,
     Enter,
     Back,
     Refresh,
@@ -43,6 +45,8 @@ pub fn command_for(key: KeyEvent, search_editing: bool) -> Option<Command> {
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => Some(Command::Up),
         KeyCode::Down | KeyCode::Char('j') => Some(Command::Down),
+        KeyCode::PageUp => Some(Command::PageUp),
+        KeyCode::PageDown => Some(Command::PageDown),
         KeyCode::Enter => Some(Command::Enter),
         KeyCode::Esc | KeyCode::Backspace => Some(Command::Back),
         KeyCode::Char('r') => Some(Command::Refresh),
@@ -91,6 +95,10 @@ mod tests {
         assert_eq!(
             command_for(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE), false),
             Some(Command::Refresh)
+        );
+        assert_eq!(
+            command_for(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), false),
+            Some(Command::PageDown)
         );
     }
 

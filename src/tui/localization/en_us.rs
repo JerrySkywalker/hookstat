@@ -192,6 +192,7 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::FingerprintProtocolFailure => "Protocol failure",
         MessageKey::FingerprintExecutionFailed => "Execution failed",
         MessageKey::FooterNavigate => "navigate",
+        MessageKey::FooterPage => "page",
         MessageKey::FooterOpen => "open",
         MessageKey::FooterBack => "back",
         MessageKey::FooterRefresh => "refresh",

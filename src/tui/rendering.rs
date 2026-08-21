@@ -78,7 +78,7 @@ fn render_content(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoca
                 .selected_handler()
                 .and_then(|reference| view.detail(reference));
             match detail {
-                Some(detail) => render_hook_detail(frame, area, detail, locale, theme),
+                Some(detail) => render_hook_detail(frame, area, app, detail, locale, theme),
                 None => render_state_panel(
                     frame,
                     area,
@@ -463,7 +463,17 @@ fn render_hook_rows(
     rows: &[HookRowViewModel],
     context: HookRowsContext<'_>,
 ) {
+    let selected_index = context.selected.map_or(0, |selected| {
+        rows.iter()
+            .position(|row| &row.internal_ref == selected)
+            .unwrap_or(0)
+    });
     if area.width < 54 {
+        let rows = visible_rows(
+            rows,
+            selected_index,
+            area.height.saturating_sub(2) as usize / 2,
+        );
         let content = rows
             .iter()
             .map(|row| {
@@ -502,6 +512,7 @@ fn render_hook_rows(
         );
         return;
     }
+    let rows = visible_rows(rows, selected_index, area.height.saturating_sub(3) as usize);
     let header = Row::new([
         t(context.locale, MessageKey::ColumnName),
         t(context.locale, MessageKey::ColumnEvent),
@@ -557,6 +568,7 @@ fn render_hook_rows(
 fn render_hook_detail(
     frame: &mut Frame,
     area: Rect,
+    app: &App,
     detail: &HookDetailViewModel,
     locale: ResolvedLocale,
     theme: Theme,
@@ -693,6 +705,35 @@ fn render_hook_detail(
         t(locale, MessageKey::SectionFailureFingerprints),
         fingerprints,
     );
+    if area.height < 18 {
+        let compact = format!(
+            "{identity}\n{}\n{}\n{}\n{body}",
+            key_value_text(
+                locale,
+                MessageKey::FieldRuntime,
+                runtime_name(locale, detail.internal_ref.runtime),
+            ),
+            key_value_text(
+                locale,
+                MessageKey::FieldCoverage,
+                coverage_name(locale, detail.coverage),
+            ),
+            key_value_text(
+                locale,
+                MessageKey::FieldFailureRate,
+                &failure_rate_with_sample(locale, detail.failure_rate_percent, detail.sample_count),
+            ),
+        );
+        frame.render_widget(
+            Paragraph::new(compact)
+                .style(theme.typography_style(TypographyRole::Value))
+                .block(themed_block(t(locale, MessageKey::ViewHookDetail), theme))
+                .wrap(Wrap { trim: true })
+                .scroll((app.detail_scroll_lines(), 0)),
+            area,
+        );
+        return;
+    }
     frame.render_widget(
         Paragraph::new(body)
             .style(theme.typography_style(TypographyRole::Value))
@@ -700,9 +741,23 @@ fn render_hook_detail(
                 t(locale, MessageKey::SectionIntelligence),
                 theme,
             ))
-            .wrap(Wrap { trim: true }),
+            .wrap(Wrap { trim: true })
+            .scroll((app.detail_scroll_lines(), 0)),
         sections[1],
     );
+}
+
+fn visible_rows<T>(rows: &[T], selected_index: usize, capacity: usize) -> &[T] {
+    let capacity = capacity.max(1);
+    let start = selected_index
+        .saturating_sub(capacity.saturating_sub(1))
+        .min(rows.len().saturating_sub(capacity));
+    let end = start.saturating_add(capacity).min(rows.len());
+    &rows[start..end]
+}
+
+fn key_value_text(locale: ResolvedLocale, key: MessageKey, value: &str) -> String {
+    format!("{}: {value}", t(locale, key))
 }
 
 fn trend_summary(locale: ResolvedLocale, row: &HookRowViewModel) -> &'static str {
@@ -1072,5 +1127,14 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn selected_rows_remain_inside_a_short_viewport() {
+        let rows = (0..8).collect::<Vec<_>>();
+        assert_eq!(visible_rows(&rows, 0, 3), &[0, 1, 2]);
+        assert_eq!(visible_rows(&rows, 5, 3), &[3, 4, 5]);
+        assert_eq!(visible_rows(&rows, 7, 3), &[5, 6, 7]);
+        assert!(visible_rows::<usize>(&[], 0, 3).is_empty());
     }
 }
