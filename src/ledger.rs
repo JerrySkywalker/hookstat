@@ -280,6 +280,23 @@ impl Ledger {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Reads aliases without assuming that a pre-v0.2 ledger has received the
+    /// additive annotations-table migration. This is intentionally useful to
+    /// read-only consumers: an absent optional presentation table is not a
+    /// reason to migrate or reject valid historical invocation evidence.
+    pub fn handler_aliases_if_present(&self) -> Result<Vec<HandlerAlias>, LedgerError> {
+        let present: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'handler_annotations')",
+            [],
+            |row| row.get(0),
+        )?;
+        if present {
+            self.handler_aliases()
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
     pub fn invocations(&self) -> Result<Vec<HookInvocation>, LedgerError> {
         let mut statement = self.connection.prepare(
             "SELECT source_key, source_record_id, runtime, evidence_kind, coverage, handler_key, handler_revision,
@@ -439,5 +456,19 @@ mod tests {
                 display_name: "HAPI Session Hook".into(),
             }]
         );
+    }
+
+    #[test]
+    fn optional_alias_read_keeps_a_legacy_ledger_readable_without_migration() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("ledger.sqlite3");
+        let ledger = Ledger::open_path(&path).unwrap();
+        ledger
+            .connection
+            .execute("DROP TABLE handler_annotations", [])
+            .unwrap();
+        drop(ledger);
+        let read_only = Ledger::open_read_only(&path).unwrap();
+        assert!(read_only.handler_aliases_if_present().unwrap().is_empty());
     }
 }

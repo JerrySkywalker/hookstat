@@ -1,6 +1,9 @@
 //! Deterministic machine-readable report assembly.
 
-use crate::analytics::{HandlerAggregate, RecentFailure, TimeWindow, aggregate, recent_failures};
+use crate::analytics::{
+    HandlerAggregate, HandlerIntelligence, RecentFailure, TimeWindow, aggregate, recent_failures,
+    reliability_intelligence,
+};
 use crate::domain::{
     EvidenceCoverage, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent, HookInvocation,
     Runtime, SourceQualification, TerminalStatus,
@@ -20,14 +23,22 @@ pub struct MachineReport {
     /// The machine schema keeps stable handler keys authoritative while
     /// exposing sanitized Human label evolution as a separate contract.
     pub display_identity_schema_version: u8,
+    /// Versioned separately because intelligence is an additive projection over
+    /// existing runtime-neutral invocation evidence.
+    pub reliability_intelligence_schema_version: u8,
     pub report_kind: ReportKind,
     pub generated_at_unix_ms: i64,
     pub window: TimeWindow,
     pub qualification: SourceQualification,
     pub handlers: Vec<HandlerAggregate>,
+    pub intelligence: Vec<HandlerIntelligence>,
     pub recent_failures: Vec<RecentFailure>,
     pub malformed_receipts: u64,
     pub incomplete_receipts: u64,
+    /// `false` means a read-only ledger report could not inspect an existing
+    /// receipt spool; the zero counters above must not be interpreted as a
+    /// clean spool in that case.
+    pub receipt_integrity_observed: bool,
 }
 
 impl MachineReport {
@@ -43,33 +54,64 @@ pub fn instrumented_report(
     malformed_receipts: u64,
     incomplete_receipts: u64,
 ) -> MachineReport {
+    instrumented_report_with_receipt_integrity(
+        values,
+        now,
+        window,
+        malformed_receipts,
+        incomplete_receipts,
+        true,
+    )
+}
+
+pub fn instrumented_report_with_receipt_integrity(
+    values: &[HookInvocation],
+    now: i64,
+    window: TimeWindow,
+    malformed_receipts: u64,
+    incomplete_receipts: u64,
+    receipt_integrity_observed: bool,
+) -> MachineReport {
+    let qualification = SourceQualification::instrumented();
     MachineReport {
-        schema_version: 2,
+        schema_version: 3,
         display_identity_schema_version: 1,
+        reliability_intelligence_schema_version: 1,
         report_kind: ReportKind::InstrumentedCodex,
         generated_at_unix_ms: now,
         window,
-        qualification: SourceQualification::instrumented(),
+        intelligence: reliability_intelligence(values, now, window, qualification.coverage),
+        qualification,
         handlers: aggregate(values, now, window),
         recent_failures: recent_failures(values, now, window, 10),
         malformed_receipts,
         incomplete_receipts,
+        receipt_integrity_observed,
     }
 }
 
 pub fn synthetic_fixture_report(now: i64) -> MachineReport {
     let values = synthetic_fixture_invocations(now);
+    let qualification = SourceQualification::synthetic_fixture();
     MachineReport {
-        schema_version: 2,
+        schema_version: 3,
         display_identity_schema_version: 1,
+        reliability_intelligence_schema_version: 1,
         report_kind: ReportKind::SyntheticFixture,
         generated_at_unix_ms: now,
         window: TimeWindow::Last7Days,
-        qualification: SourceQualification::synthetic_fixture(),
+        intelligence: reliability_intelligence(
+            &values,
+            now,
+            TimeWindow::Last7Days,
+            qualification.coverage,
+        ),
+        qualification,
         handlers: aggregate(&values, now, TimeWindow::Last7Days),
         recent_failures: recent_failures(&values, now, TimeWindow::Last7Days, 5),
         malformed_receipts: 0,
         incomplete_receipts: 0,
+        receipt_integrity_observed: true,
     }
 }
 
@@ -141,6 +183,9 @@ mod tests {
         let json = report.to_pretty_json().unwrap();
         assert!(json.contains("instrumented_codex"));
         assert!(json.contains("admitted_instrumented"));
+        assert!(json.contains("\"schema_version\": 3"));
+        assert!(json.contains("reliability_intelligence_schema_version"));
+        assert!(json.contains("receipt_integrity_observed"));
     }
     #[test]
     fn fixture_keeps_same_event_handlers_distinct() {

@@ -16,7 +16,7 @@ use std::process::ExitCode;
 
 fn print_help() {
     println!(
-        "HookStat {version}\n\nReliability analytics for hooks across coding-agent runtimes.\n\nUsage:\n  hookstat [tui] [--lang <auto|en-US|zh-CN>]\n  hookstat report [--json]\n  hookstat doctor [--json] [--data-root <path>]\n  hookstat diagnostics export --output <path> --apply [--data-root <path>]\n  hookstat preview-fixture [--json]\n  hookstat identity alias --handler <hk_...> --name <display-name> [--data-root <path>]\n  hookstat codex instrument --dry-run [--config-root <path>]\n  hookstat codex instrument --apply --config-root <path> [--data-root <path>]\n  hookstat codex instrument --trust [--dry-run] --config-root <path> [--data-root <path>]\n  hookstat codex instrument --restore --config-root <path> [--data-root <path>]\n\nNormal Codex launch remains `codex`. Instrumentation is opt-in and wraps individual command handlers only after an explicit apply. `--apply` never approves trust. `--trust` is a separate explicit action that uses Codex's official App Server only after HookStat proves the current manifest, journal, and effective handlers are exact supported targets.",
+        "HookStat {version}\n\nReliability analytics for hooks across coding-agent runtimes.\n\nUsage:\n  hookstat [tui] [--lang <auto|en-US|zh-CN>]\n  hookstat report [--json] [--read-only] [--data-root <path>]\n  hookstat doctor [--json] [--data-root <path>]\n  hookstat diagnostics export --output <path> --apply [--data-root <path>]\n  hookstat preview-fixture [--json]\n  hookstat identity alias --handler <hk_...> --name <display-name> [--data-root <path>]\n  hookstat codex instrument --dry-run [--config-root <path>]\n  hookstat codex instrument --apply --config-root <path> [--data-root <path>]\n  hookstat codex instrument --trust [--dry-run] --config-root <path> [--data-root <path>]\n  hookstat codex instrument --restore --config-root <path> [--data-root <path>]\n\nNormal Codex launch remains `codex`. Instrumentation is opt-in and wraps individual command handlers only after an explicit apply. `--apply` never approves trust. `--trust` is a separate explicit action that uses Codex's official App Server only after HookStat proves the current manifest, journal, and effective handlers are exact supported targets.",
         version = env!("CARGO_PKG_VERSION")
     );
 }
@@ -108,7 +108,22 @@ fn preview_fixture(arguments: &[String]) -> ExitCode {
     }
 }
 fn report_command(arguments: &[String]) -> ExitCode {
-    match load_current_report() {
+    let root = match option_path(arguments, "--data-root")
+        .map(Ok)
+        .unwrap_or_else(default_data_root)
+    {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("hookstat: {error}");
+            return ExitCode::from(1);
+        }
+    };
+    let result = if arguments.iter().any(|argument| argument == "--read-only") {
+        load_read_only_report(&root)
+    } else {
+        load_current_report_at(&root)
+    };
+    match result {
         Ok((report, _, _, _)) if arguments.iter().any(|value| value == "--json") => {
             print_json(&report)
         }
@@ -409,6 +424,20 @@ fn load_current_report() -> Result<
     String,
 > {
     let root = default_data_root().map_err(|error| error.to_string())?;
+    load_current_report_at(&root)
+}
+
+fn load_current_report_at(
+    root: &std::path::Path,
+) -> Result<
+    (
+        MachineReport,
+        Vec<hookstat::domain::HookInvocation>,
+        u64,
+        u64,
+    ),
+    String,
+> {
     let spool = ReceiptSpool::open(root.join("receipts")).map_err(|error| error.to_string())?;
     let mut ledger =
         Ledger::open_path(root.join("ledger.sqlite3")).map_err(|error| error.to_string())?;
@@ -440,6 +469,50 @@ fn load_current_report() -> Result<
         scan.malformed,
         scan.starts_without_completion,
     ))
+}
+
+fn load_read_only_report(
+    root: &std::path::Path,
+) -> Result<
+    (
+        MachineReport,
+        Vec<hookstat::domain::HookInvocation>,
+        u64,
+        u64,
+    ),
+    String,
+> {
+    let (malformed, incomplete, receipt_integrity_observed) =
+        match ReceiptSpool::open_existing(root.join("receipts")) {
+            Ok(spool) => {
+                let scan = spool.scan();
+                (scan.malformed, scan.starts_without_completion, true)
+            }
+            Err(_) => (0, 0, false),
+        };
+    let ledger =
+        Ledger::open_read_only(root.join("ledger.sqlite3")).map_err(|error| error.to_string())?;
+    let mut values = ledger.invocations().map_err(|error| error.to_string())?;
+    let aliases = ledger
+        .handler_aliases_if_present()
+        .map_err(|error| error.to_string())?;
+    for value in &mut values {
+        if let Some(alias) = aliases
+            .iter()
+            .find(|alias| alias.runtime == value.runtime && alias.handler_key == value.handler.key)
+        {
+            value.handler.label.clone_from(&alias.display_name);
+        }
+    }
+    let report = hookstat::report::instrumented_report_with_receipt_integrity(
+        &values,
+        now_unix_ms(),
+        TimeWindow::Last7Days,
+        malformed,
+        incomplete,
+        receipt_integrity_observed,
+    );
+    Ok((report, values, malformed, incomplete))
 }
 
 fn load_current_snapshot(window: TimeWindow) -> Result<tui::RefreshSnapshot, String> {
