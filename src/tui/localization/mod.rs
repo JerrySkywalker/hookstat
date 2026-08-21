@@ -3,7 +3,9 @@
 mod en_us;
 mod zh_cn;
 
-use crate::analytics::TimeWindow;
+use crate::analytics::{
+    FailureFingerprintKind, IntelligenceAvailability, RegressionClassification, TimeWindow,
+};
 use crate::domain::{EvidenceCoverage, HookEvent, Runtime, TerminalStatus};
 use crate::tui::view_model::{DiagnosticCheckId, DiagnosticStatus, Health, HookSort};
 
@@ -54,6 +56,10 @@ pub enum MessageKey {
     SectionRecentFailures,
     SectionTerminalBreakdown,
     SectionTimeline,
+    SectionIntelligence,
+    SectionTrends,
+    SectionRevisionComparison,
+    SectionFailureFingerprints,
     SectionDiagnostics,
     SectionInterface,
     FieldRuntime,
@@ -78,16 +84,27 @@ pub enum MessageKey {
     FieldSavedLanguage,
     FieldColor,
     FieldSavedColor,
+    FieldRisk,
+    FieldRiskScore,
+    FieldConfidence,
+    FieldClassification,
+    FieldPreviousPeriod,
+    FieldRecency,
+    FieldImpact,
     ColumnName,
     ColumnEvent,
     ColumnRuntime,
     ColumnFailureRate,
     ColumnTrend,
+    ColumnRisk,
     StateLoading,
     StateEmpty,
     StateEmptySearch,
     StateRefreshFailed,
     StateTimelineUnavailable,
+    StateInsufficientHistory,
+    StateInsufficientSamples,
+    StateCoverageLimited,
     StateNoRecentFailures,
     StatePreferenceClean,
     StatePreferenceDirty,
@@ -99,6 +116,10 @@ pub enum MessageKey {
     StatusCoverageLimited,
     StatusNoTerminalSamples,
     StatusUnavailable,
+    StatusRegression,
+    StatusImprovement,
+    StatusStable,
+    StatusInsufficientEvidence,
     DiagnosticPass,
     DiagnosticWarning,
     DiagnosticFail,
@@ -170,11 +191,16 @@ pub enum MessageKey {
     SortFailureRate,
     SortName,
     SortRuns,
+    SortRisk,
     FilterFailuresOnly,
     FilterAllHooks,
     IdentityHook,
     RateWithSample,
     SampleCount,
+    FingerprintExitNonzero,
+    FingerprintTimedOut,
+    FingerprintProtocolFailure,
+    FingerprintExecutionFailed,
     FooterNavigate,
     FooterOpen,
     FooterBack,
@@ -209,6 +235,10 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::SectionRecentFailures,
     MessageKey::SectionTerminalBreakdown,
     MessageKey::SectionTimeline,
+    MessageKey::SectionIntelligence,
+    MessageKey::SectionTrends,
+    MessageKey::SectionRevisionComparison,
+    MessageKey::SectionFailureFingerprints,
     MessageKey::SectionDiagnostics,
     MessageKey::SectionInterface,
     MessageKey::FieldRuntime,
@@ -233,16 +263,27 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::FieldSavedLanguage,
     MessageKey::FieldColor,
     MessageKey::FieldSavedColor,
+    MessageKey::FieldRisk,
+    MessageKey::FieldRiskScore,
+    MessageKey::FieldConfidence,
+    MessageKey::FieldClassification,
+    MessageKey::FieldPreviousPeriod,
+    MessageKey::FieldRecency,
+    MessageKey::FieldImpact,
     MessageKey::ColumnName,
     MessageKey::ColumnEvent,
     MessageKey::ColumnRuntime,
     MessageKey::ColumnFailureRate,
     MessageKey::ColumnTrend,
+    MessageKey::ColumnRisk,
     MessageKey::StateLoading,
     MessageKey::StateEmpty,
     MessageKey::StateEmptySearch,
     MessageKey::StateRefreshFailed,
     MessageKey::StateTimelineUnavailable,
+    MessageKey::StateInsufficientHistory,
+    MessageKey::StateInsufficientSamples,
+    MessageKey::StateCoverageLimited,
     MessageKey::StateNoRecentFailures,
     MessageKey::StatePreferenceClean,
     MessageKey::StatePreferenceDirty,
@@ -254,6 +295,10 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::StatusCoverageLimited,
     MessageKey::StatusNoTerminalSamples,
     MessageKey::StatusUnavailable,
+    MessageKey::StatusRegression,
+    MessageKey::StatusImprovement,
+    MessageKey::StatusStable,
+    MessageKey::StatusInsufficientEvidence,
     MessageKey::DiagnosticPass,
     MessageKey::DiagnosticWarning,
     MessageKey::DiagnosticFail,
@@ -325,11 +370,16 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::SortFailureRate,
     MessageKey::SortName,
     MessageKey::SortRuns,
+    MessageKey::SortRisk,
     MessageKey::FilterFailuresOnly,
     MessageKey::FilterAllHooks,
     MessageKey::IdentityHook,
     MessageKey::RateWithSample,
     MessageKey::SampleCount,
+    MessageKey::FingerprintExitNonzero,
+    MessageKey::FingerprintTimedOut,
+    MessageKey::FingerprintProtocolFailure,
+    MessageKey::FingerprintExecutionFailed,
     MessageKey::FooterNavigate,
     MessageKey::FooterOpen,
     MessageKey::FooterBack,
@@ -589,9 +639,49 @@ pub const fn terminal_status_name(locale: ResolvedLocale, status: TerminalStatus
 
 pub const fn sort_name(locale: ResolvedLocale, sort: HookSort) -> &'static str {
     let key = match sort {
+        HookSort::Risk => MessageKey::SortRisk,
         HookSort::FailureRate => MessageKey::SortFailureRate,
         HookSort::Name => MessageKey::SortName,
         HookSort::Runs => MessageKey::SortRuns,
+    };
+    t(locale, key)
+}
+
+pub const fn intelligence_availability_name(
+    locale: ResolvedLocale,
+    availability: IntelligenceAvailability,
+) -> &'static str {
+    let key = match availability {
+        IntelligenceAvailability::Available => MessageKey::StatusStable,
+        IntelligenceAvailability::InsufficientHistory => MessageKey::StateInsufficientHistory,
+        IntelligenceAvailability::InsufficientSamples => MessageKey::StateInsufficientSamples,
+        IntelligenceAvailability::CoverageLimited => MessageKey::StateCoverageLimited,
+    };
+    t(locale, key)
+}
+
+pub const fn regression_name(
+    locale: ResolvedLocale,
+    classification: RegressionClassification,
+) -> &'static str {
+    let key = match classification {
+        RegressionClassification::Regression => MessageKey::StatusRegression,
+        RegressionClassification::Improvement => MessageKey::StatusImprovement,
+        RegressionClassification::Stable => MessageKey::StatusStable,
+        RegressionClassification::InsufficientEvidence => MessageKey::StatusInsufficientEvidence,
+    };
+    t(locale, key)
+}
+
+pub const fn fingerprint_name(
+    locale: ResolvedLocale,
+    fingerprint: FailureFingerprintKind,
+) -> &'static str {
+    let key = match fingerprint {
+        FailureFingerprintKind::ExitNonzero => MessageKey::FingerprintExitNonzero,
+        FailureFingerprintKind::TimedOut => MessageKey::FingerprintTimedOut,
+        FailureFingerprintKind::ProtocolFailure => MessageKey::FingerprintProtocolFailure,
+        FailureFingerprintKind::ExecutionFailed => MessageKey::FingerprintExecutionFailed,
     };
     t(locale, key)
 }

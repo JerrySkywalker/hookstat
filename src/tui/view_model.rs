@@ -4,7 +4,10 @@
 //! report and terminal presentation. It deliberately owns no terminal types,
 //! database handles, receipt paths, or raw runtime payloads.
 
-use crate::analytics::{HandlerAggregate, RecentFailure, TerminalBreakdown, TimeWindow};
+use crate::analytics::{
+    FailureFingerprintCluster, HandlerAggregate, HandlerIntelligence, RecentFailure,
+    RevisionComparison, RiskScore, TerminalBreakdown, TimeWindow, TrendProjection,
+};
 pub use crate::diagnostics::{
     DiagnosticCheck as DiagnosticCheckViewModel, DiagnosticCheckId, DiagnosticFact,
     DiagnosticStatus, DiagnosticsReport as DiagnosticsViewModel,
@@ -50,11 +53,6 @@ pub enum Health {
     NoTerminalSamples,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TrendAvailability {
-    Unavailable,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeSummaryViewModel {
     pub runtime: Runtime,
@@ -77,7 +75,8 @@ pub struct HookRowViewModel {
     pub failed_runs: u64,
     pub sample_count: u64,
     pub failure_rate_percent: f64,
-    pub trend: TrendAvailability,
+    pub trend: TrendProjection,
+    pub risk: RiskScore,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -119,11 +118,15 @@ pub struct HookDetailViewModel {
     pub failure_rate_percent: f64,
     pub terminal_breakdown: TerminalBreakdown,
     pub recent_failures: Vec<RecentFailureViewModel>,
-    pub trend: TrendAvailability,
+    pub trends: Vec<TrendProjection>,
+    pub risk: RiskScore,
+    pub failure_fingerprints: Vec<FailureFingerprintCluster>,
+    pub revision_comparison: RevisionComparison,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HookSort {
+    Risk,
     FailureRate,
     Name,
     Runs,
@@ -132,9 +135,10 @@ pub enum HookSort {
 impl HookSort {
     pub const fn next(self) -> Self {
         match self {
+            Self::Risk => Self::FailureRate,
             Self::FailureRate => Self::Name,
             Self::Name => Self::Runs,
-            Self::Runs => Self::FailureRate,
+            Self::Runs => Self::Risk,
         }
     }
 }
@@ -151,7 +155,7 @@ impl Default for HooksQuery {
         Self {
             search: String::new(),
             failures_only: false,
-            sort: HookSort::FailureRate,
+            sort: HookSort::Risk,
         }
     }
 }
@@ -171,10 +175,25 @@ impl ReliabilityCenterViewModel {
         // the stable UI reference for the later multi-runtime boundary.
         let runtime = Runtime::Codex;
         let coverage = report.qualification.coverage;
+        let intelligence_by_handler = report
+            .intelligence
+            .iter()
+            .map(|intelligence| (intelligence.handler_key.as_str(), intelligence))
+            .collect::<std::collections::BTreeMap<_, _>>();
         let mut rows = report
             .handlers
             .iter()
-            .map(|aggregate| hook_row(runtime, coverage, aggregate))
+            .map(|aggregate| {
+                hook_row(
+                    runtime,
+                    coverage,
+                    aggregate,
+                    intelligence_by_handler
+                        .get(aggregate.handler.key.as_str())
+                        .expect("report intelligence is keyed by every handler"),
+                    report.window,
+                )
+            })
             .collect::<Vec<_>>();
         let mut details = report
             .handlers
@@ -185,6 +204,9 @@ impl ReliabilityCenterViewModel {
                     coverage,
                     report.window,
                     aggregate,
+                    intelligence_by_handler
+                        .get(aggregate.handler.key.as_str())
+                        .expect("report intelligence is keyed by every handler"),
                     &report.recent_failures,
                 )
             })
@@ -194,6 +216,7 @@ impl ReliabilityCenterViewModel {
         let terminal_sample_count = rows.iter().map(|row| row.sample_count).sum();
         let failed_runs = rows.iter().map(|row| row.failed_runs).sum();
         let failure_rate_percent = percentage(failed_runs, terminal_sample_count);
+        rows.sort_by(risk_order);
         let overview = OverviewViewModel {
             window: report.window,
             runtime_summaries: vec![RuntimeSummaryViewModel {
@@ -252,6 +275,7 @@ impl ReliabilityCenterViewModel {
             .cloned()
             .collect::<Vec<_>>();
         rows.sort_by(|left, right| match query.sort {
+            HookSort::Risk => risk_order(left, right),
             HookSort::FailureRate => right
                 .failure_rate_percent
                 .total_cmp(&left.failure_rate_percent)
@@ -357,6 +381,8 @@ fn hook_row(
     runtime: Runtime,
     coverage: EvidenceCoverage,
     aggregate: &HandlerAggregate,
+    intelligence: &HandlerIntelligence,
+    window: TimeWindow,
 ) -> HookRowViewModel {
     HookRowViewModel {
         internal_ref: HandlerRef::from_aggregate(runtime, aggregate),
@@ -368,7 +394,13 @@ fn hook_row(
         failed_runs: aggregate.failed_runs,
         sample_count: aggregate.failure_sample_count,
         failure_rate_percent: aggregate.failure_rate_percent,
-        trend: TrendAvailability::Unavailable,
+        trend: intelligence
+            .trends
+            .iter()
+            .find(|trend| trend.window == window)
+            .expect("report intelligence includes the selected window")
+            .clone(),
+        risk: intelligence.risk.clone(),
     }
 }
 
@@ -377,6 +409,7 @@ fn hook_detail(
     coverage: EvidenceCoverage,
     window: TimeWindow,
     aggregate: &HandlerAggregate,
+    intelligence: &HandlerIntelligence,
     recent_failures: &[RecentFailure],
 ) -> HookDetailViewModel {
     let internal_ref = HandlerRef::from_aggregate(runtime, aggregate);
@@ -398,8 +431,30 @@ fn hook_detail(
             .filter(|failure| failure.handler.key == internal_ref.handler_key)
             .map(recent_failure)
             .collect(),
-        trend: TrendAvailability::Unavailable,
+        trends: intelligence.trends.clone(),
+        risk: intelligence.risk.clone(),
+        failure_fingerprints: intelligence.failure_fingerprints.clone(),
+        revision_comparison: intelligence.revision_comparison.clone(),
     }
+}
+
+fn risk_order(left: &HookRowViewModel, right: &HookRowViewModel) -> std::cmp::Ordering {
+    right
+        .risk
+        .score
+        .cmp(&left.risk.score)
+        .then_with(|| right.failed_runs.cmp(&left.failed_runs))
+        .then_with(|| {
+            right
+                .risk
+                .sample_confidence_percent
+                .cmp(&left.risk.sample_confidence_percent)
+        })
+        .then_with(|| {
+            left.internal_ref
+                .handler_key
+                .cmp(&right.internal_ref.handler_key)
+        })
 }
 
 fn assign_fallback_disambiguators(
@@ -510,6 +565,20 @@ mod tests {
         }
     }
 
+    fn classified_invocation(
+        id: &str,
+        key: &str,
+        status: TerminalStatus,
+        occurred_at_unix_ms: i64,
+    ) -> HookInvocation {
+        let mut value = invocation("Readable hook");
+        value.source_record_id = id.into();
+        value.handler.key = key.into();
+        value.terminal_status = status;
+        value.occurred_at_unix_ms = occurred_at_unix_ms;
+        value
+    }
+
     #[test]
     fn overview_keeps_failure_rate_and_terminal_denominator_together() {
         let view = ReliabilityCenterViewModel::from_report(synthetic_fixture_report(1_000));
@@ -581,6 +650,46 @@ mod tests {
         let rows = view.filtered_hooks(&query);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].internal_ref.handler_key, "alpha");
+    }
+
+    #[test]
+    fn risk_is_the_default_human_ranking_and_detail_keeps_intelligence_visible() {
+        let now = 1_000;
+        let mut values = vec![classified_invocation(
+            "one",
+            "hk_one",
+            TerminalStatus::Failed,
+            now,
+        )];
+        for index in 0..20 {
+            values.push(classified_invocation(
+                &format!("mature-failure-{index}"),
+                "hk_mature",
+                TerminalStatus::Failed,
+                now,
+            ));
+        }
+        for index in 0..80 {
+            values.push(classified_invocation(
+                &format!("mature-success-{index}"),
+                "hk_mature",
+                TerminalStatus::Completed,
+                now,
+            ));
+        }
+        let view = ReliabilityCenterViewModel::from_report(instrumented_report(
+            &values,
+            now,
+            TimeWindow::All,
+            0,
+            0,
+        ));
+        assert_eq!(view.hooks.rows[0].internal_ref.handler_key, "hk_mature");
+        assert_eq!(view.hooks.rows[0].trend.window, TimeWindow::All);
+        let detail = view.detail(&view.hooks.rows[0].internal_ref).unwrap();
+        assert_eq!(detail.trends.len(), 4);
+        assert!(detail.risk.sample_confidence_percent > 50);
+        assert!(detail.revision_comparison.previous.is_none());
     }
 
     #[test]

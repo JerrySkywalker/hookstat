@@ -11,9 +11,10 @@ use super::app::{App, Focus, Screen, SettingsField, SettingsSaveState};
 use super::layout::{ApplicationShell, ShellLayout};
 use super::localization::{
     LanguageState, MessageKey, ResolvedLocale, coverage_name, diagnostic_explanation,
-    diagnostic_status_name, diagnostic_title, event_name, failure_rate_with_sample, health_name,
-    interface_color_name, interface_language_name, runtime_name, sort_name, t,
-    terminal_status_name, window_name,
+    diagnostic_status_name, diagnostic_title, event_name, failure_rate_with_sample,
+    fingerprint_name, health_name, intelligence_availability_name, interface_color_name,
+    interface_language_name, regression_name, runtime_name, sort_name, t, terminal_status_name,
+    window_name,
 };
 use super::state::ResourceState;
 use super::theme::{ColorRole, Theme, TypographyRole};
@@ -477,7 +478,7 @@ fn render_hook_rows(
                     row.display_disambiguator,
                 );
                 format!(
-                    "{marker} {}\n  {} · {} · {} · {}",
+                    "{marker} {}\n  {} · {} · {} · {} · {}",
                     truncate_to_width(&identity, area.width.saturating_sub(6) as usize),
                     event_name(context.locale, row.event),
                     runtime_name(context.locale, row.internal_ref.runtime),
@@ -486,7 +487,8 @@ fn render_hook_rows(
                         row.failure_rate_percent,
                         row.sample_count,
                     ),
-                    t(context.locale, MessageKey::StatusUnavailable),
+                    trend_summary(context.locale, row),
+                    compact_risk(context.locale, row),
                 )
             })
             .collect::<Vec<_>>()
@@ -506,6 +508,7 @@ fn render_hook_rows(
         t(context.locale, MessageKey::ColumnRuntime),
         t(context.locale, MessageKey::ColumnFailureRate),
         t(context.locale, MessageKey::ColumnTrend),
+        t(context.locale, MessageKey::ColumnRisk),
     ])
     .style(context.theme.typography_style(TypographyRole::SectionTitle));
     let rows = rows.iter().map(|row| {
@@ -530,7 +533,8 @@ fn render_hook_rows(
                 row.failure_rate_percent,
                 row.sample_count,
             )),
-            Cell::from(t(context.locale, MessageKey::StatusUnavailable)),
+            Cell::from(trend_summary(context.locale, row)),
+            Cell::from(compact_risk(context.locale, row)),
         ])
         .style(style)
     });
@@ -540,6 +544,7 @@ fn render_hook_rows(
             Constraint::Min(16),
             Constraint::Length(14),
             Constraint::Length(10),
+            Constraint::Length(18),
             Constraint::Length(18),
             Constraint::Length(12),
         ],
@@ -558,11 +563,7 @@ fn render_hook_detail(
 ) {
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(10),
-            Constraint::Min(7),
-            Constraint::Length(3),
-        ])
+        .constraints([Constraint::Length(12), Constraint::Min(9)])
         .split(area);
     let identity = display_identity(
         locale,
@@ -613,6 +614,12 @@ fn render_hook_detail(
             &failure_rate_with_sample(locale, detail.failure_rate_percent, detail.sample_count),
             theme,
         ),
+        key_value_line(
+            locale,
+            MessageKey::FieldRisk,
+            &risk_detail(locale, &detail.risk),
+            theme,
+        ),
     ];
     frame.render_widget(
         Paragraph::new(facts)
@@ -640,8 +647,31 @@ fn render_hook_detail(
             .join("\n")
     };
     let terminal = &detail.terminal_breakdown;
+    let trends = detail
+        .trends
+        .iter()
+        .map(|trend| trend_detail(locale, trend))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let revision = revision_detail(locale, &detail.revision_comparison);
+    let fingerprints = if detail.failure_fingerprints.is_empty() {
+        t(locale, MessageKey::StateNoRecentFailures).to_owned()
+    } else {
+        detail
+            .failure_fingerprints
+            .iter()
+            .map(|cluster| {
+                format!(
+                    "{}: {}",
+                    fingerprint_name(locale, cluster.kind),
+                    cluster.occurrences,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
     let body = format!(
-        "{}: {} · {}: {} · {}: {}\n{}: {} · {}: {} · {}: {}\n\n{}\n{}",
+        "{}: {} · {}: {} · {}: {}\n{}: {} · {}: {} · {}: {}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}",
         t(locale, MessageKey::FieldSuccesses),
         terminal.completed,
         t(locale, MessageKey::FieldFailures),
@@ -656,25 +686,144 @@ fn render_hook_detail(
         terminal.incomplete + terminal.unknown,
         t(locale, MessageKey::SectionRecentFailures),
         recent,
+        t(locale, MessageKey::SectionTrends),
+        trends,
+        t(locale, MessageKey::SectionRevisionComparison),
+        revision,
+        t(locale, MessageKey::SectionFailureFingerprints),
+        fingerprints,
     );
     frame.render_widget(
         Paragraph::new(body)
             .style(theme.typography_style(TypographyRole::Value))
             .block(themed_block(
-                t(locale, MessageKey::SectionTerminalBreakdown),
+                t(locale, MessageKey::SectionIntelligence),
                 theme,
             ))
             .wrap(Wrap { trim: true }),
         sections[1],
     );
-    render_state_panel(
-        frame,
-        sections[2],
-        t(locale, MessageKey::SectionTimeline),
-        t(locale, MessageKey::StateTimelineUnavailable),
-        ColorRole::Info,
-        theme,
+}
+
+fn trend_summary(locale: ResolvedLocale, row: &HookRowViewModel) -> &'static str {
+    match row.trend.classification {
+        crate::analytics::RegressionClassification::InsufficientEvidence => {
+            intelligence_availability_name(locale, row.trend.availability)
+        }
+        classification => regression_name(locale, classification),
+    }
+}
+
+fn compact_risk(locale: ResolvedLocale, row: &HookRowViewModel) -> String {
+    format!("{} {}", t(locale, MessageKey::FieldRisk), row.risk.score)
+}
+
+fn risk_detail(locale: ResolvedLocale, risk: &crate::analytics::RiskScore) -> String {
+    format!(
+        "{} {} · {} {}% · {} {}% · {} {:+} · {} {:+} · {} {:+}",
+        t(locale, MessageKey::FieldRiskScore),
+        risk.score,
+        t(locale, MessageKey::FieldConfidence),
+        risk.sample_confidence_percent,
+        t(locale, MessageKey::FieldCoverage),
+        risk.coverage_multiplier_percent,
+        t(locale, MessageKey::FieldRecency),
+        risk.recency_points,
+        t(locale, MessageKey::ColumnTrend),
+        risk.trend_points,
+        t(locale, MessageKey::FieldImpact),
+        risk.impact_points,
+    )
+}
+
+fn trend_detail(locale: ResolvedLocale, trend: &crate::analytics::TrendProjection) -> String {
+    let current = failure_rate_with_sample(
+        locale,
+        trend.current.failure_rate_percent,
+        trend.current.failure_sample_count,
     );
+    let comparison = match &trend.previous {
+        Some(previous) => format!(
+            "{} {}",
+            t(locale, MessageKey::FieldPreviousPeriod),
+            failure_rate_with_sample(
+                locale,
+                previous.failure_rate_percent,
+                previous.failure_sample_count,
+            ),
+        ),
+        None => intelligence_availability_name(locale, trend.availability).to_owned(),
+    };
+    format!(
+        "{}: {current} · {comparison} · {}",
+        window_name(locale, trend.window),
+        trend_summary_from_projection(locale, trend),
+    )
+}
+
+fn trend_summary_from_projection(
+    locale: ResolvedLocale,
+    trend: &crate::analytics::TrendProjection,
+) -> &'static str {
+    match trend.classification {
+        crate::analytics::RegressionClassification::InsufficientEvidence => {
+            intelligence_availability_name(locale, trend.availability)
+        }
+        classification => regression_name(locale, classification),
+    }
+}
+
+fn revision_detail(
+    locale: ResolvedLocale,
+    comparison: &crate::analytics::RevisionComparison,
+) -> String {
+    let current = format!(
+        "{} {} · {}",
+        t(locale, MessageKey::FieldRevision),
+        comparison.current.revision,
+        failure_rate_with_sample(
+            locale,
+            comparison.current.failure_rate_percent,
+            comparison.current.failure_sample_count,
+        ),
+    );
+    let previous = comparison.previous.as_ref().map_or_else(
+        || intelligence_availability_name(locale, comparison.availability).to_owned(),
+        |previous| {
+            format!(
+                "{} {} · {}",
+                t(locale, MessageKey::FieldPreviousPeriod),
+                previous.revision,
+                failure_rate_with_sample(
+                    locale,
+                    previous.failure_rate_percent,
+                    previous.failure_sample_count,
+                ),
+            )
+        },
+    );
+    format!(
+        "{current}\n{previous}\n{}: {}",
+        t(locale, MessageKey::FieldClassification),
+        trend_summary_from_classification(
+            locale,
+            comparison.classification,
+            comparison.availability
+        ),
+    )
+}
+
+fn trend_summary_from_classification(
+    locale: ResolvedLocale,
+    classification: crate::analytics::RegressionClassification,
+    availability: crate::analytics::IntelligenceAvailability,
+) -> &'static str {
+    match classification {
+        crate::analytics::RegressionClassification::InsufficientEvidence => {
+            intelligence_availability_name(locale, availability)
+        }
+        classification => regression_name(locale, classification),
+    }
 }
 
 fn key_value_line(
@@ -825,6 +974,25 @@ mod tests {
         let normalized = rendered.replace(' ', "");
         assert!(normalized.contains("样本="));
         assert!(normalized.contains("已降级"));
+    }
+
+    #[test]
+    fn intelligence_detail_is_bilingual_and_keeps_rates_with_samples() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.handle(super::super::keymap::Command::Enter);
+        assert_eq!(app.screen(), Screen::HookDetail);
+
+        let english = rendered(app.clone(), ResolvedLocale::EnUs, 100, 40);
+        assert!(english.contains("Reliability intelligence"));
+        assert!(english.contains("Trends"));
+        assert!(english.contains("Risk score"));
+        assert!(english.contains("n="));
+
+        let chinese = rendered(app, ResolvedLocale::ZhCn, 100, 40).replace(' ', "");
+        assert!(chinese.contains("可靠性智能"));
+        assert!(chinese.contains("趋势"));
+        assert!(chinese.contains("风险评分"));
+        assert!(chinese.contains("样本="));
     }
 
     #[test]
