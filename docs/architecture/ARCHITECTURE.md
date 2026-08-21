@@ -83,3 +83,53 @@ key/revision/source kind/event/matcher fingerprint/structural identity/execution
 mode, timestamps/duration when available, normalized terminal outcome/fault,
 evidence source, and coverage. Raw prompts, tool payloads, hook command text,
 and stdin/stdout/stderr are not part of the analytics model.
+
+## v0.2.1 startup and bounded-reconciliation model
+
+The Reliability Center starts with a terminal-independent `Loading` model.
+Terminal entry and the first draw occur before receipt reconciliation, SQLite
+queries, reliability aggregation, runtime discovery, or diagnostics checks.
+The UI event-loop thread only renders immutable view models and handles input.
+
+```text
+terminal guard -> empty application shell -> first frame
+                                      |             |
+                                      |             +-> input stays responsive
+                                      v
+                         reliability coordinator (background)
+                         - incremental receipt reconciliation
+                         - bounded SQLite working-set query
+                         - analytics and immutable snapshot
+
+                         diagnostics coordinator (independent background path)
+                         - read-only diagnostics snapshot
+```
+
+Each request has a monotonically increasing generation. The refresh transport
+coalesces pending work to the newest generation, and the application also
+rejects a completed snapshot whose period no longer equals the visible
+requested period. Failed refreshes preserve the last accepted reliability or
+diagnostics view rather than clearing it.
+
+The normal finite-period query materializes only the most recent 60 days—the
+largest current-plus-previous range needed for the 30-day trend. `All` is the
+explicit full-history mode. All-time trend metrics and current/previous
+revision epochs are calculated by specialized SQLite aggregates/timeline
+boundary queries, so finite requests retain the released semantics without
+materializing all historical invocation rows.
+
+Instrumented receipt records remain the canonical durable files. Existing
+v0.2 spools receive one safe full reconciliation on migration. Later proxy
+writes append a compact HookStat-owned journal record after publishing the
+atomic receipt; the SQLite reconciliation cursor and accepted ledger rows
+commit together. An unchanged warm start reads no historical receipt files.
+An explicit full reconciliation remains available to validate canonical files
+after an interrupted or damaged journal; duplicate replay and a later
+completion retain the existing guarded idempotence/upgrade semantics.
+
+The local-only observatory records sanitized phase timing and work counts:
+process/terminal/first-frame/receipt/query/reliability/diagnostics phases,
+manual-refresh and period-request latency, receipt files inspected/parsed,
+bounded ledger rows materialized, query range, and request/accepted
+generations. It transports no telemetry and retains no private runtime
+content.

@@ -7,7 +7,13 @@ changes, receipt fields, or persistence.
 
 ## Trend windows and comparison
 
-HookStat projects `24h`, `7d`, `30d`, and `All` from one reference instant.
+HookStat projects `Today`, `24h`, `7d`, `30d`, and `All` from one reference instant.
+`Today` is the user's local civil day from local midnight through `now`; its
+previous comparison is the immediately preceding local civil day. This is
+intentionally distinct from the rolling 24-hour interval, including across
+timezone-offset and daylight-saving transitions. Machine values use the stable
+locale-neutral `today` identifier.
+
 For a bounded window of width `W`, the current period is inclusive
 `[now - W, now]` and the immediately preceding comparison period is half-open
 `[now - 2W, now - W)`. This avoids overlap at the shared boundary. `All` has
@@ -78,3 +84,17 @@ versioned independently, and its UI text remains localized through the shared
 catalog. No scoring, clustering, or revision display changes ledger identity,
 deduplication, instrumentation, trust, receipt format, or analytics terminal
 status semantics.
+
+## v0.2.1 bounded execution strategy
+
+For finite selected periods, analytics receives a bounded SQLite working set
+covering the latest 60 days, sufficient for the 30-day current/previous
+comparison and every shorter period. The selected period's aggregate, risk,
+failure fingerprint, recent failures, coverage state, and terminal
+denominator retain the same calculations as the historical reference logic.
+
+`All` trend metrics are supplied by database aggregates rather than a finite
+working set. Revision comparison uses indexed timeline-boundary lookups and
+database-side current/previous epoch aggregates. These two specialized paths
+preserve all-time and revision semantics without fabricating a predecessor or
+loading every historical `HookInvocation` into Rust for a finite request.

@@ -1,5 +1,6 @@
 //! Pure Ratatui rendering over an accepted Reliability Center view model.
 
+use crate::analytics::TimeWindow;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -61,7 +62,7 @@ fn render_content(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoca
             frame,
             area,
             t(locale, MessageKey::AppTitle),
-            t(locale, message),
+            &format!("{}\n{}", period_selector(app, locale), t(locale, message)),
             role,
             theme,
         );
@@ -71,7 +72,27 @@ fn render_content(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoca
     match app.screen() {
         Screen::Overview => render_overview(frame, area, app, locale, theme),
         Screen::Hooks => render_hooks(frame, area, app, locale, theme),
-        Screen::Diagnostics => render_diagnostics(frame, area, &view.diagnostics, locale, theme),
+        Screen::Diagnostics => match app.diagnostics() {
+            Some(diagnostics) => render_diagnostics(frame, area, diagnostics, locale, theme),
+            None => {
+                let (message, role) = match app.diagnostics_state() {
+                    ResourceState::Error { .. } => {
+                        (MessageKey::StateRefreshFailed, ColorRole::Danger)
+                    }
+                    ResourceState::Loading { .. }
+                    | ResourceState::Empty
+                    | ResourceState::Ready(_) => (MessageKey::StateLoading, ColorRole::Info),
+                };
+                render_state_panel(
+                    frame,
+                    area,
+                    t(locale, MessageKey::ViewDiagnostics),
+                    t(locale, message),
+                    role,
+                    theme,
+                );
+            }
+        },
         Screen::Settings => render_settings(frame, area, app, locale, theme),
         Screen::HookDetail => {
             let detail = app
@@ -328,6 +349,10 @@ fn render_overview(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoc
         return;
     };
     let overview_lines = vec![
+        Line::from(Span::styled(
+            period_selector(app, locale),
+            theme.typography_style(TypographyRole::Metadata),
+        )),
         key_value_line(
             locale,
             MessageKey::FieldRuntime,
@@ -393,6 +418,32 @@ fn render_overview(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoc
     );
 }
 
+fn period_selector(app: &App, locale: ResolvedLocale) -> String {
+    let periods = [
+        (TimeWindow::Today, window_name(locale, TimeWindow::Today)),
+        (TimeWindow::Last24Hours, "24h"),
+        (TimeWindow::Last7Days, "7d"),
+        (TimeWindow::Last30Days, "30d"),
+        (TimeWindow::All, t(locale, MessageKey::PeriodAll)),
+    ];
+    let selected = app.requested_window();
+    let mut text = periods
+        .iter()
+        .map(|(period, label)| {
+            if *period == selected {
+                format!("[{label}]")
+            } else {
+                (*label).to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if app.view_state().is_loading() {
+        text.push_str(&format!(" ({})", t(locale, MessageKey::StateLoading)));
+    }
+    text
+}
+
 fn render_hooks(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLocale, theme: Theme) {
     let query = app.hooks_query();
     let filter = if query.failures_only {
@@ -401,7 +452,8 @@ fn render_hooks(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLocale
         t(locale, MessageKey::FilterAllHooks)
     };
     let query_line = format!(
-        "{}: {} · {}: {} · {}: {}",
+        "{}\n{}: {} · {}: {} · {}: {}",
+        period_selector(app, locale),
         t(locale, MessageKey::FieldSearch),
         query.search,
         t(locale, MessageKey::FieldFilter),
@@ -411,7 +463,7 @@ fn render_hooks(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLocale
     );
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .constraints([Constraint::Length(4), Constraint::Min(5)])
         .split(area);
     frame.render_widget(
         Paragraph::new(truncate_to_width(&query_line, sections[0].width as usize))
@@ -583,6 +635,10 @@ fn render_hook_detail(
         detail.display_disambiguator,
     );
     let facts = vec![
+        Line::from(Span::styled(
+            period_selector(app, locale),
+            theme.typography_style(TypographyRole::Metadata),
+        )),
         key_value_line(
             locale,
             MessageKey::FieldRuntime,
@@ -1016,6 +1072,18 @@ mod tests {
             assert!(rendered(app.clone(), ResolvedLocale::EnUs, width, height).contains("n="));
         }
         assert!(rendered(app, ResolvedLocale::EnUs, 23, 10).contains("Resize"));
+    }
+
+    #[test]
+    fn loading_shell_draws_before_data_and_marks_pending_today_immediately() {
+        let mut app = App::loading(TimeWindow::Last7Days);
+        let before = rendered(app.clone(), ResolvedLocale::EnUs, 100, 30);
+        assert!(before.contains("Loading"));
+        assert!(before.contains("[7d]"));
+        app.handle(super::super::keymap::Command::Window(TimeWindow::Today));
+        let after = rendered(app, ResolvedLocale::ZhCn, 100, 30).replace(' ', "");
+        assert!(after.contains("[今天]"));
+        assert!(after.contains("正在加载"));
     }
 
     #[test]

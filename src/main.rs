@@ -6,6 +6,7 @@ use hookstat::codex::{
     manifest_path_from_token, restore, trust,
 };
 use hookstat::ledger::Ledger;
+use hookstat::observability::{StartupObservatory, StartupPhase, WorkCounters};
 use hookstat::proxy;
 use hookstat::receipt::ReceiptSpool;
 use hookstat::render::render_home;
@@ -13,10 +14,11 @@ use hookstat::report::{MachineReport, instrumented_report, synthetic_fixture_rep
 use hookstat::tui;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Instant;
 
 fn print_help() {
     println!(
-        "HookStat {version}\n\nReliability analytics for hooks across coding-agent runtimes.\n\nUsage:\n  hookstat [tui] [--lang <auto|en-US|zh-CN>]\n  hookstat report [--json] [--read-only] [--data-root <path>]\n  hookstat doctor [--json] [--data-root <path>]\n  hookstat diagnostics export --output <path> --apply [--data-root <path>]\n  hookstat preview-fixture [--json]\n  hookstat identity alias --handler <hk_...> --name <display-name> [--data-root <path>]\n  hookstat codex instrument --dry-run [--config-root <path>]\n  hookstat codex instrument --apply --config-root <path> [--data-root <path>]\n  hookstat codex instrument --trust [--dry-run] --config-root <path> [--data-root <path>]\n  hookstat codex instrument --restore --config-root <path> [--data-root <path>]\n\nNormal Codex launch remains `codex`. Instrumentation is opt-in and wraps individual command handlers only after an explicit apply. `--apply` never approves trust. `--trust` is a separate explicit action that uses Codex's official App Server only after HookStat proves the current manifest, journal, and effective handlers are exact supported targets.",
+        "HookStat {version}\n\nReliability analytics for hooks across coding-agent runtimes.\n\nUsage:\n  hookstat [tui] [--lang <auto|en-US|zh-CN>] [--timing-output]\n  hookstat report [--json] [--read-only] [--data-root <path>]\n  hookstat doctor [--json] [--data-root <path>]\n  hookstat diagnostics export --output <path> --apply [--data-root <path>]\n  hookstat preview-fixture [--json]\n  hookstat identity alias --handler <hk_...> --name <display-name> [--data-root <path>]\n  hookstat codex instrument --dry-run [--config-root <path>]\n  hookstat codex instrument --apply --config-root <path> [--data-root <path>]\n  hookstat codex instrument --trust [--dry-run] --config-root <path> [--data-root <path>]\n  hookstat codex instrument --restore --config-root <path> [--data-root <path>]\n\nNormal Codex launch remains `codex`. Instrumentation is opt-in and wraps individual command handlers only after an explicit apply. `--apply` never approves trust. `--trust` is a separate explicit action that uses Codex's official App Server only after HookStat proves the current manifest, journal, and effective handlers are exact supported targets.",
         version = env!("CARGO_PKG_VERSION")
     );
 }
@@ -235,20 +237,57 @@ fn tui_command(arguments: &[String]) -> ExitCode {
         }
         None => None,
     };
-    match load_current_snapshot(TimeWindow::Last7Days) {
-        Ok(initial) => {
-            match tui::run_with_refresh_snapshot_language(initial, explicit_language, |request| {
-                load_current_snapshot(request.reason.window())
-            }) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(_) => {
-                    eprintln!("hookstat: interactive terminal operation failed");
-                    ExitCode::from(1)
-                }
-            }
-        }
+    let root = match default_data_root() {
+        Ok(root) => root,
         Err(error) => {
             eprintln!("hookstat: {error}");
+            return ExitCode::from(1);
+        }
+    };
+    let observatory = StartupObservatory::start();
+    let timing_output = arguments
+        .iter()
+        .any(|argument| argument == "--timing-output");
+    let reliability_root = root.clone();
+    let reliability_observatory = observatory.clone();
+    let diagnostics_root = root;
+    let diagnostics_observatory = observatory.clone();
+    match tui::run_loading_with_refreshes_language(
+        TimeWindow::Last7Days,
+        explicit_language,
+        move |request| {
+            let started = Instant::now();
+            let result = load_reliability_snapshot_at(
+                &reliability_root,
+                request.reason.window(),
+                &reliability_observatory,
+            );
+            if result.is_ok() {
+                let name = match request.reason {
+                    tui::RefreshReason::Manual(_) => "warm_manual_refresh",
+                    tui::RefreshReason::Window(_) => "period_request_to_snapshot",
+                };
+                reliability_observatory.record_latency(name, started.elapsed().as_millis());
+            }
+            result
+        },
+        move |_| {
+            let started = Instant::now();
+            let report = hookstat::diagnostics::collect(&diagnostics_root, now_unix_ms());
+            diagnostics_observatory
+                .record_latency("diagnostics_refresh", started.elapsed().as_millis());
+            Ok(report)
+        },
+        observatory.clone(),
+    ) {
+        Ok(()) => {
+            if timing_output {
+                println!("{}", observatory.sanitized_output());
+            }
+            ExitCode::SUCCESS
+        }
+        Err(_) => {
+            eprintln!("hookstat: interactive terminal operation failed");
             ExitCode::from(1)
         }
     }
@@ -425,19 +464,6 @@ fn proxy_command(arguments: &[String]) -> ExitCode {
     }
 }
 
-fn load_current_report() -> Result<
-    (
-        MachineReport,
-        Vec<hookstat::domain::HookInvocation>,
-        u64,
-        u64,
-    ),
-    String,
-> {
-    let root = default_data_root().map_err(|error| error.to_string())?;
-    load_current_report_at(&root)
-}
-
 fn load_current_report_at(
     root: &std::path::Path,
 ) -> Result<
@@ -452,10 +478,14 @@ fn load_current_report_at(
     let spool = ReceiptSpool::open(root.join("receipts")).map_err(|error| error.to_string())?;
     let mut ledger =
         Ledger::open_path(root.join("ledger.sqlite3")).map_err(|error| error.to_string())?;
-    let (scan, _) = spool
-        .ingest_into(&mut ledger)
+    let reconciled = spool
+        .reconcile_incremental(&mut ledger, now_unix_ms())
         .map_err(|error| error.to_string())?;
-    let mut values = ledger.invocations().map_err(|error| error.to_string())?;
+    let now = now_unix_ms();
+    let mut values = ledger
+        .invocations_for_reliability(now, TimeWindow::Last7Days)
+        .map_err(|error| error.to_string())?
+        .invocations;
     let aliases = ledger
         .handler_aliases()
         .map_err(|error| error.to_string())?;
@@ -467,19 +497,15 @@ fn load_current_report_at(
             value.handler.label.clone_from(&alias.display_name);
         }
     }
-    let report = instrumented_report(
+    let mut report = instrumented_report(
         &values,
-        now_unix_ms(),
+        now,
         TimeWindow::Last7Days,
-        scan.malformed,
-        scan.starts_without_completion,
+        reconciled.malformed,
+        reconciled.incomplete,
     );
-    Ok((
-        report,
-        values,
-        scan.malformed,
-        scan.starts_without_completion,
-    ))
+    enrich_report_from_ledger(&ledger, &mut report, now)?;
+    Ok((report, values, reconciled.malformed, reconciled.incomplete))
 }
 
 fn load_read_only_report(
@@ -493,17 +519,26 @@ fn load_read_only_report(
     ),
     String,
 > {
-    let (malformed, incomplete, receipt_integrity_observed) =
-        match ReceiptSpool::open_existing(root.join("receipts")) {
-            Ok(spool) => {
-                let scan = spool.scan();
-                (scan.malformed, scan.starts_without_completion, true)
-            }
-            Err(_) => (0, 0, false),
-        };
     let ledger =
         Ledger::open_read_only(root.join("ledger.sqlite3")).map_err(|error| error.to_string())?;
-    let mut values = ledger.invocations().map_err(|error| error.to_string())?;
+    let reconciliation = ledger
+        .receipt_reconciliation_state_if_present("receipt_catalog_journal_v1")
+        .map_err(|error| error.to_string())?;
+    let (malformed, incomplete, receipt_integrity_observed) = match reconciliation {
+        Some(state) => (
+            state.malformed_receipts,
+            ledger
+                .incomplete_receipt_count()
+                .map_err(|error| error.to_string())?,
+            true,
+        ),
+        None => (0, 0, false),
+    };
+    let now = now_unix_ms();
+    let mut values = ledger
+        .invocations_for_reliability(now, TimeWindow::Last7Days)
+        .map_err(|error| error.to_string())?
+        .invocations;
     let aliases = ledger
         .handler_aliases_if_present()
         .map_err(|error| error.to_string())?;
@@ -515,26 +550,107 @@ fn load_read_only_report(
             value.handler.label.clone_from(&alias.display_name);
         }
     }
-    let report = hookstat::report::instrumented_report_with_receipt_integrity(
+    let mut report = hookstat::report::instrumented_report_with_receipt_integrity(
         &values,
-        now_unix_ms(),
+        now,
         TimeWindow::Last7Days,
         malformed,
         incomplete,
         receipt_integrity_observed,
     );
+    enrich_report_from_ledger(&ledger, &mut report, now)?;
     Ok((report, values, malformed, incomplete))
 }
 
-fn load_current_snapshot(window: TimeWindow) -> Result<tui::RefreshSnapshot, String> {
-    let (_, values, malformed, incomplete) = load_current_report()?;
-    let root = default_data_root().map_err(|error| error.to_string())?;
-    let report = instrumented_report(&values, now_unix_ms(), window, malformed, incomplete);
-    let diagnostics = hookstat::diagnostics::collect(&root, now_unix_ms());
-    Ok(tui::RefreshSnapshot::from_report_with_diagnostics(
-        report,
-        diagnostics,
-    ))
+fn load_reliability_snapshot_at(
+    root: &std::path::Path,
+    window: TimeWindow,
+    observatory: &StartupObservatory,
+) -> Result<tui::RefreshSnapshot, String> {
+    let spool = ReceiptSpool::open(root.join("receipts")).map_err(|error| error.to_string())?;
+    let mut ledger =
+        Ledger::open_path(root.join("ledger.sqlite3")).map_err(|error| error.to_string())?;
+    let reconciled = spool
+        .reconcile_incremental(&mut ledger, now_unix_ms())
+        .map_err(|error| error.to_string())?;
+    observatory.mark(StartupPhase::ReceiptIngestReady);
+    let now = now_unix_ms();
+    let query = ledger
+        .invocations_for_reliability(now, window)
+        .map_err(|error| error.to_string())?;
+    observatory.mark(StartupPhase::LedgerQueryReady);
+    let mut values = query.invocations;
+    let aliases = ledger
+        .handler_aliases()
+        .map_err(|error| error.to_string())?;
+    for value in &mut values {
+        if let Some(alias) = aliases
+            .iter()
+            .find(|alias| alias.runtime == value.runtime && alias.handler_key == value.handler.key)
+        {
+            value.handler.label.clone_from(&alias.display_name);
+        }
+    }
+    observatory.record_work(WorkCounters {
+        receipt_files_inspected: reconciled.work.files_inspected,
+        receipt_files_parsed: reconciled.work.files_parsed,
+        ledger_rows_materialized: query.rows_materialized,
+        selected_query_range: query
+            .bounds
+            .current_start_unix_ms
+            .map(|start| format!("[{start}, {}]", query.bounds.current_end_unix_ms)),
+        requested_generation: None,
+        accepted_generation: None,
+    });
+    let mut report = instrumented_report(
+        &values,
+        now,
+        window,
+        reconciled.malformed,
+        reconciled.incomplete,
+    );
+    enrich_report_from_ledger(&ledger, &mut report, now)?;
+    Ok(tui::RefreshSnapshot::from_report(report))
+}
+
+/// Finite-window raw rows cover the largest rolling comparison (60 days).
+/// These specialized aggregate paths restore exact All-time and adjacent
+/// revision semantics without loading full invocation history.
+fn enrich_report_from_ledger(
+    ledger: &Ledger,
+    report: &mut MachineReport,
+    now: i64,
+) -> Result<(), String> {
+    let all_time = ledger
+        .all_time_period_metrics(now)
+        .map_err(|error| error.to_string())?;
+    let handler_keys = report
+        .intelligence
+        .iter()
+        .map(|value| value.handler_key.clone())
+        .collect::<Vec<_>>();
+    let revisions = ledger
+        .revision_epoch_metrics(&handler_keys)
+        .map_err(|error| error.to_string())?;
+    let coverage = report.qualification.coverage;
+    for intelligence in &mut report.intelligence {
+        if let Some(metrics) = all_time.get(&intelligence.handler_key)
+            && let Some(trend) = intelligence
+                .trends
+                .iter_mut()
+                .find(|trend| trend.window == TimeWindow::All)
+        {
+            *trend = hookstat::analytics::all_time_trend(metrics.clone(), coverage);
+        }
+        if let Some(epochs) = revisions.get(&intelligence.handler_key) {
+            intelligence.revision_comparison = hookstat::analytics::revision_comparison_from_epochs(
+                epochs.current.clone(),
+                epochs.previous.clone(),
+                coverage,
+            );
+        }
+    }
+    Ok(())
 }
 
 fn print_diagnostics_json(report: &hookstat::diagnostics::DiagnosticsReport) -> ExitCode {

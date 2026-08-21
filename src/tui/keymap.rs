@@ -53,6 +53,7 @@ pub fn command_for(key: KeyEvent, search_editing: bool) -> Option<Command> {
         KeyCode::Char('q') => Some(Command::Quit),
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(Command::Quit),
         KeyCode::Tab => Some(Command::ToggleFocus),
+        KeyCode::Char('t') => Some(Command::Window(TimeWindow::Today)),
         KeyCode::Char('1') => Some(Command::Window(TimeWindow::Last24Hours)),
         KeyCode::Char('7') => Some(Command::Window(TimeWindow::Last7Days)),
         KeyCode::Char('3') => Some(Command::Window(TimeWindow::Last30Days)),
@@ -84,6 +85,10 @@ mod tests {
 
     #[test]
     fn required_commands_have_stable_bindings() {
+        assert_eq!(
+            command_for(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE), false),
+            Some(Command::Window(TimeWindow::Today))
+        );
         assert_eq!(
             command_for(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), false),
             Some(Command::Enter)

@@ -1,6 +1,7 @@
 //! Deterministic, evidence-source-neutral reliability aggregates.
 
 use crate::domain::{EvidenceCoverage, HandlerIdentity, HookEvent, HookInvocation, TerminalStatus};
+use chrono::{DateTime, Local, LocalResult, TimeZone};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -12,6 +13,7 @@ const MATERIAL_RATE_CHANGE_PERCENT: f64 = 5.0;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TimeWindow {
+    Today,
     Last24Hours,
     Last7Days,
     Last30Days,
@@ -21,6 +23,7 @@ pub enum TimeWindow {
 impl TimeWindow {
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Today => "Today",
             Self::Last24Hours => "Last 24 hours",
             Self::Last7Days => "Last 7 days",
             Self::Last30Days => "Last 30 days",
@@ -30,11 +33,121 @@ impl TimeWindow {
 
     pub(crate) const fn width_ms(self) -> Option<i64> {
         match self {
+            Self::Today => None,
             Self::Last24Hours => Some(24 * HOUR_MS),
             Self::Last7Days => Some(7 * 24 * HOUR_MS),
             Self::Last30Days => Some(30 * 24 * HOUR_MS),
             Self::All => None,
         }
+    }
+
+    /// Resolves the exact current and predecessor interval once per request.
+    /// `Today` uses the local civil calendar; its predecessor is the prior
+    /// local calendar day, which can be 23 or 25 hours around DST changes.
+    pub fn bounds_at(self, now_unix_ms: i64) -> TimeBounds {
+        match self {
+            Self::Today => local_today_bounds(now_unix_ms),
+            Self::Last24Hours | Self::Last7Days | Self::Last30Days => {
+                let width = self.width_ms().expect("rolling windows have a width");
+                TimeBounds {
+                    current_start_unix_ms: Some(now_unix_ms.saturating_sub(width)),
+                    current_end_unix_ms: now_unix_ms,
+                    previous_start_unix_ms: Some(now_unix_ms.saturating_sub(width * 2)),
+                    previous_end_unix_ms: Some(now_unix_ms.saturating_sub(width)),
+                }
+            }
+            Self::All => TimeBounds {
+                current_start_unix_ms: None,
+                current_end_unix_ms: now_unix_ms,
+                previous_start_unix_ms: None,
+                previous_end_unix_ms: None,
+            },
+        }
+    }
+}
+
+/// Locale-neutral, epoch-millisecond intervals selected by a `TimeWindow`.
+/// Ends of current periods are inclusive; predecessor ends are exclusive.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TimeBounds {
+    pub current_start_unix_ms: Option<i64>,
+    pub current_end_unix_ms: i64,
+    pub previous_start_unix_ms: Option<i64>,
+    pub previous_end_unix_ms: Option<i64>,
+}
+
+impl TimeBounds {
+    /// Testable calendar adapter used by local-time implementations. Supplying
+    /// civil midnights rather than a fixed duration keeps DST-day lengths
+    /// explicit and prevents `Today` from becoming an alias for rolling 24h.
+    pub const fn local_civil_day(
+        current_start_unix_ms: i64,
+        previous_start_unix_ms: i64,
+        now_unix_ms: i64,
+    ) -> Self {
+        Self {
+            current_start_unix_ms: Some(current_start_unix_ms),
+            current_end_unix_ms: now_unix_ms,
+            previous_start_unix_ms: Some(previous_start_unix_ms),
+            previous_end_unix_ms: Some(current_start_unix_ms),
+        }
+    }
+
+    pub const fn contains_current(self, timestamp: i64) -> bool {
+        timestamp <= self.current_end_unix_ms
+            && match self.current_start_unix_ms {
+                Some(start) => timestamp >= start,
+                None => true,
+            }
+    }
+
+    pub const fn contains_previous(self, timestamp: i64) -> bool {
+        match (self.previous_start_unix_ms, self.previous_end_unix_ms) {
+            (Some(start), Some(end)) => timestamp >= start && timestamp < end,
+            _ => false,
+        }
+    }
+}
+
+fn local_today_bounds(now_unix_ms: i64) -> TimeBounds {
+    let now = Local
+        .timestamp_millis_opt(now_unix_ms)
+        .single()
+        .unwrap_or_else(|| {
+            Local
+                .timestamp_opt(now_unix_ms.div_euclid(1_000), 0)
+                .earliest()
+                .expect("supported timestamp has a local representation")
+        });
+    local_today_bounds_for(now)
+}
+
+fn local_today_bounds_for(now: DateTime<Local>) -> TimeBounds {
+    let current_start = local_midnight(now.date_naive());
+    let previous_start = local_midnight(
+        now.date_naive()
+            .pred_opt()
+            .expect("supported calendar date has a previous day"),
+    );
+    TimeBounds::local_civil_day(
+        current_start.timestamp_millis(),
+        previous_start.timestamp_millis(),
+        now.timestamp_millis(),
+    )
+}
+
+fn local_midnight(date: chrono::NaiveDate) -> DateTime<Local> {
+    let midnight = date.and_hms_opt(0, 0, 0).expect("midnight is valid");
+    match Local.from_local_datetime(&midnight) {
+        LocalResult::Single(value) => value,
+        // A few historical zones transition at midnight. Selecting the first
+        // real local instant preserves the civil-day boundary without using a
+        // fixed 24-hour assumption.
+        LocalResult::Ambiguous(earliest, _) => earliest,
+        LocalResult::None => Local
+            .from_local_datetime(&(midnight + chrono::TimeDelta::hours(1)))
+            .earliest()
+            .expect("a local civil day has a first instant"),
     }
 }
 
@@ -200,6 +313,53 @@ pub struct RevisionComparison {
     pub classification: RegressionClassification,
 }
 
+/// Builds the `All` trend from a database aggregate without materializing all
+/// historical invocations for a finite selected period.
+pub fn all_time_trend(metrics: PeriodMetrics, coverage: EvidenceCoverage) -> TrendProjection {
+    let availability = comparison_availability(coverage, &metrics, None);
+    TrendProjection {
+        window: TimeWindow::All,
+        current: metrics,
+        previous: None,
+        delta_failure_rate_percent: None,
+        classification: classify_change(availability, None),
+        availability,
+    }
+}
+
+/// Builds an exact revision projection from adjacent revision epochs returned
+/// by specialized ledger aggregates. It preserves the released availability
+/// and classification rules without requiring raw historical row loading.
+pub fn revision_comparison_from_epochs(
+    current: RevisionMetrics,
+    previous: Option<RevisionMetrics>,
+    coverage: EvidenceCoverage,
+) -> RevisionComparison {
+    let current_period = PeriodMetrics {
+        runs: current.runs,
+        failure_sample_count: current.failure_sample_count,
+        failed_runs: current.failed_runs,
+        failure_rate_percent: current.failure_rate_percent,
+    };
+    let previous_period = previous.as_ref().map(|metrics| PeriodMetrics {
+        runs: metrics.runs,
+        failure_sample_count: metrics.failure_sample_count,
+        failed_runs: metrics.failed_runs,
+        failure_rate_percent: metrics.failure_rate_percent,
+    });
+    let availability = comparison_availability(coverage, &current_period, previous_period.as_ref());
+    let delta_failure_rate_percent = previous
+        .as_ref()
+        .map(|previous| current.failure_rate_percent - previous.failure_rate_percent);
+    RevisionComparison {
+        current,
+        previous,
+        delta_failure_rate_percent,
+        classification: classify_change(availability, delta_failure_rate_percent),
+        availability,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct HandlerIntelligence {
     pub handler_key: String,
@@ -308,6 +468,7 @@ pub fn reliability_intelligence(
         .into_iter()
         .map(|(handler_key, values)| {
             let trends = [
+                TimeWindow::Today,
                 TimeWindow::Last24Hours,
                 TimeWindow::Last7Days,
                 TimeWindow::Last30Days,
@@ -403,17 +564,13 @@ fn previous_values<'a>(
     now: i64,
     window: TimeWindow,
 ) -> Option<Vec<&'a HookInvocation>> {
-    let width = window.width_ms()?;
-    let current_start = now - width;
-    let previous_start = current_start - width;
+    let bounds = window.bounds_at(now);
+    bounds.previous_start_unix_ms?;
     Some(
         values
             .iter()
             .copied()
-            .filter(|value| {
-                value.occurred_at_unix_ms >= previous_start
-                    && value.occurred_at_unix_ms < current_start
-            })
+            .filter(|value| bounds.contains_previous(value.occurred_at_unix_ms))
             .collect(),
     )
 }
@@ -634,29 +791,7 @@ fn revision_comparison(
         ))
     };
     let current = revision_metrics(current_revision, current_values);
-    let current_period = PeriodMetrics {
-        runs: current.runs,
-        failure_sample_count: current.failure_sample_count,
-        failed_runs: current.failed_runs,
-        failure_rate_percent: current.failure_rate_percent,
-    };
-    let previous_period = previous.as_ref().map(|metrics| PeriodMetrics {
-        runs: metrics.runs,
-        failure_sample_count: metrics.failure_sample_count,
-        failed_runs: metrics.failed_runs,
-        failure_rate_percent: metrics.failure_rate_percent,
-    });
-    let availability = comparison_availability(coverage, &current_period, previous_period.as_ref());
-    let delta_failure_rate_percent = previous
-        .as_ref()
-        .map(|previous| current.failure_rate_percent - previous.failure_rate_percent);
-    RevisionComparison {
-        current,
-        previous,
-        delta_failure_rate_percent,
-        classification: classify_change(availability, delta_failure_rate_percent),
-        availability,
-    }
+    revision_comparison_from_epochs(current, previous, coverage)
 }
 
 fn revision_metrics(revision: String, values: &[&HookInvocation]) -> RevisionMetrics {
@@ -720,15 +855,15 @@ fn collect_previous(
     now: i64,
     window: TimeWindow,
 ) -> BTreeMap<String, AggregateBuilder> {
-    let Some(width) = window.width_ms() else {
+    let bounds = window.bounds_at(now);
+    if bounds.previous_start_unix_ms.is_none() {
         return BTreeMap::new();
-    };
-    let current_start = now - width;
-    let previous_start = current_start - width;
+    }
     let mut result = BTreeMap::new();
-    for item in values.iter().filter(|item| {
-        item.occurred_at_unix_ms >= previous_start && item.occurred_at_unix_ms < current_start
-    }) {
+    for item in values
+        .iter()
+        .filter(|item| bounds.contains_previous(item.occurred_at_unix_ms))
+    {
         result
             .entry(item.handler.key.clone())
             .or_insert_with(|| AggregateBuilder::new(item.handler.clone()))
@@ -738,10 +873,7 @@ fn collect_previous(
 }
 
 fn in_current_window(timestamp: i64, now: i64, window: TimeWindow) -> bool {
-    timestamp <= now
-        && window
-            .width_ms()
-            .is_none_or(|width| timestamp >= now - width)
+    window.bounds_at(now).contains_current(timestamp)
 }
 
 fn percentage(numerator: u64, denominator: u64) -> f64 {
@@ -761,6 +893,8 @@ fn percentile(sorted: &[u64], percentile: f64) -> u64 {
 mod tests {
     use super::*;
     use crate::domain::{EvidenceKind, ExecutionMode, Runtime};
+    use chrono::{TimeZone, Timelike};
+    use chrono_tz::America::New_York;
 
     fn handler(key: &str) -> HandlerIdentity {
         HandlerIdentity {
@@ -889,6 +1023,70 @@ mod tests {
             TimeWindow::All,
         );
         assert_eq!(all[0].runs, 1);
+    }
+
+    #[test]
+    fn today_is_local_civil_day_not_rolling_24_hours_at_midnight() {
+        let now = New_York
+            .with_ymd_and_hms(2026, 8, 22, 0, 30, 0)
+            .single()
+            .unwrap();
+        let current_start = New_York
+            .with_ymd_and_hms(2026, 8, 22, 0, 0, 0)
+            .single()
+            .unwrap();
+        let previous_start = New_York
+            .with_ymd_and_hms(2026, 8, 21, 0, 0, 0)
+            .single()
+            .unwrap();
+        let today = TimeBounds::local_civil_day(
+            current_start.timestamp_millis(),
+            previous_start.timestamp_millis(),
+            now.timestamp_millis(),
+        );
+        let rolling = TimeWindow::Last24Hours.bounds_at(now.timestamp_millis());
+        let yesterday_2330 = New_York
+            .with_ymd_and_hms(2026, 8, 21, 23, 30, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        assert!(!today.contains_current(yesterday_2330));
+        assert!(rolling.contains_current(yesterday_2330));
+        assert!(today.contains_previous(yesterday_2330));
+        assert_eq!(now.hour(), 0);
+    }
+
+    #[test]
+    fn today_civil_boundaries_support_dst_short_days() {
+        let now = New_York
+            .with_ymd_and_hms(2026, 3, 8, 12, 0, 0)
+            .single()
+            .unwrap();
+        let current_start = New_York
+            .with_ymd_and_hms(2026, 3, 8, 0, 0, 0)
+            .single()
+            .unwrap();
+        let previous_start = New_York
+            .with_ymd_and_hms(2026, 3, 7, 0, 0, 0)
+            .single()
+            .unwrap();
+        let bounds = TimeBounds::local_civil_day(
+            current_start.timestamp_millis(),
+            previous_start.timestamp_millis(),
+            now.timestamp_millis(),
+        );
+        assert_eq!(
+            bounds.previous_end_unix_ms.unwrap() - bounds.previous_start_unix_ms.unwrap(),
+            24 * HOUR_MS
+        );
+        let next_start = New_York
+            .with_ymd_and_hms(2026, 3, 9, 0, 0, 0)
+            .single()
+            .unwrap();
+        assert_eq!(
+            next_start.timestamp_millis() - current_start.timestamp_millis(),
+            23 * HOUR_MS
+        );
     }
 
     #[test]
