@@ -180,11 +180,10 @@ Detailed plan: `../goals/HS-V021-STARTUP-PERIOD-RELIABILITY.md`.
 ## v0.2.1 train status
 
 HS-G07 through HS-G10 merged on `b6480d835f33af58836e1722d27d5d22c5a9416f`.
-The current HS-G11 candidate resolves Windows native/CMD/BAT/PowerShell Codex
-command forms through a bounded read-only probe and keeps diagnostics refresh
-independent from period changes. It is awaiting its own exact-head CI/merge
-evidence. HS-G12R remains `NOT_STARTED`; it will version the accepted G11 main
-as the unpublished v0.2.1 release candidate and will not begin v0.3 work.
+HS-G11 merged on `932e7c38cac24d86444e660ac055200f97f8baf6` with Windows
+native/CMD/BAT/PowerShell Codex command resolution and independent read-only
+diagnostics refresh. HS-G12R is preparing the unpublished `0.2.1` release
+candidate from that exact main; it will not begin v0.3 work or publish.
 
 ## v0.2.1 confirmed requirements
 

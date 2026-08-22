@@ -963,7 +963,7 @@ mod tests {
     }
 
     #[test]
-    fn bounded_query_plus_specialized_aggregates_matches_full_v02_analytics() {
+    fn bounded_query_plus_specialized_aggregates_matches_full_v02_analytics_for_all_periods() {
         let mut ledger = Ledger::open_in_memory().unwrap();
         let now = 90_i64 * 24 * 60 * 60 * 1_000;
         let mut values = Vec::new();
@@ -986,44 +986,51 @@ mod tests {
             values.push(value);
         }
         ledger.ingest(&values).unwrap();
-        let full = crate::report::instrumented_report(&values, now, TimeWindow::Last7Days, 0, 0);
-        let bounded = ledger
-            .invocations_for_reliability(now, TimeWindow::Last7Days)
-            .unwrap();
-        assert_eq!(bounded.rows_materialized, 8);
-        let mut optimized = crate::report::instrumented_report(
-            &bounded.invocations,
-            now,
+        for window in [
+            TimeWindow::Today,
+            TimeWindow::Last24Hours,
             TimeWindow::Last7Days,
-            0,
-            0,
-        );
-        let all_time = ledger.all_time_period_metrics(now).unwrap();
-        let keys = optimized
-            .intelligence
-            .iter()
-            .map(|item| item.handler_key.clone())
-            .collect::<Vec<_>>();
-        let revisions = ledger.revision_epoch_metrics(&keys).unwrap();
-        for item in &mut optimized.intelligence {
-            let trend = item
-                .trends
-                .iter_mut()
-                .find(|trend| trend.window == TimeWindow::All)
-                .unwrap();
-            *trend = crate::analytics::all_time_trend(
-                all_time.get(&item.handler_key).unwrap().clone(),
-                optimized.qualification.coverage,
+            TimeWindow::Last30Days,
+            TimeWindow::All,
+        ] {
+            let full = crate::report::instrumented_report(&values, now, window, 0, 0);
+            let bounded = ledger.invocations_for_reliability(now, window).unwrap();
+            assert_eq!(
+                bounded.rows_materialized,
+                if window == TimeWindow::All { 16 } else { 8 }
             );
-            let epochs = revisions.get(&item.handler_key).unwrap();
-            item.revision_comparison = crate::analytics::revision_comparison_from_epochs(
-                epochs.current.clone(),
-                epochs.previous.clone(),
-                optimized.qualification.coverage,
+            let mut optimized =
+                crate::report::instrumented_report(&bounded.invocations, now, window, 0, 0);
+            let all_time = ledger.all_time_period_metrics(now).unwrap();
+            let keys = optimized
+                .intelligence
+                .iter()
+                .map(|item| item.handler_key.clone())
+                .collect::<Vec<_>>();
+            let revisions = ledger.revision_epoch_metrics(&keys).unwrap();
+            for item in &mut optimized.intelligence {
+                let trend = item
+                    .trends
+                    .iter_mut()
+                    .find(|trend| trend.window == TimeWindow::All)
+                    .unwrap();
+                *trend = crate::analytics::all_time_trend(
+                    all_time.get(&item.handler_key).unwrap().clone(),
+                    optimized.qualification.coverage,
+                );
+                let epochs = revisions.get(&item.handler_key).unwrap();
+                item.revision_comparison = crate::analytics::revision_comparison_from_epochs(
+                    epochs.current.clone(),
+                    epochs.previous.clone(),
+                    optimized.qualification.coverage,
+                );
+            }
+            assert_eq!(optimized.handlers, full.handlers, "{window:?}");
+            assert_eq!(
+                optimized.recent_failures, full.recent_failures,
+                "{window:?}"
             );
+            assert_eq!(optimized.intelligence, full.intelligence, "{window:?}");
         }
-        assert_eq!(optimized.handlers, full.handlers);
-        assert_eq!(optimized.recent_failures, full.recent_failures);
-        assert_eq!(optimized.intelligence, full.intelligence);
     }
 }

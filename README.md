@@ -2,7 +2,8 @@
 
 **Local-first reliability analytics for hooks across coding-agent runtimes.**
 
-HookStat v0.2 is the Reliability Center: a TabBeacon-aligned terminal UI that
+HookStat v0.2.1 is the Startup & Period Reliability release candidate: a
+local-first terminal UI that
 turns admitted local hook receipts into a bilingual, human-readable operational
 view. It is Codex-first today, while its canonical ledger, analytics, JSON,
 and TUI remain evidence-source-neutral. Passive durable receipts remain the
@@ -34,6 +35,10 @@ For local development from an owned checkout instead:
 cargo install --path . --locked
 hookstat --version
 ```
+
+The checked-out `0.2.1` candidate is not published yet. Its release notes are
+in [CHANGELOG.md](CHANGELOG.md); do not substitute a local RC install for the
+authorized public `0.2.0` package on an Owner workstation.
 
 ## Opt-in Codex instrumentation
 
