@@ -1,6 +1,7 @@
 //! Pure Ratatui rendering over an accepted Reliability Center view model.
 
 use crate::analytics::TimeWindow;
+use crate::workbench::{ChangeKind, HistoricalStatus};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -20,8 +21,9 @@ use super::localization::{
 use super::state::ResourceState;
 use super::theme::{ColorRole, Theme, TypographyRole};
 use super::view_model::{
-    DiagnosticCheckViewModel, DiagnosticFact, DiagnosticStatus, DiagnosticsViewModel,
-    DisplayIdentity, Health, HookDetailViewModel, HookRowViewModel,
+    ChangeRef, ChangeRowViewModel, ChangesViewModel, DiagnosticCheckViewModel, DiagnosticFact,
+    DiagnosticStatus, DiagnosticsViewModel, DisplayIdentity, Health, HookDetailViewModel,
+    HookRowViewModel,
 };
 use super::widgets::{
     render_minimum_size, render_navigation, render_shortcut_footer, render_state_panel,
@@ -76,6 +78,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, locale: ResolvedLocale, th
         t(locale, MessageKey::HelpNavigation),
         t(locale, MessageKey::HelpPeriods),
         t(locale, MessageKey::HelpHooks),
+        t(locale, MessageKey::HelpChanges),
         t(locale, MessageKey::HelpDetail),
         t(locale, MessageKey::HelpSettings),
         t(locale, MessageKey::HelpRefresh),
@@ -110,6 +113,21 @@ fn render_discard_confirmation(
 }
 
 fn render_content(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLocale, theme: Theme) {
+    match app.screen() {
+        Screen::Changes => {
+            render_changes(frame, area, app, locale, theme);
+            return;
+        }
+        Screen::ChangeDetail => {
+            render_change_detail(frame, area, app, locale, theme);
+            return;
+        }
+        Screen::Overview
+        | Screen::Hooks
+        | Screen::Diagnostics
+        | Screen::Settings
+        | Screen::HookDetail => {}
+    }
     let Some(view) = app.view_model() else {
         let (message, role) = match app.view_state() {
             ResourceState::Loading { .. } => (MessageKey::StateLoading, ColorRole::Info),
@@ -132,6 +150,7 @@ fn render_content(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoca
     match app.screen() {
         Screen::Overview => render_overview(frame, area, app, locale, theme),
         Screen::Hooks => render_hooks(frame, area, app, locale, theme),
+        Screen::Changes | Screen::ChangeDetail => unreachable!("handled before reliability view"),
         Screen::Diagnostics => match app.diagnostics() {
             Some(diagnostics) => render_diagnostics(frame, area, diagnostics, locale, theme),
             None => {
@@ -502,6 +521,344 @@ fn period_selector(app: &App, locale: ResolvedLocale) -> String {
         text.push_str(&format!(" ({})", t(locale, MessageKey::StateLoading)));
     }
     text
+}
+
+fn render_changes(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLocale, theme: Theme) {
+    let Some(changes) = app.changes() else {
+        let (message, role) = match app.changes_state() {
+            ResourceState::Loading { .. } => (MessageKey::StateLoading, ColorRole::Info),
+            ResourceState::Error { .. } => (MessageKey::StateRefreshFailed, ColorRole::Danger),
+            ResourceState::Empty | ResourceState::Ready(_) => {
+                (MessageKey::StateEmpty, ColorRole::Warning)
+            }
+        };
+        render_state_panel(
+            frame,
+            area,
+            t(locale, MessageKey::ViewChanges),
+            &format!("{}\n{}", period_selector(app, locale), t(locale, message)),
+            role,
+            theme,
+        );
+        return;
+    };
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .split(area);
+    let heading = format!(
+        "{} · {}: {}",
+        period_selector(app, locale),
+        t(locale, MessageKey::FieldCoverage),
+        coverage_name(locale, changes.coverage),
+    );
+    frame.render_widget(
+        Paragraph::new(truncate_to_width(&heading, sections[0].width as usize))
+            .style(theme.typography_style(TypographyRole::Metadata))
+            .block(themed_block(t(locale, MessageKey::SectionChanges), theme)),
+        sections[0],
+    );
+    if changes.rows.is_empty() {
+        render_state_panel(
+            frame,
+            sections[1],
+            t(locale, MessageKey::ViewChanges),
+            t(locale, MessageKey::StateEmpty),
+            ColorRole::Warning,
+            theme,
+        );
+        return;
+    }
+    render_change_rows(
+        frame,
+        sections[1],
+        changes,
+        ChangeRowsContext {
+            selected: app.selected_change(),
+            content_focused: app.local_list_active(),
+            locale,
+            theme,
+        },
+    );
+}
+
+struct ChangeRowsContext<'a> {
+    selected: Option<&'a ChangeRef>,
+    content_focused: bool,
+    locale: ResolvedLocale,
+    theme: Theme,
+}
+
+fn render_change_rows(
+    frame: &mut Frame,
+    area: Rect,
+    changes: &ChangesViewModel,
+    context: ChangeRowsContext<'_>,
+) {
+    let selected_index = context.selected.map_or(0, |selected| {
+        changes
+            .rows
+            .iter()
+            .position(|row| &row.reference == selected)
+            .unwrap_or(0)
+    });
+    if area.width < 64 {
+        let rows = visible_rows(
+            &changes.rows,
+            selected_index,
+            area.height.saturating_sub(2) as usize / 3,
+        );
+        let content = rows
+            .iter()
+            .map(|row| {
+                let marker = if context.selected == Some(&row.reference) {
+                    ">"
+                } else {
+                    " "
+                };
+                let identity = display_identity(context.locale, &row.display_identity, None);
+                format!(
+                    "{marker} {}\n  {} · {}\n  {}",
+                    truncate_to_width(&identity, area.width.saturating_sub(6) as usize),
+                    change_kind_name(context.locale, row.reference.kind),
+                    event_name(context.locale, row.event),
+                    truncate_to_width(
+                        &change_evidence_summary(context.locale, row),
+                        area.width.saturating_sub(6) as usize,
+                    ),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        frame.render_widget(
+            Paragraph::new(content)
+                .style(context.theme.typography_style(TypographyRole::Value))
+                .block(themed_block(
+                    t(context.locale, MessageKey::ViewChanges),
+                    context.theme,
+                ))
+                .wrap(Wrap { trim: true }),
+            area,
+        );
+        return;
+    }
+    let rows = visible_rows(
+        &changes.rows,
+        selected_index,
+        area.height.saturating_sub(3) as usize,
+    );
+    let header = Row::new([
+        t(context.locale, MessageKey::ColumnName),
+        t(context.locale, MessageKey::FieldClassification),
+        t(context.locale, MessageKey::ColumnEvent),
+        t(context.locale, MessageKey::FieldFailureRate),
+        t(context.locale, MessageKey::FieldPreviousPeriod),
+    ])
+    .style(context.theme.typography_style(TypographyRole::SectionTitle));
+    let rows = rows.iter().map(|row| {
+        let style = if context.selected == Some(&row.reference) && context.content_focused {
+            context.theme.color_style(ColorRole::Selected)
+        } else {
+            context.theme.typography_style(TypographyRole::Value)
+        };
+        Row::new(vec![
+            Cell::from(truncate_to_width(
+                &display_identity(context.locale, &row.display_identity, None),
+                24,
+            )),
+            Cell::from(change_kind_name(context.locale, row.reference.kind)),
+            Cell::from(event_name(context.locale, row.event)),
+            Cell::from(failure_rate_with_sample(
+                context.locale,
+                row.current.failure_rate_percent,
+                row.current.failure_sample_count,
+            )),
+            Cell::from(change_comparison_summary(context.locale, row)),
+        ])
+        .style(style)
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(16),
+            Constraint::Length(19),
+            Constraint::Length(15),
+            Constraint::Length(16),
+            Constraint::Length(20),
+        ],
+    )
+    .header(header)
+    .block(themed_block(
+        t(context.locale, MessageKey::ViewChanges),
+        context.theme,
+    ));
+    frame.render_widget(table, area);
+}
+
+fn render_change_detail(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    locale: ResolvedLocale,
+    theme: Theme,
+) {
+    let detail = app.changes().and_then(|changes| {
+        app.selected_change()
+            .and_then(|reference| changes.detail(reference))
+    });
+    let Some(detail) = detail else {
+        render_state_panel(
+            frame,
+            area,
+            t(locale, MessageKey::ViewChangeDetail),
+            t(locale, MessageKey::StateEmpty),
+            ColorRole::Warning,
+            theme,
+        );
+        return;
+    };
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(13), Constraint::Min(7)])
+        .split(area);
+    let identity = display_identity(locale, &detail.row.display_identity, None);
+    let current_revision = detail
+        .revision_timeline
+        .last()
+        .map(|epoch| epoch.revision.as_str())
+        .unwrap_or_else(|| t(locale, MessageKey::StateTimelineUnavailable));
+    let facts = vec![
+        Line::from(Span::styled(
+            period_selector(app, locale),
+            theme.typography_style(TypographyRole::Metadata),
+        )),
+        key_value_line(
+            locale,
+            MessageKey::FieldClassification,
+            change_kind_name(locale, detail.row.reference.kind),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldCoverage,
+            coverage_name(locale, detail.coverage),
+            theme,
+        ),
+        key_value_line(locale, MessageKey::FieldRevision, current_revision, theme),
+        key_value_line(
+            locale,
+            MessageKey::FieldFirstSeen,
+            &detail.first_seen_unix_ms.to_string(),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldLastSeen,
+            &detail.last_seen_unix_ms.to_string(),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldLatestEvidence,
+            &detail.latest_evidence_unix_ms.to_string(),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldFailureRate,
+            &failure_rate_with_sample(
+                locale,
+                detail.row.current.failure_rate_percent,
+                detail.row.current.failure_sample_count,
+            ),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldPreviousPeriod,
+            &change_comparison_summary(locale, &detail.row),
+            theme,
+        ),
+    ];
+    frame.render_widget(
+        Paragraph::new(facts)
+            .block(themed_block(&identity, theme))
+            .wrap(Wrap { trim: true }),
+        sections[0],
+    );
+    let timeline = detail
+        .revision_timeline
+        .iter()
+        .map(|epoch| {
+            format!(
+                "{} · {}–{} · {}",
+                epoch.revision,
+                epoch.first_seen_unix_ms,
+                epoch.last_seen_unix_ms,
+                failure_rate_with_sample(
+                    locale,
+                    epoch.metrics.failure_rate_percent,
+                    epoch.metrics.failure_sample_count,
+                ),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let timeline = if timeline.is_empty() {
+        t(locale, MessageKey::StateEmpty).to_owned()
+    } else {
+        timeline
+    };
+    frame.render_widget(
+        Paragraph::new(timeline)
+            .block(themed_block(t(locale, MessageKey::FieldRevision), theme))
+            .scroll((app.changes_detail_scroll_lines(), 0))
+            .wrap(Wrap { trim: true }),
+        sections[1],
+    );
+}
+
+fn change_kind_name(locale: ResolvedLocale, kind: ChangeKind) -> &'static str {
+    let key = match kind {
+        ChangeKind::Regression => MessageKey::ChangeRegression,
+        ChangeKind::Recovery => MessageKey::ChangeRecovery,
+        ChangeKind::RevisionChange => MessageKey::ChangeRevision,
+        ChangeKind::NewAdmittedHook => MessageKey::ChangeNewHook,
+        ChangeKind::HistoricalOnly => MessageKey::StateHistoricalOnly,
+    };
+    t(locale, key)
+}
+
+fn change_comparison_summary(locale: ResolvedLocale, row: &ChangeRowViewModel) -> String {
+    row.previous.as_ref().map_or_else(
+        || intelligence_availability_name(locale, row.availability).to_owned(),
+        |previous| {
+            failure_rate_with_sample(
+                locale,
+                previous.failure_rate_percent,
+                previous.failure_sample_count,
+            )
+        },
+    )
+}
+
+fn change_evidence_summary(locale: ResolvedLocale, row: &ChangeRowViewModel) -> String {
+    let current = failure_rate_with_sample(
+        locale,
+        row.current.failure_rate_percent,
+        row.current.failure_sample_count,
+    );
+    let qualifier = if row.historical_status == HistoricalStatus::HistoricalOutsideSelectedPeriod {
+        t(locale, MessageKey::StateHistoricalOnly)
+    } else if row.availability != crate::analytics::IntelligenceAvailability::Available {
+        intelligence_availability_name(locale, row.availability)
+    } else {
+        change_kind_name(locale, row.reference.kind)
+    };
+    format!(
+        "{qualifier} · {current} · {}",
+        change_comparison_summary(locale, row)
+    )
 }
 
 fn render_hooks(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLocale, theme: Theme) {
@@ -1087,6 +1444,10 @@ mod tests {
     use crate::diagnostics::{
         DiagnosticCheck, DiagnosticCheckId, DiagnosticStatus, DiagnosticsReport,
     };
+    use crate::domain::{
+        EvidenceCoverage, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent, HookInvocation,
+        Runtime, TerminalStatus,
+    };
     use crate::report::instrumented_report;
     use crate::report::synthetic_fixture_report;
     use ratatui::{Terminal, backend::TestBackend};
@@ -1125,6 +1486,52 @@ mod tests {
             .collect::<String>()
     }
 
+    fn changes_app() -> App {
+        const DAY: i64 = 24 * 60 * 60 * 1_000;
+        let now = 20 * DAY;
+        let values = (0..12)
+            .map(|id| HookInvocation {
+                source_key: "fixture".into(),
+                source_record_id: format!("change-{id}"),
+                runtime: Runtime::Codex,
+                evidence_kind: EvidenceKind::SyntheticFixture,
+                coverage: EvidenceCoverage::Complete,
+                handler: HandlerIdentity {
+                    key: "hk_changes".into(),
+                    revision: if id < 6 { "r1" } else { "r2" }.into(),
+                    label: "Deployment Stop Hook".into(),
+                    source_kind: "fixture".into(),
+                    event: HookEvent::Stop,
+                    matcher_identity: "fixture".into(),
+                    structural_identity: "fixture".into(),
+                    execution_mode: ExecutionMode::Sync,
+                },
+                occurred_at_unix_ms: if id < 6 {
+                    now - 8 * DAY + id as i64
+                } else {
+                    now - DAY + id as i64
+                },
+                terminal_status: if id < 6 {
+                    TerminalStatus::Completed
+                } else {
+                    TerminalStatus::Failed
+                },
+                duration_ms: None,
+                error_fingerprint: None,
+            })
+            .collect::<Vec<_>>();
+        let mut app = App::from_report(synthetic_fixture_report(now));
+        app.handle(super::super::keymap::Command::Down);
+        app.handle(super::super::keymap::Command::Down);
+        app.apply_changes(super::super::app::ChangesSnapshot::from_values(
+            values,
+            now,
+            TimeWindow::Last7Days,
+            EvidenceCoverage::Complete,
+        ));
+        app
+    }
+
     #[test]
     fn normal_narrow_and_minimum_buffers_keep_sample_counts_or_resize_guidance() {
         let app = App::from_report(synthetic_fixture_report(1_000));
@@ -1157,6 +1564,7 @@ mod tests {
         let chinese = rendered(app, ResolvedLocale::ZhCn, 100, 30).replace(' ', "");
         assert!(chinese.contains("帮助"));
         assert!(chinese.contains("周期：t今天"));
+        assert!(chinese.contains("变更：Enter"));
     }
 
     #[test]
@@ -1208,6 +1616,7 @@ mod tests {
         let mut app = App::from_report(synthetic_fixture_report(1_000));
         app.handle(super::super::keymap::Command::Down);
         app.handle(super::super::keymap::Command::Down);
+        app.handle(super::super::keymap::Command::Down);
 
         let english = rendered(app.clone(), ResolvedLocale::EnUs, 100, 30);
         assert!(english.contains("Read-only diagnostics"));
@@ -1255,6 +1664,7 @@ mod tests {
         );
         degraded.handle(super::super::keymap::Command::Down);
         degraded.handle(super::super::keymap::Command::Down);
+        degraded.handle(super::super::keymap::Command::Down);
         let rendered = rendered(degraded, ResolvedLocale::EnUs, 100, 30);
         assert!(rendered.contains("Fail"));
         assert!(rendered.contains("Receipt integrity"));
@@ -1262,7 +1672,7 @@ mod tests {
 
     #[test]
     fn every_top_level_view_reflows_at_normal_narrow_and_minimum_sizes() {
-        for steps in [0, 1, 2, 3] {
+        for steps in [0, 1, 2, 3, 4] {
             let mut app = App::from_report(synthetic_fixture_report(1_000));
             for _ in 0..steps {
                 app.handle(super::super::keymap::Command::Down);
@@ -1273,6 +1683,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn changes_render_populated_narrow_and_drill_down_in_both_locales() {
+        let mut app = changes_app();
+        let english = rendered(app.clone(), ResolvedLocale::EnUs, 100, 30);
+        assert!(english.contains("Changes"));
+        assert!(english.contains("Regression"));
+        assert!(english.contains("n=6"));
+
+        let narrow = rendered(app.clone(), ResolvedLocale::EnUs, 44, 16);
+        assert!(narrow.contains("Deployment"));
+        app.handle(super::super::keymap::Command::Enter);
+        app.handle(super::super::keymap::Command::Enter);
+        assert_eq!(app.screen(), Screen::ChangeDetail);
+        let detail = rendered(app, ResolvedLocale::ZhCn, 100, 30).replace(' ', "");
+        assert!(detail.contains("首次发现"));
+        assert!(detail.contains("最后发现"));
+        assert!(detail.contains("修订版本"));
     }
 
     #[test]

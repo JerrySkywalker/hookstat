@@ -308,6 +308,25 @@ impl Ledger {
         })
     }
 
+    /// Reads the canonical historical snapshot for the lazy Changes
+    /// workbench. This is intentionally separate from the bounded normal
+    /// reliability query: navigating to Changes may request long history, but
+    /// a period switch on Overview/Hooks must never do so implicitly.
+    pub fn invocations_for_workbench(&self, now_unix_ms: i64) -> Result<LedgerQuery, LedgerError> {
+        let bounds = TimeBounds {
+            current_start_unix_ms: None,
+            current_end_unix_ms: now_unix_ms,
+            previous_start_unix_ms: None,
+            previous_end_unix_ms: None,
+        };
+        let invocations = self.invocations_in_bounds(bounds)?;
+        Ok(LedgerQuery {
+            rows_materialized: invocations.len() as u64,
+            invocations,
+            bounds,
+        })
+    }
+
     /// Database-side `All` aggregates for the visible finite-window handlers.
     /// This returns one compact row per handler rather than historical
     /// invocations, preserving the released All-time trend semantics.

@@ -12,8 +12,9 @@ pub use crate::diagnostics::{
     DiagnosticCheck as DiagnosticCheckViewModel, DiagnosticCheckId, DiagnosticFact,
     DiagnosticStatus, DiagnosticsReport as DiagnosticsViewModel,
 };
-use crate::domain::{EvidenceCoverage, HookEvent, Runtime, TerminalStatus};
+use crate::domain::{EvidenceCoverage, HandlerIdentity, HookEvent, Runtime, TerminalStatus};
 use crate::report::MachineReport;
+use crate::workbench::{ChangeKind, ChangesWorkbench, HistoricalStatus, RevisionTimelineEpoch};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HandlerRef {
@@ -94,6 +95,106 @@ pub struct HooksViewModel {
     pub window: TimeWindow,
     pub rows: Vec<HookRowViewModel>,
     pub total_before_filter: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChangeRef {
+    pub handler_key: String,
+    pub kind: ChangeKind,
+    pub occurred_at_unix_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChangeRowViewModel {
+    pub reference: ChangeRef,
+    pub display_identity: DisplayIdentity,
+    pub event: HookEvent,
+    pub current: crate::analytics::PeriodMetrics,
+    pub previous: Option<crate::analytics::PeriodMetrics>,
+    pub availability: crate::analytics::IntelligenceAvailability,
+    pub revision: Option<String>,
+    pub historical_status: HistoricalStatus,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChangeDetailViewModel {
+    pub row: ChangeRowViewModel,
+    pub internal_ref: HandlerRef,
+    pub coverage: EvidenceCoverage,
+    pub first_seen_unix_ms: i64,
+    pub last_seen_unix_ms: i64,
+    pub latest_evidence_unix_ms: i64,
+    pub revision_timeline: Vec<RevisionTimelineEpoch>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChangesViewModel {
+    pub window: TimeWindow,
+    pub coverage: EvidenceCoverage,
+    pub generated_at_unix_ms: i64,
+    pub rows: Vec<ChangeRowViewModel>,
+    details: Vec<ChangeDetailViewModel>,
+}
+
+impl ChangesViewModel {
+    pub fn from_workbench(workbench: ChangesWorkbench) -> Self {
+        let mut histories = std::collections::BTreeMap::new();
+        for history in &workbench.handlers {
+            histories.insert(history.handler.key.as_str(), history);
+        }
+        let rows = workbench
+            .events
+            .iter()
+            .filter_map(|event| {
+                let history = histories.get(event.handler_key.as_str())?;
+                Some(ChangeRowViewModel {
+                    reference: ChangeRef {
+                        handler_key: event.handler_key.clone(),
+                        kind: event.kind,
+                        occurred_at_unix_ms: event.occurred_at_unix_ms,
+                    },
+                    display_identity: resolve_display_identity_from_handler(&history.handler),
+                    event: history.handler.event,
+                    current: event.current.clone(),
+                    previous: event.previous.clone(),
+                    availability: event.availability,
+                    revision: event.revision.clone(),
+                    historical_status: event.historical_status,
+                })
+            })
+            .collect::<Vec<_>>();
+        let details = rows
+            .iter()
+            .filter_map(|row| {
+                let history = histories.get(row.reference.handler_key.as_str())?;
+                Some(ChangeDetailViewModel {
+                    row: row.clone(),
+                    internal_ref: HandlerRef {
+                        runtime: Runtime::Codex,
+                        handler_key: history.handler.key.clone(),
+                    },
+                    coverage: workbench.coverage,
+                    first_seen_unix_ms: history.first_seen_unix_ms,
+                    last_seen_unix_ms: history.last_seen_unix_ms,
+                    latest_evidence_unix_ms: history.latest_evidence_unix_ms,
+                    revision_timeline: history.revision_timeline.clone(),
+                })
+            })
+            .collect();
+        Self {
+            window: workbench.window,
+            coverage: workbench.coverage,
+            generated_at_unix_ms: workbench.generated_at_unix_ms,
+            rows,
+            details,
+        }
+    }
+
+    pub fn detail(&self, reference: &ChangeRef) -> Option<&ChangeDetailViewModel> {
+        self.details
+            .iter()
+            .find(|detail| detail.row.reference == *reference)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -494,19 +595,19 @@ fn recent_failure(value: &RecentFailure) -> RecentFailureViewModel {
 }
 
 fn resolve_display_identity(aggregate: &HandlerAggregate) -> DisplayIdentity {
-    let label = aggregate.handler.label.trim();
-    let short_identity = aggregate
-        .handler
-        .key
-        .strip_prefix("hk_")
-        .unwrap_or(&aggregate.handler.key);
+    resolve_display_identity_from_handler(&aggregate.handler)
+}
+
+fn resolve_display_identity_from_handler(handler: &HandlerIdentity) -> DisplayIdentity {
+    let label = handler.label.trim();
+    let short_identity = handler.key.strip_prefix("hk_").unwrap_or(&handler.key);
     let generated = label.is_empty()
-        || label == aggregate.handler.key
-        || label.contains(&aggregate.handler.key)
+        || label == handler.key
+        || label.contains(&handler.key)
         || (!short_identity.is_empty() && label.contains(short_identity))
         || label.starts_with("Codex /");
     if generated {
-        DisplayIdentity::EventFallback(aggregate.handler.event)
+        DisplayIdentity::EventFallback(handler.event)
     } else {
         DisplayIdentity::ExistingMetadata(label.to_owned())
     }

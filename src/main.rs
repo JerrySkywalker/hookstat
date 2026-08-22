@@ -250,8 +250,10 @@ fn tui_command(arguments: &[String]) -> ExitCode {
         .any(|argument| argument == "--timing-output");
     let reliability_root = root.clone();
     let reliability_observatory = observatory.clone();
-    let diagnostics_root = root;
+    let diagnostics_root = root.clone();
     let diagnostics_observatory = observatory.clone();
+    let changes_root = root;
+    let changes_observatory = observatory.clone();
     match tui::run_loading_with_refreshes_language(
         TimeWindow::Last7Days,
         explicit_language,
@@ -277,6 +279,15 @@ fn tui_command(arguments: &[String]) -> ExitCode {
             diagnostics_observatory
                 .record_latency("diagnostics_refresh", started.elapsed().as_millis());
             Ok(report)
+        },
+        move |request| {
+            let started = Instant::now();
+            let result = load_changes_snapshot_at(&changes_root, request.reason.window());
+            if result.is_ok() {
+                changes_observatory
+                    .record_latency("changes_workbench_snapshot", started.elapsed().as_millis());
+            }
+            result
         },
         observatory.clone(),
     ) {
@@ -611,6 +622,43 @@ fn load_reliability_snapshot_at(
     );
     enrich_report_from_ledger(&ledger, &mut report, now)?;
     Ok(tui::RefreshSnapshot::from_report(report))
+}
+
+/// Loads the historical workbench only when its page is requested. This path
+/// deliberately remains separate from the bounded reliability refresh: a
+/// normal Today/24h/7d/30d view must never materialize the complete ledger.
+fn load_changes_snapshot_at(
+    root: &std::path::Path,
+    window: TimeWindow,
+) -> Result<tui::ChangesSnapshot, String> {
+    let spool = ReceiptSpool::open(root.join("receipts")).map_err(|error| error.to_string())?;
+    let mut ledger =
+        Ledger::open_path(root.join("ledger.sqlite3")).map_err(|error| error.to_string())?;
+    let _reconciled = spool
+        .reconcile_incremental(&mut ledger, now_unix_ms())
+        .map_err(|error| error.to_string())?;
+    let now = now_unix_ms();
+    let query = ledger
+        .invocations_for_workbench(now)
+        .map_err(|error| error.to_string())?;
+    let mut values = query.invocations;
+    let aliases = ledger
+        .handler_aliases()
+        .map_err(|error| error.to_string())?;
+    for value in &mut values {
+        if let Some(alias) = aliases
+            .iter()
+            .find(|alias| alias.runtime == value.runtime && alias.handler_key == value.handler.key)
+        {
+            value.handler.label.clone_from(&alias.display_name);
+        }
+    }
+    Ok(tui::ChangesSnapshot::from_values(
+        values,
+        now,
+        window,
+        hookstat::domain::SourceQualification::instrumented().coverage,
+    ))
 }
 
 /// Finite-window raw rows cover the largest rolling comparison (60 days).
