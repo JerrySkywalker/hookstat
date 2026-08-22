@@ -1,4 +1,6 @@
-//! Typed, application-owned route selection with no terminal-widget dependency.
+//! Top-level route state delegated to the shared Human interface core.
+
+use jerry_terminal_ui::navigation::TopLevelNavigation;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Route {
@@ -15,56 +17,31 @@ impl Route {
         Self::Diagnostics,
         Self::Settings,
     ];
-
-    pub const fn index(self) -> usize {
-        match self {
-            Self::Overview => 0,
-            Self::Hooks => 1,
-            Self::Diagnostics => 2,
-            Self::Settings => 3,
-        }
-    }
 }
 
+/// One direct current route with no selected-vs-active split.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NavigationState {
-    selected: Route,
-    active: Route,
+    inner: TopLevelNavigation<Route>,
 }
 
 impl NavigationState {
     pub const fn new() -> Self {
         Self {
-            selected: Route::Overview,
-            active: Route::Overview,
+            inner: TopLevelNavigation::new(Route::Overview),
         }
     }
 
-    pub const fn selected(self) -> Route {
-        self.selected
-    }
-
-    pub const fn active(self) -> Route {
-        self.active
+    pub const fn current(self) -> Route {
+        self.inner.current()
     }
 
     pub fn move_by(&mut self, delta: isize) {
-        let index =
-            (self.selected.index() as isize + delta).rem_euclid(Route::ALL.len() as isize) as usize;
-        self.selected = Route::ALL[index];
-    }
-
-    pub fn activate_selected(&mut self) {
-        self.active = self.selected;
+        let _ = self.inner.move_by(&Route::ALL, delta);
     }
 
     pub fn activate(&mut self, route: Route) {
-        self.selected = route;
-        self.active = route;
-    }
-
-    pub fn back(&mut self) {
-        self.selected = self.active;
+        self.inner.set_current(route);
     }
 }
 
@@ -76,17 +53,14 @@ impl Default for NavigationState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{NavigationState, Route};
 
     #[test]
-    fn navigation_wraps_and_activates_a_typed_route() {
+    fn direct_current_route_moves_without_selected_active_split() {
         let mut navigation = NavigationState::new();
         navigation.move_by(-1);
-        assert_eq!(navigation.selected(), Route::Settings);
-        navigation.activate_selected();
-        assert_eq!(navigation.active(), Route::Settings);
+        assert_eq!(navigation.current(), Route::Settings);
         navigation.move_by(1);
-        navigation.back();
-        assert_eq!(navigation.selected(), Route::Settings);
+        assert_eq!(navigation.current(), Route::Overview);
     }
 }

@@ -13,7 +13,8 @@ pub enum Command {
     Back,
     Refresh,
     Quit,
-    ToggleFocus,
+    Help,
+    Discard,
     Window(TimeWindow),
     Search,
     SearchInput(char),
@@ -23,7 +24,6 @@ pub enum Command {
     Sort,
     PreviousSetting,
     NextSetting,
-    RevertSettings,
 }
 
 pub fn command_for(key: KeyEvent, search_editing: bool) -> Option<Command> {
@@ -52,7 +52,8 @@ pub fn command_for(key: KeyEvent, search_editing: bool) -> Option<Command> {
         KeyCode::Char('r') => Some(Command::Refresh),
         KeyCode::Char('q') => Some(Command::Quit),
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(Command::Quit),
-        KeyCode::Tab => Some(Command::ToggleFocus),
+        KeyCode::Char('?') => Some(Command::Help),
+        KeyCode::Char('d') => Some(Command::Discard),
         KeyCode::Char('t') => Some(Command::Window(TimeWindow::Today)),
         KeyCode::Char('1') => Some(Command::Window(TimeWindow::Last24Hours)),
         KeyCode::Char('7') => Some(Command::Window(TimeWindow::Last7Days)),
@@ -63,7 +64,6 @@ pub fn command_for(key: KeyEvent, search_editing: bool) -> Option<Command> {
         KeyCode::Char('s') => Some(Command::Sort),
         KeyCode::Left | KeyCode::Char('h') => Some(Command::PreviousSetting),
         KeyCode::Right | KeyCode::Char('l') => Some(Command::NextSetting),
-        KeyCode::Char('x') => Some(Command::RevertSettings),
         _ => None,
     }
 }
@@ -104,6 +104,14 @@ mod tests {
         assert_eq!(
             command_for(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), false),
             Some(Command::PageDown)
+        );
+        assert_eq!(
+            command_for(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE), false),
+            Some(Command::Help)
+        );
+        assert_eq!(
+            command_for(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), false),
+            None
         );
     }
 

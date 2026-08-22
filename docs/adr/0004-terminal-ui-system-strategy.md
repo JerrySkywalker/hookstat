@@ -1,6 +1,8 @@
 # ADR 0004 — Terminal UI System Strategy
 
-Status: Accepted for the HookStat v0.2 design foundation.
+Status: Accepted historical v0.2 design foundation; superseded for new shared
+Human-interface primitives by HS-G21 in v0.3. This record is retained so the
+v0.2 decision history is not rewritten.
 
 Repository note: `0004-opt-in-instrumented-evidence-fallback.md` already uses the numeric prefix `0004`. This run was explicitly contracted to create the present filename. The full ADR slug is therefore authoritative; the existing v0.1 ADR is not renamed or edited in this design-only train.
 

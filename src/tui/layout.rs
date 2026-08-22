@@ -1,9 +1,7 @@
 //! Responsive application-shell geometry.
 
+use jerry_terminal_ui::layout::HUMAN_SHELL;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-
-pub const MINIMUM_WIDTH: u16 = 24;
-pub const MINIMUM_HEIGHT: u16 = 10;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ApplicationShell;
@@ -28,28 +26,24 @@ impl ApplicationShell {
     }
 
     pub fn layout(self, area: Rect) -> ShellLayout {
-        if area.width < MINIMUM_WIDTH || area.height < MINIMUM_HEIGHT {
+        if !HUMAN_SHELL.supports(area.width, area.height) {
             return ShellLayout::TooSmall { available: area };
         }
 
         let vertical = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
-                Constraint::Min(5),
-                Constraint::Length(2),
+                Constraint::Length(HUMAN_SHELL.header_rows),
+                Constraint::Min(3),
+                Constraint::Length(HUMAN_SHELL.footer_rows),
             ])
             .split(area);
-        let navigation_width = if vertical[1].width >= 52 {
-            21
-        } else if vertical[1].width >= 40 {
-            12
-        } else {
-            4
-        };
         let horizontal = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(navigation_width), Constraint::Min(10)])
+            .constraints([
+                Constraint::Length(HUMAN_SHELL.sidebar_columns),
+                Constraint::Min(3),
+            ])
             .split(vertical[1]);
         ShellLayout::Ready(ShellAreas {
             title: vertical[0],
@@ -70,9 +64,9 @@ mod tests {
         else {
             panic!("normal terminal must have a shell");
         };
-        assert_eq!(areas.title.height, 3);
+        assert_eq!(areas.title.height, HUMAN_SHELL.header_rows);
         assert_eq!(areas.footer.height, 2);
-        assert_eq!(areas.navigation.width, 21);
+        assert_eq!(areas.navigation.width, HUMAN_SHELL.sidebar_columns);
         assert!(areas.content.width > areas.navigation.width);
     }
 
@@ -82,18 +76,28 @@ mod tests {
         else {
             panic!("minimum terminal must have a shell");
         };
-        assert_eq!(areas.navigation.width, 4);
-        assert!(areas.content.width >= 10);
+        assert_eq!(areas.navigation.width, HUMAN_SHELL.sidebar_columns);
+        assert!(areas.content.width >= 3);
     }
 
     #[test]
     fn too_small_layout_has_no_partial_widgets() {
         assert!(matches!(
-            ApplicationShell::new().layout(Rect::new(0, 0, 23, 10)),
+            ApplicationShell::new().layout(Rect::new(
+                0,
+                0,
+                HUMAN_SHELL.minimum_width - 1,
+                HUMAN_SHELL.minimum_height
+            )),
             ShellLayout::TooSmall { .. }
         ));
         assert!(matches!(
-            ApplicationShell::new().layout(Rect::new(0, 0, 24, 9)),
+            ApplicationShell::new().layout(Rect::new(
+                0,
+                0,
+                HUMAN_SHELL.minimum_width,
+                HUMAN_SHELL.minimum_height - 1
+            )),
             ShellLayout::TooSmall { .. }
         ));
     }

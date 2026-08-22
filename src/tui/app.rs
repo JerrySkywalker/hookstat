@@ -5,6 +5,9 @@ use crate::diagnostics::DiagnosticsReport;
 use crate::domain::HookInvocation;
 use crate::interface_preferences::InterfaceColor;
 use crate::report::{MachineReport, instrumented_report};
+use jerry_terminal_ui::interaction::{
+    DiscardDecision, OverlayDismissKey, OverlayState, QuitDisposition, SettingsEditor,
+};
 
 use super::keymap::Command;
 use super::localization::InterfaceLanguage;
@@ -15,18 +18,18 @@ use super::view_model::HookSort;
 use super::view_model::{HandlerRef, HookRowViewModel, HooksQuery, ReliabilityCenterViewModel};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Focus {
-    Content,
-    Navigation,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
     Overview,
     Hooks,
     HookDetail,
     Diagnostics,
     Settings,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LocalMode {
+    None,
+    HooksList,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,25 +122,14 @@ pub enum SettingsField {
 
 impl SettingsField {
     const ALL: [Self; 2] = [Self::Language, Self::Color];
-
-    const fn index(self) -> usize {
-        match self {
-            Self::Language => 0,
-            Self::Color => 1,
-        }
-    }
-
-    fn move_by(self, delta: isize) -> Self {
-        let index = (self.index() as isize + delta).rem_euclid(Self::ALL.len() as isize) as usize;
-        Self::ALL[index]
-    }
 }
 
 #[derive(Clone, Debug)]
 pub struct App {
     navigation: NavigationState,
-    focus: Focus,
     screen: Screen,
+    local_mode: LocalMode,
+    help_overlay: OverlayState,
     requested_window: TimeWindow,
     selected_handler: Option<HandlerRef>,
     view: ResourceState<ReliabilityCenterViewModel>,
@@ -150,7 +142,7 @@ pub struct App {
     draft_language: InterfaceLanguage,
     accepted_color: InterfaceColor,
     draft_color: InterfaceColor,
-    settings_field: SettingsField,
+    settings_editor: SettingsEditor<SettingsField>,
     settings_save_state: SettingsSaveState,
 }
 
@@ -169,8 +161,9 @@ impl App {
     pub fn loading(window: TimeWindow) -> Self {
         Self {
             navigation: NavigationState::new(),
-            focus: Focus::Content,
             screen: Screen::Overview,
+            local_mode: LocalMode::None,
+            help_overlay: OverlayState::None,
             requested_window: window,
             selected_handler: None,
             view: ResourceState::Loading {
@@ -187,7 +180,7 @@ impl App {
             draft_language: InterfaceLanguage::Auto,
             accepted_color: InterfaceColor::Auto,
             draft_color: InterfaceColor::Auto,
-            settings_field: SettingsField::Language,
+            settings_editor: SettingsEditor::new(SettingsField::Language),
             settings_save_state: SettingsSaveState::Clean,
         }
     }
@@ -204,8 +197,9 @@ impl App {
         let diagnostics = view_model.diagnostics.clone();
         Self {
             navigation: NavigationState::new(),
-            focus: Focus::Content,
             screen: Screen::Overview,
+            local_mode: LocalMode::None,
+            help_overlay: OverlayState::None,
             requested_window: view_model.overview.window,
             selected_handler,
             view: ResourceState::Ready(view_model),
@@ -218,17 +212,13 @@ impl App {
             draft_language: InterfaceLanguage::Auto,
             accepted_color: InterfaceColor::Auto,
             draft_color: InterfaceColor::Auto,
-            settings_field: SettingsField::Language,
+            settings_editor: SettingsEditor::new(SettingsField::Language),
             settings_save_state: SettingsSaveState::Clean,
         }
     }
 
     pub const fn navigation(&self) -> NavigationState {
         self.navigation
-    }
-
-    pub const fn focus(&self) -> Focus {
-        self.focus
     }
 
     pub const fn screen(&self) -> Screen {
@@ -292,7 +282,27 @@ impl App {
     }
 
     pub const fn settings_field(&self) -> SettingsField {
-        self.settings_field
+        self.settings_editor.selected_field()
+    }
+
+    pub const fn settings_editing(&self) -> bool {
+        self.settings_editor.is_editing()
+    }
+
+    pub const fn help_open(&self) -> bool {
+        self.help_overlay.is_open()
+    }
+
+    pub const fn discard_confirmation_open(&self) -> bool {
+        self.settings_editor.awaiting_discard_confirmation()
+    }
+
+    pub const fn local_list_active(&self) -> bool {
+        matches!(self.local_mode, LocalMode::HooksList)
+    }
+
+    const fn hooks_list_active(&self) -> bool {
+        self.local_list_active()
     }
 
     pub const fn settings_save_state(&self) -> SettingsSaveState {
@@ -326,29 +336,25 @@ impl App {
     }
 
     pub fn handle(&mut self, command: Command) -> AppEffect {
+        if self.help_overlay.is_open() {
+            return self.handle_help_overlay(command);
+        }
+        if self.settings_editor.awaiting_discard_confirmation() {
+            return self.handle_discard_confirmation(command);
+        }
         match command {
-            Command::Quit => AppEffect::Quit,
-            Command::ToggleFocus => {
-                self.focus = match self.focus {
-                    Focus::Content => Focus::Navigation,
-                    Focus::Navigation => Focus::Content,
-                };
+            Command::Quit => self.request_quit(),
+            Command::Help => {
+                self.help_overlay.open_help();
                 AppEffect::None
             }
+            Command::Discard => AppEffect::None,
             Command::Up => {
-                if self.focus == Focus::Navigation {
-                    self.navigation.move_by(-1);
-                } else {
-                    self.move_content(-1);
-                }
+                self.move_direction(-1);
                 AppEffect::None
             }
             Command::Down => {
-                if self.focus == Focus::Navigation {
-                    self.navigation.move_by(1);
-                } else {
-                    self.move_content(1);
-                }
+                self.move_direction(1);
                 AppEffect::None
             }
             Command::PageUp => {
@@ -362,22 +368,17 @@ impl App {
             Command::Enter => {
                 if self.search_editing {
                     self.search_editing = false;
-                } else if self.focus == Focus::Navigation {
-                    self.navigation.activate_selected();
-                    self.screen = match self.navigation.active() {
-                        Route::Overview => Screen::Overview,
-                        Route::Hooks => Screen::Hooks,
-                        Route::Diagnostics => Screen::Diagnostics,
-                        Route::Settings => Screen::Settings,
-                    };
-                    self.repair_handler_selection();
                 } else if self.screen == Screen::Settings {
-                    self.cycle_current_setting(1);
+                    self.settings_editor.enter_or_finish();
+                } else if self.screen == Screen::Hooks && !self.hooks_list_active() {
+                    self.local_mode = LocalMode::HooksList;
+                    self.repair_handler_selection();
                 } else if matches!(self.screen, Screen::Overview | Screen::Hooks)
                     && self.selected_handler.is_some()
                 {
                     self.navigation.activate(Route::Hooks);
                     self.screen = Screen::HookDetail;
+                    self.local_mode = LocalMode::HooksList;
                     self.detail_scroll_lines = 0;
                 }
                 AppEffect::None
@@ -388,11 +389,20 @@ impl App {
                 } else if self.screen == Screen::HookDetail {
                     self.navigation.activate(Route::Hooks);
                     self.screen = Screen::Hooks;
+                    self.local_mode = LocalMode::HooksList;
                     self.detail_scroll_lines = 0;
                     self.repair_handler_selection();
-                } else {
-                    self.navigation.back();
+                } else if self.screen == Screen::Hooks && self.hooks_list_active() {
+                    self.local_mode = LocalMode::None;
+                } else if self.screen == Screen::Settings && self.settings_editor.is_editing() {
+                    self.settings_editor.enter_or_finish();
                 }
+                AppEffect::None
+            }
+            Command::Refresh
+                if self.screen == Screen::Settings && self.settings_editor.is_editing() =>
+            {
+                self.revert_settings();
                 AppEffect::None
             }
             Command::Refresh if self.screen == Screen::Diagnostics => {
@@ -400,14 +410,14 @@ impl App {
             }
             Command::Refresh => self.request_refresh(RefreshReason::Manual(self.requested_window)),
             Command::Window(window) => {
-                if self.screen == Screen::Settings {
+                if self.screen == Screen::Settings && self.settings_editor.is_editing() {
                     return self.apply_interface();
                 }
                 self.requested_window = window;
                 self.request_refresh(RefreshReason::Window(window))
             }
             Command::Search => {
-                if self.screen == Screen::Hooks {
+                if self.screen == Screen::Hooks && self.hooks_list_active() {
                     self.search_editing = true;
                 }
                 AppEffect::None
@@ -433,7 +443,7 @@ impl App {
                 AppEffect::None
             }
             Command::Filter => {
-                if self.screen == Screen::Hooks {
+                if self.screen == Screen::Hooks && self.hooks_list_active() {
                     self.hooks_query.failures_only = !self.hooks_query.failures_only;
                     self.rebuild_visible_hooks();
                     self.repair_handler_selection();
@@ -441,7 +451,7 @@ impl App {
                 AppEffect::None
             }
             Command::Sort => {
-                if self.screen == Screen::Hooks {
+                if self.screen == Screen::Hooks && self.hooks_list_active() {
                     self.hooks_query.sort = self.hooks_query.sort.next();
                     self.rebuild_visible_hooks();
                     self.repair_handler_selection();
@@ -449,22 +459,14 @@ impl App {
                 AppEffect::None
             }
             Command::PreviousSetting => {
-                if self.screen == Screen::Settings {
+                if self.screen == Screen::Settings && self.settings_editor.is_editing() {
                     self.cycle_current_setting(-1);
                 }
                 AppEffect::None
             }
             Command::NextSetting => {
-                if self.screen == Screen::Settings {
+                if self.screen == Screen::Settings && self.settings_editor.is_editing() {
                     self.cycle_current_setting(1);
-                }
-                AppEffect::None
-            }
-            Command::RevertSettings => {
-                if self.screen == Screen::Settings {
-                    self.draft_language = self.accepted_language;
-                    self.draft_color = self.accepted_color;
-                    self.settings_save_state = SettingsSaveState::Clean;
                 }
                 AppEffect::None
             }
@@ -504,6 +506,75 @@ impl App {
             .error("diagnostics_refresh_failed");
     }
 
+    fn handle_help_overlay(&mut self, command: Command) -> AppEffect {
+        let dismissal = match command {
+            Command::Back => Some(OverlayDismissKey::Escape),
+            Command::Help => Some(OverlayDismissKey::Help),
+            Command::Quit => Some(OverlayDismissKey::Quit),
+            _ => None,
+        };
+        if let Some(dismissal) = dismissal {
+            let _ = self.help_overlay.dismiss_with(dismissal);
+        }
+        AppEffect::None
+    }
+
+    fn handle_discard_confirmation(&mut self, command: Command) -> AppEffect {
+        match command {
+            Command::Back | Command::Quit => {
+                let _ = self
+                    .settings_editor
+                    .resolve_discard(DiscardDecision::Cancel);
+                AppEffect::None
+            }
+            Command::Enter | Command::Discard => {
+                if self
+                    .settings_editor
+                    .resolve_discard(DiscardDecision::Discard)
+                {
+                    self.revert_settings();
+                    AppEffect::Quit
+                } else {
+                    AppEffect::None
+                }
+            }
+            _ => AppEffect::None,
+        }
+    }
+
+    fn request_quit(&mut self) -> AppEffect {
+        match self.settings_editor.request_quit(self.settings_dirty()) {
+            QuitDisposition::Quit => AppEffect::Quit,
+            QuitDisposition::ConfirmDiscard => AppEffect::None,
+        }
+    }
+
+    fn revert_settings(&mut self) {
+        self.draft_language = self.accepted_language;
+        self.draft_color = self.accepted_color;
+        self.settings_save_state = SettingsSaveState::Clean;
+    }
+
+    fn move_direction(&mut self, delta: isize) {
+        if self.screen == Screen::HookDetail {
+            self.move_detail_scroll(delta);
+        } else if self.screen == Screen::Settings && self.settings_editor.is_editing() {
+            let _ = self.settings_editor.move_field(&SettingsField::ALL, delta);
+        } else if self.screen == Screen::Hooks && self.hooks_list_active() {
+            self.move_content(delta);
+        } else {
+            self.navigation.move_by(delta);
+            self.screen = match self.navigation.current() {
+                Route::Overview => Screen::Overview,
+                Route::Hooks => Screen::Hooks,
+                Route::Diagnostics => Screen::Diagnostics,
+                Route::Settings => Screen::Settings,
+            };
+            self.local_mode = LocalMode::None;
+            self.repair_handler_selection();
+        }
+    }
+
     fn request_refresh(&mut self, reason: RefreshReason) -> AppEffect {
         self.view = std::mem::replace(&mut self.view, ResourceState::Empty).loading();
         AppEffect::RequestRefresh(reason)
@@ -518,7 +589,7 @@ impl App {
     }
 
     fn cycle_current_setting(&mut self, delta: isize) {
-        match self.settings_field {
+        match self.settings_editor.selected_field() {
             SettingsField::Language => self.cycle_language(delta),
             SettingsField::Color => self.cycle_color(delta),
         }
@@ -581,10 +652,6 @@ impl App {
         if self.screen == Screen::Diagnostics {
             return;
         }
-        if self.screen == Screen::Settings {
-            self.settings_field = self.settings_field.move_by(delta);
-            return;
-        }
         let candidates = self
             .selectable_rows()
             .into_iter()
@@ -608,11 +675,9 @@ impl App {
     }
 
     fn page_content(&mut self, direction: isize) {
-        if self.focus == Focus::Navigation {
-            self.navigation.move_by(direction);
-        } else if self.screen == Screen::HookDetail {
+        if self.screen == Screen::HookDetail {
             self.move_detail_scroll(direction.saturating_mul(6));
-        } else {
+        } else if self.screen == Screen::Hooks && self.hooks_list_active() {
             self.move_content(direction.saturating_mul(5));
         }
     }
@@ -677,10 +742,8 @@ mod tests {
     fn hooks_selection_uses_stable_identity_across_refresh() {
         let report = synthetic_fixture_report(1_000);
         let mut app = App::from_report(report.clone());
-        app.handle(Command::ToggleFocus);
         app.handle(Command::Down);
         app.handle(Command::Enter);
-        app.handle(Command::ToggleFocus);
         app.handle(Command::Down);
         let selected = app.selected_handler().cloned();
         app.apply_refresh(RefreshSnapshot::from_report(report));
@@ -690,10 +753,8 @@ mod tests {
     #[test]
     fn hooks_search_filter_and_sort_are_ui_state_not_snapshot_mutation() {
         let mut app = App::from_report(synthetic_fixture_report(1_000));
-        app.handle(Command::ToggleFocus);
         app.handle(Command::Down);
         app.handle(Command::Enter);
-        app.handle(Command::ToggleFocus);
         app.handle(Command::Search);
         for value in ['a', 'l', 'p', 'h', 'a'] {
             app.handle(Command::SearchInput(value));
@@ -798,11 +859,9 @@ mod tests {
     #[test]
     fn navigation_opens_the_read_only_diagnostics_route() {
         let mut app = App::from_report(synthetic_fixture_report(1_000));
-        app.handle(Command::ToggleFocus);
         app.handle(Command::Down);
         app.handle(Command::Down);
-        app.handle(Command::Enter);
-        assert_eq!(app.navigation().active(), Route::Diagnostics);
+        assert_eq!(app.navigation().current(), Route::Diagnostics);
         assert_eq!(app.screen(), Screen::Diagnostics);
         assert!(app.view_model().is_some());
     }
@@ -810,10 +869,8 @@ mod tests {
     #[test]
     fn language_switch_is_staged_without_losing_hooks_state() {
         let mut app = App::from_report(synthetic_fixture_report(1_000));
-        app.handle(Command::ToggleFocus);
         app.handle(Command::Down);
         app.handle(Command::Enter);
-        app.handle(Command::ToggleFocus);
         app.handle(Command::Search);
         app.handle(Command::SearchInput('a'));
         app.handle(Command::CloseSearch);
@@ -821,6 +878,7 @@ mod tests {
         let selection = app.selected_handler().cloned();
         app.navigation.activate(Route::Settings);
         app.screen = Screen::Settings;
+        app.handle(Command::Enter);
         app.handle(Command::NextSetting);
         assert!(app.settings_dirty());
         assert_eq!(app.hooks_query().search, search);
@@ -841,7 +899,8 @@ mod tests {
         let mut app = App::from_report(synthetic_fixture_report(1_000));
         app.navigation.activate(Route::Settings);
         app.screen = Screen::Settings;
-        app.settings_field = SettingsField::Color;
+        app.settings_editor = SettingsEditor::new(SettingsField::Color);
+        app.handle(Command::Enter);
         app.handle(Command::NextSetting);
         assert_eq!(app.draft_color(), InterfaceColor::Always);
         assert_eq!(
@@ -864,5 +923,50 @@ mod tests {
         assert_eq!(app.detail_scroll_lines(), 5);
         app.handle(Command::PageUp);
         assert_eq!(app.detail_scroll_lines(), 0);
+    }
+
+    #[test]
+    fn top_level_navigation_is_direct_without_global_focus_or_active_split() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.handle(Command::Down);
+        assert_eq!(app.screen(), Screen::Hooks);
+        assert_eq!(app.navigation().current(), Route::Hooks);
+        assert!(!app.local_list_active());
+        app.handle(Command::Up);
+        assert_eq!(app.screen(), Screen::Overview);
+        assert_eq!(app.navigation().current(), Route::Overview);
+    }
+
+    #[test]
+    fn settings_require_explicit_edit_and_guard_dirty_quit() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.navigation.activate(Route::Settings);
+        app.screen = Screen::Settings;
+        app.handle(Command::NextSetting);
+        assert!(!app.settings_dirty());
+        app.handle(Command::Enter);
+        assert!(app.settings_editing());
+        app.handle(Command::NextSetting);
+        assert!(app.settings_dirty());
+        assert_eq!(app.handle(Command::Quit), AppEffect::None);
+        assert!(app.discard_confirmation_open());
+        app.handle(Command::Back);
+        assert!(!app.discard_confirmation_open());
+        assert!(app.settings_dirty());
+        app.handle(Command::Quit);
+        assert_eq!(app.handle(Command::Discard), AppEffect::Quit);
+        assert!(!app.settings_dirty());
+    }
+
+    #[test]
+    fn help_overlay_owns_normal_keys_until_dismissed() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.handle(Command::Help);
+        assert!(app.help_open());
+        app.handle(Command::Down);
+        assert_eq!(app.screen(), Screen::Overview);
+        app.handle(Command::Quit);
+        assert!(!app.help_open());
+        assert_eq!(app.screen(), Screen::Overview);
     }
 }

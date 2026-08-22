@@ -1,6 +1,8 @@
 # Jerry Terminal UI System
 
-Status: shared design contract for HookStat v0.2 and future Jerry terminal applications.
+Status: implemented shared contract for HookStat v0.3 and TabBeacon. The
+dependency-neutral implementation is `JerrySkywalker/jerry-terminal-ui` at
+the pinned development revision recorded in `HS-G21-SHARED-BOUNDARY.md`.
 
 This contract captures the common terminal experience. It does not claim that every current TabBeacon component is already packaged for reuse. Applications may implement the contract internally until two conforming consumers establish a stable extraction boundary.
 
@@ -35,8 +37,10 @@ Shortcut footer
 ### Navigation pane
 
 - Contains the ordered top-level views.
-- The active item is marked by both a glyph such as `>` and selection styling.
-- A default width near 21 display cells follows TabBeacon's established shell; an application may adapt at narrow widths.
+- The one current item is marked by `>`; there is no selected-vs-active split
+  or global Navigation/Content focus state.
+- Normal width is 21 display cells. Narrow behavior is owned by the shared
+  shell contract, not per-product 21/12/4 breakpoints.
 - Nested detail views do not become permanent top-level entries. Back returns to the parent list and preserves selection by stable identity.
 
 ### Main content
@@ -134,7 +138,8 @@ Only `KeyEventKind::Press` performs ordinary navigation. `Repeat` and `Release` 
 Additional rules:
 
 - An overlay owns key events until dismissed.
-- Focus is explicit when both navigation and content can select items.
+- Top-level Up/Down/j/k switch the current screen immediately. Local list and
+  detail modes are explicit product states, never a global focus toggle.
 - Selection follows a stable item identity across refresh, not only a numeric index.
 - Search text and filters are UI state. They never alter the accepted source snapshot.
 - The footer is the discoverable command authority; `?` may open a localized expanded help overlay.
@@ -339,5 +344,5 @@ COLOR_SEMANTICS=FROZEN
 NAVIGATION_CONTRACT=FROZEN
 ASYNC_REFRESH_CONTRACT=FROZEN
 I18N_CONTRACT=FROZEN
-EXTERNAL_SHARED_CRATE=DEFERRED
+EXTERNAL_SHARED_CRATE=IMPLEMENTED_G21
 ```

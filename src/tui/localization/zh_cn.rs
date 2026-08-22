@@ -12,7 +12,7 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::ViewHookDetail => "钩子详情",
         MessageKey::ViewDiagnostics => "只读诊断",
         MessageKey::ViewSettings => "界面设置",
-        MessageKey::SectionNavigation => "导航",
+        MessageKey::SectionNavigation => "分区",
         MessageKey::SectionRuntimeSummary => "运行时摘要",
         MessageKey::SectionRiskyHooks => "高风险钩子",
         MessageKey::SectionRecentFailures => "最近失败",
@@ -186,6 +186,9 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::FooterNavigate => "导航",
         MessageKey::FooterPage => "翻页",
         MessageKey::FooterOpen => "打开",
+        MessageKey::FooterHelp => "帮助",
+        MessageKey::FooterSelect => "选择",
+        MessageKey::FooterEdit => "编辑",
         MessageKey::FooterBack => "返回",
         MessageKey::FooterRefresh => "刷新",
         MessageKey::FooterQuit => "退出",
@@ -197,6 +200,20 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::FooterChange => "更改",
         MessageKey::FooterApply => "应用",
         MessageKey::FooterRevert => "还原",
+        MessageKey::FooterCancel => "取消",
+        MessageKey::FooterDiscard => "放弃",
+        MessageKey::FooterDismiss => "关闭",
+        MessageKey::HelpTitle => "帮助",
+        MessageKey::HelpNavigation => "↑↓ 或 j/k 直接切换页面；Enter 进入当前本地交互。",
+        MessageKey::HelpPeriods => {
+            "周期：t 今天，1 过去 24 小时，7 过去 7 天，3 过去 30 天，a 全部。"
+        }
+        MessageKey::HelpHooks => "钩子：Enter 选择行；/ 搜索，f 筛选，s 排序；Esc 离开列表。",
+        MessageKey::HelpDetail => "钩子详情：↑↓ 滚动，PgUp/PgDn 翻页，Esc 返回钩子。",
+        MessageKey::HelpSettings => {
+            "设置：Enter 编辑/完成，↑↓ 选择字段，←→ 调整草稿，a 应用，r 还原；草稿有更改时 q 会确认。"
+        }
+        MessageKey::HelpRefresh => "r 刷新可靠性页面。所有失败率都带样本数。",
         MessageKey::MinimumTerminal => "请调整到至少 24x10",
     }
 }
