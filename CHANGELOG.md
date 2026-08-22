@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.0 — Codex Reliability Workbench
+
+HookStat v0.3.0 is an unpublished release candidate for the Codex Reliability
+Workbench and the shared TabBeacon-compatible Human interface. Publication,
+tagging, and GitHub Release creation remain separate Owner-authorized actions.
+
+### Reliability workbench
+
+- adds a coverage-aware Changes workbench with first/last/latest admitted
+  evidence, conservative regression/recovery classifications, and ordered
+  revision timelines;
+- adds a Hook Catalog with safe local Human aliases, selected-period confidence,
+  visible data freshness, compact trends, and bounded failure-cluster drill-down;
+- preserves Today, 24h, 7d, 30d, and All period semantics, latest-request-wins
+  refreshes, asynchronous first frame, and independent diagnostics.
+
+### Unified Human interface and boundaries
+
+- uses the registry-published `jerry-terminal-ui` 0.1.0 shared boundary for
+  TabBeacon-compatible shell, navigation, footer, editing, Help, locale, and
+  terminal primitives;
+- preserves ordinary `codex` launch, Codex-only production scope, opt-in
+  instrumentation and explicit trust, truthful coverage, sample-counted failure
+  rates, and local-first privacy with no raw private content or telemetry.
+
 ## 0.2.1 — Startup & Period Reliability
 
 HookStat v0.2.1 is the public release focused on making the

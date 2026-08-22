@@ -2,7 +2,9 @@
 
 ## Status
 
-PLANNED after accepted v0.2.1 Startup & Period Reliability.
+RELEASE_CANDIDATE (unpublished) after accepted v0.2.1 Startup & Period
+Reliability and accepted HS-G20 through HS-G26 evidence. HS-G27R binds one
+exact v0.3.0 candidate; publication remains a separate Owner-only gate.
 
 v0.3 remains **Codex-only in production**. Future Claude Code, OpenCode, Agy, and DeepSeek Harness adapters remain experimental/future work and are not release dependencies.
 
