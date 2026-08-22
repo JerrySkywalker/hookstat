@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.2.1 — Startup & Period Reliability
+
+HookStat v0.2.1 is an unpublished release candidate focused on making the
+Reliability Center responsive at real ledger/receipt scale without weakening
+evidence semantics.
+
+### Startup, periods, and evidence pipeline
+
+- draws an interactive loading shell before receipt reconciliation, SQLite
+  queries, analytics, or diagnostics work; worker responses use
+  latest-request-wins ownership and preserve an accepted view on refresh
+  failure;
+- adds first-class `Today`, `24h`, `7d`, `30d`, and `All` periods. `Today` is
+  the local civil day and is never an alias of rolling 24 hours;
+- bounds finite-window SQLite materialization while preserving released
+  period, risk, failure-fingerprint, revision, coverage, and comparison
+  semantics; and changes the common receipt warm path to incremental durable
+  journal reconciliation;
+- adds local-only sanitized startup/work observability with no remote
+  telemetry or private runtime content.
+
+### Diagnostics correctness
+
+- resolves Windows native, CMD/BAT, and PowerShell Codex command forms with
+  bounded literal version probes, avoiding the prior PATH-shim false fail;
+- keeps diagnostics generation-owned and read-only. Initial diagnostics load
+  independently, while reliability period changes do not rerun Codex probing
+  or runtime discovery.
+
+### Release boundary
+
+- preserves normal `codex` launch, opt-in instrumentation, trust boundaries,
+  privacy guarantees, and truthful partial/unknown evidence states;
+- is an RC only: no crates.io publication, tag, or GitHub Release is included.
+
 ## 0.2.0
 
 HookStat v0.2 turns the v0.1 report into the Reliability Center: a
