@@ -2,8 +2,8 @@
 
 **Local-first reliability analytics for hooks across coding-agent runtimes.**
 
-HookStat v0.3.0 is an unpublished release candidate for the Codex Reliability
-Workbench: a local-first terminal UI that turns admitted local hook receipts
+HookStat v0.3.0 is the public release for the Codex Reliability Workbench: a
+local-first terminal UI that turns admitted local hook receipts
 into a bilingual, human-readable operational view. It adds a Changes workbench,
 Hook Catalog, revision timeline, safe Human aliases, and bounded failure
 exploration through the shared TabBeacon-compatible Human interface. It is
@@ -23,12 +23,11 @@ daemon.
 
 ## Install and update
 
-The current public stable package remains v0.2.1 until a separately authorized
-v0.3.0 publication. Install that public release from crates.io with Cargo:
+Install the public v0.3.0 release from crates.io with Cargo:
 
 ```powershell
-cargo install hookstat --version 0.2.1 --locked
-cargo install hookstat --version 0.2.1 --locked --force
+cargo install hookstat --version 0.3.0 --locked
+cargo install hookstat --version 0.3.0 --locked --force
 ```
 
 For local development from an owned checkout instead:
@@ -38,8 +37,8 @@ cargo install --path . --locked
 hookstat --version
 ```
 
-Release notes for the unpublished v0.3.0 candidate and the public v0.2.1
-release are in [CHANGELOG.md](CHANGELOG.md). Local checkout installs remain
+Release notes for the public v0.3.0 and v0.2.1 releases are in
+[CHANGELOG.md](CHANGELOG.md). Local checkout installs remain
 development builds; use the crates.io package for ordinary stable installation.
 
 ## Opt-in Codex instrumentation
@@ -192,7 +191,7 @@ locale-neutral.
 
 ### Reliability workbench surfaces
 
-The v0.3.0 release candidate adds a `Changes` page and a Hook Catalog without
+The v0.3.0 release adds a `Changes` page and a Hook Catalog without
 changing receipt, analytics, trust, proxy, or normal `codex` launch semantics.
 Changes projects only admitted history: it shows first/last/latest evidence,
 ordered revision epochs, coverage-aware regressions/recoveries, and historical
@@ -220,10 +219,8 @@ cargo package --locked
 cargo publish --dry-run --locked
 ```
 
-Actual crates.io publication, a release tag, and GitHub Release creation remain
-separate Owner-authorized actions. This v0.3.0 candidate is not a public release;
-the current public package remains v0.2.1 until the Owner release gate grants
-publication authority.
+The Owner-authorized v0.3.0 public-release closure binds the exact release
+commit to its crates.io package, `v0.3.0` tag, and GitHub Release.
 
 See the architecture, ADRs, and execution contracts under `docs/`,
 `dev_governance_files/`, and `goals/`.

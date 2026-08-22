@@ -1,11 +1,9 @@
-# HookStat v0.3.0 Release Candidate
+# HookStat v0.3.0 Release Notes
 
 ## Status
 
-`v0.3.0` is an unpublished release candidate. It is the only input to the
-separate Owner publication gate after its exact commit is merged and frozen.
-This document neither authorizes nor performs a crates.io publication, Git tag,
-or GitHub Release.
+`v0.3.0` is the Owner-authorized public release. The release closure binds the
+frozen exact commit to its crates.io package, Git tag, and GitHub Release.
 
 ## Highlights
 
@@ -29,5 +27,6 @@ or GitHub Release.
 
 ## Publication boundary
 
-Publication requires the subsequent `HS-V03-PUBLIC-RELEASE-OWNER-GATE` to
-authorize the frozen exact candidate. Until then, `PUBLICATION_AUTHORIZED=false`.
+`HS-V03-PUBLIC-RELEASE-OWNER-GATE` authorizes publication of the frozen exact
+release. This document records the public release scope; immutable release
+surfaces provide the final closure evidence.
