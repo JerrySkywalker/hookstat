@@ -10,6 +10,11 @@ readme = "README.md"
 keywords = ["hooks", "reliability", "agents", "codex", "tui"]
 categories = ["command-line-utilities", "development-tools"]
 
+[features]
+# Developer-only G28 measurement laboratory. This feature is never enabled by
+# HookStat's ordinary binary or by its hook execution path.
+performance-harness = []
+
 [dependencies]
 rusqlite = { version = "0.38", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
@@ -30,6 +35,27 @@ chrono-tz = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 win32job = "2.0.3"
+
+[[bin]]
+name = "hookstat-perf"
+path = "src/bin/hookstat_perf.rs"
+required-features = ["performance-harness"]
+test = false
+bench = false
+
+[[bin]]
+name = "hookstat-hook-fixture"
+path = "src/bin/hookstat_hook_fixture.rs"
+required-features = ["performance-harness"]
+test = false
+bench = false
+
+[[bin]]
+name = "hookstat-g28-handler-fixture"
+path = "src/bin/hookstat_g28_handler_fixture.rs"
+required-features = ["performance-harness"]
+test = false
+bench = false
 
 [lints.rust]
 unsafe_code = "forbid"
