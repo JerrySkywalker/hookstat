@@ -12,12 +12,12 @@ mod tests {
         theme::{ColorRole, Theme, TypographyRole},
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-    use jerry_terminal_ui::{
+    use ratatui::{layout::Rect, style::Modifier};
+    use terminal_ui_contract::{
         footer::{FooterAction, FooterState, format_footer},
         interaction::{DiscardDecision, QuitDisposition, SettingsEditor},
         layout::HUMAN_SHELL,
     };
-    use ratatui::{layout::Rect, style::Modifier};
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum FixtureField {

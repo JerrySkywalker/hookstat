@@ -18,7 +18,7 @@ tagging, and GitHub Release creation remain separate Owner-authorized actions.
 
 ### Unified Human interface and boundaries
 
-- uses the registry-published `jerry-terminal-ui` 0.1.0 shared boundary for
+- uses the registry-published `terminal-ui-contract` 0.1.0 shared boundary for
   TabBeacon-compatible shell, navigation, footer, editing, Help, locale, and
   terminal primitives;
 - preserves ordinary `codex` launch, Codex-only production scope, opt-in

@@ -1,8 +1,8 @@
-# Jerry Terminal UI System
+# Terminal UI Contract System
 
 Status: implemented shared contract for HookStat v0.3 and TabBeacon. The
-dependency-neutral implementation is `JerrySkywalker/jerry-terminal-ui` at
-the pinned development revision recorded in `HS-G21-SHARED-BOUNDARY.md`.
+dependency-neutral implementation is `JerrySkywalker/terminal-ui-contract` at
+the released `0.1.0` binding recorded in `HS-G21-SHARED-BOUNDARY.md`.
 
 This contract captures the common terminal experience. It does not claim that every current TabBeacon component is already packaged for reuse. Applications may implement the contract internally until two conforming consumers establish a stable extraction boundary.
 

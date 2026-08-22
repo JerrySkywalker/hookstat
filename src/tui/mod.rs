@@ -1,6 +1,6 @@
 //! HookStat's internal implementation of the Jerry Terminal UI System.
 //!
-//! Product-specific rendering adapts the shared `jerry-terminal-ui` semantic
+//! Product-specific rendering adapts the shared `terminal-ui-contract` semantic
 //! core to HookStat's Ratatui/Crossterm versions and reliability content.
 
 mod app;
