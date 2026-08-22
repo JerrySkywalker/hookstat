@@ -43,6 +43,12 @@ impl RefreshReason {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiagnosticsRefreshReason {
+    Initial,
+    Explicit,
+}
+
 #[derive(Clone, Debug)]
 pub struct RefreshSnapshot {
     view_model: ReliabilityCenterViewModel,
@@ -89,6 +95,7 @@ pub enum AppEffect {
     None,
     Quit,
     RequestRefresh(RefreshReason),
+    RequestDiagnostics(DiagnosticsRefreshReason),
     ApplyInterface {
         language: InterfaceLanguage,
         color: InterfaceColor,
@@ -388,6 +395,9 @@ impl App {
                 }
                 AppEffect::None
             }
+            Command::Refresh if self.screen == Screen::Diagnostics => {
+                self.request_diagnostics(DiagnosticsRefreshReason::Explicit)
+            }
             Command::Refresh => self.request_refresh(RefreshReason::Manual(self.requested_window)),
             Command::Window(window) => {
                 if self.screen == Screen::Settings {
@@ -497,6 +507,14 @@ impl App {
     fn request_refresh(&mut self, reason: RefreshReason) -> AppEffect {
         self.view = std::mem::replace(&mut self.view, ResourceState::Empty).loading();
         AppEffect::RequestRefresh(reason)
+    }
+
+    fn request_diagnostics(&mut self, reason: DiagnosticsRefreshReason) -> AppEffect {
+        // Diagnostics are an independently owned, read-only resource. A
+        // refresh keeps the last accepted report visible until its replacement
+        // arrives, just as reliability refreshes retain their accepted view.
+        self.diagnostics = std::mem::replace(&mut self.diagnostics, ResourceState::Empty).loading();
+        AppEffect::RequestDiagnostics(reason)
     }
 
     fn cycle_current_setting(&mut self, delta: isize) {
@@ -734,6 +752,47 @@ mod tests {
         newest.window = TimeWindow::Today;
         app.apply_refresh(RefreshSnapshot::from_report(newest));
         assert_eq!(app.view_model().unwrap().overview.window, TimeWindow::Today);
+    }
+
+    #[test]
+    fn period_switches_only_request_reliability_and_leave_diagnostics_independent() {
+        let mut app = App::loading(TimeWindow::Last7Days);
+        for window in [
+            TimeWindow::Last7Days,
+            TimeWindow::Last30Days,
+            TimeWindow::Today,
+        ] {
+            assert_eq!(
+                app.handle(Command::Window(window)),
+                AppEffect::RequestRefresh(RefreshReason::Window(window))
+            );
+        }
+        assert!(matches!(
+            app.diagnostics_state(),
+            ResourceState::Loading { .. }
+        ));
+
+        app.screen = Screen::Diagnostics;
+        assert_eq!(
+            app.handle(Command::Refresh),
+            AppEffect::RequestDiagnostics(DiagnosticsRefreshReason::Explicit)
+        );
+    }
+
+    #[test]
+    fn cross_resource_failures_preserve_the_other_accepted_snapshot() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.apply_diagnostics(DiagnosticsReport::empty(1_000));
+        app.reject_refresh();
+        assert!(app.diagnostics().is_some());
+
+        let accepted_window = app.view_model().unwrap().overview.window;
+        app.reject_diagnostics();
+        assert_eq!(app.view_model().unwrap().overview.window, accepted_window);
+        assert!(matches!(
+            app.diagnostics_state(),
+            ResourceState::Error { .. }
+        ));
     }
 
     #[test]

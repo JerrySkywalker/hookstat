@@ -16,7 +16,7 @@ mod theme;
 mod view_model;
 mod widgets;
 
-pub use app::{RefreshReason, RefreshSnapshot};
+pub use app::{DiagnosticsRefreshReason, RefreshReason, RefreshSnapshot};
 
 use crate::diagnostics::DiagnosticsReport;
 use crate::domain::HookInvocation;
@@ -33,8 +33,9 @@ use std::time::Duration;
 
 type Refresh =
     Box<dyn FnMut(RefreshRequest<RefreshReason>) -> Result<RefreshSnapshot, String> + Send>;
-type DiagnosticsRefresh =
-    Box<dyn FnMut(RefreshRequest<()>) -> Result<DiagnosticsReport, String> + Send>;
+type DiagnosticsRefresh = Box<
+    dyn FnMut(RefreshRequest<DiagnosticsRefreshReason>) -> Result<DiagnosticsReport, String> + Send,
+>;
 
 struct RunLoopOptions {
     explicit_language: Option<localization::InterfaceLanguage>,
@@ -147,7 +148,9 @@ pub fn run_loading_with_refreshes_language(
     reliability_refresh: impl FnMut(RefreshRequest<RefreshReason>) -> Result<RefreshSnapshot, String>
     + Send
     + 'static,
-    diagnostics_refresh: impl FnMut(RefreshRequest<()>) -> Result<DiagnosticsReport, String>
+    diagnostics_refresh: impl FnMut(
+        RefreshRequest<DiagnosticsRefreshReason>,
+    ) -> Result<DiagnosticsReport, String>
     + Send
     + 'static,
     observatory: StartupObservatory,
@@ -188,20 +191,18 @@ fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     mut app: App,
     mut refresh: RefreshController<RefreshReason, RefreshSnapshot>,
-    mut diagnostics: Option<RefreshController<(), DiagnosticsReport>>,
+    mut diagnostics: Option<RefreshController<DiagnosticsRefreshReason, DiagnosticsReport>>,
     mut options: RunLoopOptions,
 ) -> io::Result<()> {
     let environment_locale = std::env::var("HOOKSTAT_LANG").ok();
     let system_locale = std::env::var("LANG").ok();
-    if app.view_model().is_none() {
-        let generation = refresh.request(RefreshReason::Window(app.requested_window()));
-        if let Some(observatory) = options.observatory.as_ref() {
-            observatory.record_requested_generation(generation);
-        }
-    }
-    if let Some(diagnostics) = &mut diagnostics {
-        diagnostics.request(());
-    }
+    let initial_reliability_request = app
+        .view_model()
+        .is_none()
+        .then_some(RefreshReason::Window(app.requested_window()));
+    let initial_diagnostics_request = diagnostics
+        .as_ref()
+        .map(|_| DiagnosticsRefreshReason::Initial);
     let mut first_frame_drawn = false;
     loop {
         match refresh.poll() {
@@ -246,6 +247,20 @@ fn run_loop(
             if let Some(observatory) = options.observatory.as_ref() {
                 observatory.mark(StartupPhase::FirstFrameDrawn);
             }
+            // Queue workers only after the loading shell has reached the
+            // terminal. Sending a request is non-blocking; the worker owns all
+            // subsequent I/O, probing, and aggregation.
+            if let Some(reason) = initial_reliability_request {
+                let generation = refresh.request(reason);
+                if let Some(observatory) = options.observatory.as_ref() {
+                    observatory.record_requested_generation(generation);
+                }
+            }
+            if let Some(reason) = initial_diagnostics_request
+                && let Some(diagnostics) = &mut diagnostics
+            {
+                diagnostics.request(reason);
+            }
         }
         if !event::poll(Duration::from_millis(250))? {
             continue;
@@ -265,6 +280,13 @@ fn run_loop(
                         let generation = refresh.request(reason);
                         if let Some(observatory) = options.observatory.as_ref() {
                             observatory.record_requested_generation(generation);
+                        }
+                    }
+                    AppEffect::RequestDiagnostics(reason) => {
+                        if let Some(diagnostics) = &mut diagnostics {
+                            diagnostics.request(reason);
+                        } else {
+                            app.reject_diagnostics();
                         }
                     }
                     AppEffect::ApplyInterface { language, color } => {

@@ -111,6 +111,23 @@ rejects a completed snapshot whose period no longer equals the visible
 requested period. Failed refreshes preserve the last accepted reliability or
 diagnostics view rather than clearing it.
 
+Diagnostics use their own generation-tagged worker and resource state. The
+worker is scheduled once after the initial shell draw and may be scheduled
+again only by an explicit Diagnostics-page refresh. Reliability period changes
+never enqueue diagnostics work, so `Today`, `24h`, `7d`, `30d`, and `All` do
+not rerun Codex probing, runtime discovery, trust inspection, or static
+configuration discovery. An older diagnostics response is rejected when a
+newer diagnostics request owns the resource.
+
+Windows Codex detection resolves the ordinary `codex` PATH command before
+probing it. Native executables run directly; CMD/BAT shims run only through the
+system command processor with a validated resolved path and literal
+`--version`; PowerShell shims use the system PowerShell `-File` form with the
+same literal argument. A missing command is `Fail`; a resolved command that
+fails, times out, or returns malformed output is `Unknown`, never a false
+absence claim. Diagnostic serialization retains only a bounded sanitized
+version fact.
+
 The normal finite-period query materializes only the most recent 60 days—the
 largest current-plus-previous range needed for the 30-day trend. `All` is the
 explicit full-history mode. All-time trend metrics and current/previous

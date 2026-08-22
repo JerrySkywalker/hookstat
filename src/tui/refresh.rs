@@ -169,4 +169,28 @@ mod tests {
             Some(2)
         );
     }
+
+    #[test]
+    fn stale_diagnostics_completion_is_rejected_by_generation() {
+        let (sender, receiver) =
+            sync_channel::<RefreshRequest<crate::tui::DiagnosticsRefreshReason>>(1);
+        let (response_sender, response_receiver) = sync_channel::<RefreshResponse<&'static str>>(2);
+        let mut controller = RefreshController {
+            sender,
+            receiver: response_receiver,
+            next_generation: 2,
+            active_generation: Some(1),
+            pending: None,
+            worker_unavailable: false,
+        };
+        let _keep_request_receiver = receiver;
+        let _keep_response_sender = response_sender;
+        assert!(matches!(
+            controller.accept_response(RefreshResponse {
+                generation: 1,
+                result: Ok("older diagnostics"),
+            }),
+            RefreshPoll::Stale
+        ));
+    }
 }

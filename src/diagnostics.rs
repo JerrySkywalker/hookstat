@@ -9,7 +9,11 @@ use crate::domain::{EvidenceCoverage, Runtime};
 use crate::ledger::Ledger;
 use crate::receipt::{ReceiptScan, ReceiptSpool};
 use serde::Serialize;
+#[cfg(windows)]
+use std::ffi::{OsStr, OsString};
 use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -195,7 +199,11 @@ pub fn collect(data_root: &Path, now_unix_ms: i64) -> DiagnosticsReport {
 }
 
 fn codex_binary_check() -> DiagnosticCheck {
-    match codex_version() {
+    codex_binary_check_from(codex_version())
+}
+
+fn codex_binary_check_from(version: CodexVersion) -> DiagnosticCheck {
+    match version {
         CodexVersion::Present(value) => DiagnosticCheck {
             id: DiagnosticCheckId::CodexBinary,
             status: DiagnosticStatus::Pass,
@@ -206,59 +214,236 @@ fn codex_binary_check() -> DiagnosticCheck {
             status: DiagnosticStatus::Fail,
             facts: Vec::new(),
         },
-        CodexVersion::Unknown => DiagnosticCheck {
-            id: DiagnosticCheckId::CodexBinary,
-            status: DiagnosticStatus::Unknown,
-            facts: Vec::new(),
-        },
+        // A command that resolved but failed, timed out, or returned a
+        // malformed version is not proof that Codex is absent. Keep this
+        // truthful Unknown result rather than reproducing the Windows shim
+        // false-fail that motivated G11.
+        CodexVersion::Failed | CodexVersion::TimedOut | CodexVersion::Malformed => {
+            DiagnosticCheck {
+                id: DiagnosticCheckId::CodexBinary,
+                status: DiagnosticStatus::Unknown,
+                facts: Vec::new(),
+            }
+        }
     }
 }
 
 enum CodexVersion {
     Present(String),
     Missing,
-    Unknown,
+    Failed,
+    TimedOut,
+    Malformed,
 }
 
 fn codex_version() -> CodexVersion {
-    let child = Command::new("codex")
-        .arg("--version")
+    #[cfg(windows)]
+    {
+        let Some(command) = resolve_windows_codex_command(
+            std::env::var_os("PATH").as_deref(),
+            std::env::var_os("PATHEXT").as_deref(),
+        ) else {
+            return CodexVersion::Missing;
+        };
+        execute_windows_codex_version(command)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let mut command = Command::new("codex");
+        command.arg("--version");
+        execute_version_command(command)
+    }
+}
+
+/// Windows PowerShell resolves `.ps1` commands while `CreateProcess` only
+/// receives an executable path. Resolve the ordinary `codex` command once,
+/// then use a bounded launcher only for the script forms that require one.
+/// No Hook configuration or user-provided command text participates here.
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WindowsCodexCommandKind {
+    Native,
+    CmdShim,
+    BatShim,
+    PowerShellScript,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WindowsCodexCommand {
+    program: PathBuf,
+    kind: WindowsCodexCommandKind,
+}
+
+#[cfg(windows)]
+fn resolve_windows_codex_command(
+    path: Option<&OsStr>,
+    path_extensions: Option<&OsStr>,
+) -> Option<WindowsCodexCommand> {
+    let path = path?;
+    let extensions = windows_path_extensions(path_extensions);
+    for directory in std::env::split_paths(path) {
+        // This is the form selected by the Owner's normal PowerShell session.
+        // It is intentionally checked before executable PATHEXT candidates in
+        // the same directory, matching PowerShell's ExternalScript behavior.
+        let power_shell_script = directory.join("codex.ps1");
+        if power_shell_script.is_file() {
+            return Some(WindowsCodexCommand {
+                program: power_shell_script,
+                kind: WindowsCodexCommandKind::PowerShellScript,
+            });
+        }
+        for extension in &extensions {
+            let candidate = directory.join(format!("codex{extension}"));
+            if !candidate.is_file() {
+                continue;
+            }
+            let kind = match extension.as_str() {
+                ".cmd" => WindowsCodexCommandKind::CmdShim,
+                ".bat" => WindowsCodexCommandKind::BatShim,
+                _ => WindowsCodexCommandKind::Native,
+            };
+            return Some(WindowsCodexCommand {
+                program: candidate,
+                kind,
+            });
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn windows_path_extensions(path_extensions: Option<&OsStr>) -> Vec<String> {
+    let configured = path_extensions
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_owned());
+    let mut result = Vec::new();
+    for extension in configured.split(';') {
+        let extension = extension.trim().to_ascii_lowercase();
+        if !matches!(extension.as_str(), ".com" | ".exe" | ".cmd" | ".bat")
+            || result.iter().any(|existing| existing == &extension)
+        {
+            continue;
+        }
+        result.push(extension);
+    }
+    if result.is_empty() {
+        [".com", ".exe", ".bat", ".cmd"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    } else {
+        result
+    }
+}
+
+#[cfg(windows)]
+fn execute_windows_codex_version(command: WindowsCodexCommand) -> CodexVersion {
+    let process = match command.kind {
+        WindowsCodexCommandKind::Native => {
+            let mut process = Command::new(command.program);
+            process.arg("--version");
+            process
+        }
+        WindowsCodexCommandKind::CmdShim | WindowsCodexCommandKind::BatShim => {
+            let Some(command_processor) = system_windows_binary(&["cmd.exe"]) else {
+                return CodexVersion::Failed;
+            };
+            let Some(invocation) = safe_cmd_script_invocation(&command.program) else {
+                return CodexVersion::Failed;
+            };
+            let mut process = Command::new(command_processor);
+            // `/d` disables AutoRun. The only command-string input is a
+            // validated resolved PATH file plus the literal `--version`.
+            process.args(["/d", "/s", "/c"]).arg(invocation);
+            process
+        }
+        WindowsCodexCommandKind::PowerShellScript => {
+            let Some(power_shell) =
+                system_windows_binary(&["WindowsPowerShell", "v1.0", "powershell.exe"])
+            else {
+                return CodexVersion::Failed;
+            };
+            let mut process = Command::new(power_shell);
+            // `-File` keeps the script path and its literal argument out of a
+            // PowerShell command string. It also preserves normal execution
+            // policy instead of bypassing it for a diagnostic probe.
+            process
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
+                .arg(command.program)
+                .arg("--version");
+            process
+        }
+    };
+    execute_version_command(process)
+}
+
+#[cfg(windows)]
+fn system_windows_binary(components: &[&str]) -> Option<PathBuf> {
+    let root = std::env::var_os("SystemRoot")?;
+    let path = components
+        .iter()
+        .fold(PathBuf::from(root).join("System32"), |path, component| {
+            path.join(component)
+        });
+    path.is_file().then_some(path)
+}
+
+#[cfg(windows)]
+fn safe_cmd_script_invocation(path: &Path) -> Option<OsString> {
+    let path = path.to_str()?;
+    if path.chars().any(|character| {
+        character.is_control()
+            || matches!(
+                character,
+                '"' | '&' | '|' | '<' | '>' | '^' | '%' | '!' | '(' | ')'
+            )
+    }) {
+        return None;
+    }
+    Some(OsString::from(format!("\"{path}\" --version")))
+}
+
+fn execute_version_command(mut command: Command) -> CodexVersion {
+    command
         .stdin(Stdio::null())
         .stderr(Stdio::null())
-        .stdout(Stdio::piped())
-        .spawn();
-    let mut child = match child {
+        .stdout(Stdio::piped());
+    let mut child = match command.spawn() {
         Ok(child) => child,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return CodexVersion::Missing;
-        }
-        Err(_) => return CodexVersion::Unknown,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return CodexVersion::Missing,
+        Err(_) => return CodexVersion::Failed,
     };
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
             Ok(None) => {}
-            Err(_) => return CodexVersion::Unknown,
+            Err(_) => return CodexVersion::Failed,
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return CodexVersion::Unknown;
+            return CodexVersion::TimedOut;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
     let Ok(output) = child.wait_with_output() else {
-        return CodexVersion::Unknown;
+        return CodexVersion::Failed;
     };
-    if !output.status.success() {
-        return CodexVersion::Unknown;
+    classify_version_output(output.status.success(), &output.stdout)
+}
+
+fn classify_version_output(success: bool, stdout: &[u8]) -> CodexVersion {
+    if !success {
+        return CodexVersion::Failed;
     }
-    let Ok(output) = std::str::from_utf8(&output.stdout) else {
-        return CodexVersion::Unknown;
+    let Ok(output) = std::str::from_utf8(stdout) else {
+        return CodexVersion::Malformed;
     };
     let Some(line) = output.lines().next() else {
-        return CodexVersion::Unknown;
+        return CodexVersion::Malformed;
     };
     let line = line.trim();
     let safe = line.len() <= 80
@@ -266,11 +451,11 @@ fn codex_version() -> CodexVersion {
             character.is_ascii_alphanumeric() || matches!(character, ' ' | '.' | '-' | '_')
         });
     if !safe || !line.to_ascii_lowercase().starts_with("codex") {
-        return CodexVersion::Unknown;
+        return CodexVersion::Malformed;
     }
-    let value = line.strip_prefix("codex").unwrap_or(line).trim();
+    let value = line["codex".len()..].trim();
     if value.is_empty() {
-        CodexVersion::Unknown
+        CodexVersion::Malformed
     } else {
         CodexVersion::Present(value.to_owned())
     }
@@ -503,6 +688,10 @@ fn evidence_freshness_check(scan: Option<&ReceiptScan>, now_unix_ms: i64) -> Dia
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    use std::ffi::OsString;
+    #[cfg(windows)]
+    use std::fs;
     use tempfile::tempdir;
 
     #[test]
@@ -547,5 +736,109 @@ mod tests {
         ] {
             assert!(!json.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn codex_probe_classifications_fail_closed_without_false_absence() {
+        assert!(matches!(
+            classify_version_output(true, b"Codex 0.2.1\n"),
+            CodexVersion::Present(value) if value == "0.2.1"
+        ));
+        assert!(matches!(
+            classify_version_output(false, b"Codex 0.2.1\n"),
+            CodexVersion::Failed
+        ));
+        assert!(matches!(
+            classify_version_output(true, b"unrecognized"),
+            CodexVersion::Malformed
+        ));
+        assert_eq!(
+            codex_binary_check_from(CodexVersion::Missing).status,
+            DiagnosticStatus::Fail
+        );
+        for version in [
+            CodexVersion::Failed,
+            CodexVersion::TimedOut,
+            CodexVersion::Malformed,
+        ] {
+            assert_eq!(
+                codex_binary_check_from(version).status,
+                DiagnosticStatus::Unknown
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_resolver_honors_pathext_and_classifies_cmd_and_bat_shims() {
+        let directory = tempdir().unwrap();
+        fs::write(directory.path().join("codex.exe"), []).unwrap();
+        fs::write(directory.path().join("codex.cmd"), []).unwrap();
+        let path = std::env::join_paths([directory.path()]).unwrap();
+        let native = resolve_windows_codex_command(
+            Some(path.as_os_str()),
+            Some(OsString::from(".EXE;.CMD").as_os_str()),
+        )
+        .unwrap();
+        assert_eq!(native.kind, WindowsCodexCommandKind::Native);
+        let cmd = resolve_windows_codex_command(
+            Some(path.as_os_str()),
+            Some(OsString::from(".CMD;.EXE").as_os_str()),
+        )
+        .unwrap();
+        assert_eq!(cmd.kind, WindowsCodexCommandKind::CmdShim);
+
+        fs::remove_file(directory.path().join("codex.cmd")).unwrap();
+        fs::remove_file(directory.path().join("codex.exe")).unwrap();
+        fs::write(directory.path().join("codex.bat"), []).unwrap();
+        let bat = resolve_windows_codex_command(
+            Some(path.as_os_str()),
+            Some(OsString::from(".BAT").as_os_str()),
+        )
+        .unwrap();
+        assert_eq!(bat.kind, WindowsCodexCommandKind::BatShim);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cmd_shim_invocation_is_bounded_and_rejects_shell_metacharacters() {
+        let safe = PathBuf::from(r"C:\Program Files\Codex 中文\codex.cmd");
+        assert_eq!(
+            safe_cmd_script_invocation(&safe),
+            Some(OsString::from(
+                r#""C:\Program Files\Codex 中文\codex.cmd" --version"#
+            ))
+        );
+        assert!(safe_cmd_script_invocation(Path::new(r"C:\unsafe&shim\codex.cmd")).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_resolver_supports_non_ascii_space_containing_powershell_shim() {
+        let temporary = tempdir().unwrap();
+        let directory = temporary.path().join("Codex shim 中文");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("codex.ps1"), []).unwrap();
+        let path = std::env::join_paths([&directory]).unwrap();
+        let command = resolve_windows_codex_command(
+            Some(path.as_os_str()),
+            Some(OsString::from(".EXE;.CMD").as_os_str()),
+        )
+        .unwrap();
+        assert_eq!(command.kind, WindowsCodexCommandKind::PowerShellScript);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_resolver_classifies_missing_command() {
+        let directory = tempdir().unwrap();
+        let path = std::env::join_paths([directory.path()]).unwrap();
+        assert!(
+            resolve_windows_codex_command(
+                Some(path.as_os_str()),
+                Some(OsString::from(".EXE;.CMD;.BAT").as_os_str()),
+            )
+            .is_none()
+        );
     }
 }
