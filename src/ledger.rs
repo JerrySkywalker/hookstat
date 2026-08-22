@@ -5,6 +5,7 @@ use crate::domain::{
     EvidenceCoverage, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent, HookInvocation,
     Runtime, TerminalStatus, ValidationError,
 };
+use crate::evidence::CORRELATION_CONFLICT_FINGERPRINT;
 use crate::identity::{generated_label, sanitize_display_name};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::collections::BTreeMap;
@@ -173,8 +174,11 @@ impl Ledger {
         Ok(Self { connection })
     }
 
-    /// A duplicate is harmless. A completion may only replace an earlier
-    /// explicit `incomplete` start record for the exact same receipt id.
+    /// A duplicate is harmless. A later lifecycle result may refine an
+    /// `incomplete` or `best_effort` record for the exact same receipt id.
+    /// A correlator-proven conflict is the sole conservative downgrade: it
+    /// replaces a terminal row with `Unknown` so a disproven result leaves the
+    /// reliability denominator without a schema migration.
     pub fn ingest(&mut self, values: &[HookInvocation]) -> Result<IngestReceipt, LedgerError> {
         for value in values {
             value.validate()?;
@@ -423,14 +427,19 @@ impl Ledger {
                     handler_matcher_identity = excluded.handler_matcher_identity,
                     handler_structural_identity = excluded.handler_structural_identity,
                     handler_execution_mode = excluded.handler_execution_mode, terminal_status = excluded.terminal_status,
+                    occurred_at_unix_ms = excluded.occurred_at_unix_ms,
                     duration_ms = excluded.duration_ms, error_fingerprint = excluded.error_fingerprint
                 WHERE (hook_invocations.terminal_status = 'incomplete' AND excluded.terminal_status != 'incomplete')
-                   OR (hook_invocations.coverage = 'best_effort' AND excluded.coverage != 'best_effort')",
+                   OR (hook_invocations.coverage = 'best_effort' AND excluded.coverage != 'best_effort')
+                   OR (excluded.error_fingerprint = ?18
+                       AND excluded.terminal_status = 'unknown'
+                       AND excluded.coverage = 'unknown')",
                 params![
                     &value.source_key, &value.source_record_id, value.runtime.as_storage(), value.evidence_kind.as_storage(), value.coverage.as_storage(),
                     &value.handler.key, &value.handler.revision, &value.handler.label, &value.handler.source_kind, value.handler.event.as_storage(),
                     &value.handler.matcher_identity, &value.handler.structural_identity, value.handler.execution_mode.as_storage(),
                     value.occurred_at_unix_ms, value.terminal_status.as_storage(), value.duration_ms.map(|duration| duration as i64), &value.error_fingerprint,
+                    CORRELATION_CONFLICT_FINGERPRINT,
                 ],
             )?;
             if changed == 0 {
