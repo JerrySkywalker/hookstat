@@ -173,13 +173,13 @@ without creating a ledger or spool.
 
 | Key | Action |
 | --- | --- |
-| `Tab` | Move focus between navigation and content. |
-| `↑`/`↓` or `k`/`j` | Move the focused route or selected hook; scroll Detail. |
-| `PgUp`/`PgDn` | Page a long Hooks list or Detail. |
-| `Enter` / `Esc` | Open the selected hook / return to Hooks. |
-| `/`, `f`, `s` | Search, toggle failed-only, or change Hooks sort. |
-| `t`, `1`, `7`, `3`, `a` | Request Today, 24h, 7d, 30d, or All history (or apply Settings with `a`). |
-| `r`, `q` | Refresh reliability, or Diagnostics when that page is open / cleanly quit. |
+| `↑`/`↓` or `k`/`j` | Change the current top-level page directly; inside an explicit list or detail mode, select or scroll local content. |
+| `Enter` / `Esc` | Enter/finish a local mode or detail / return or cancel its local draft. |
+| `/`, `f`, `s` | Search, toggle failed-only, or change Hook Catalog sort. In Hook Detail, `f` opens safe failure clusters. |
+| `e` | Begin a presentation-only Human alias draft in Hook Detail. |
+| `t`, `1`, `7`, `3`, `a` | Request Today, 24h, 7d, 30d, or All history. In an editing draft, `a` applies only that draft. |
+| `r`, `q` | Refresh in normal views; revert an edit draft; quit with explicit discard confirmation when a draft is dirty. |
+| `?` | Open Help. While Help is open, `Esc`, `?`, and `q` dismiss it. |
 
 Settings stages `auto`, `en-US`, or `zh-CN` and a color preference. Applying
 the setting changes the next frame and persists the choice without losing the
@@ -187,6 +187,18 @@ current route, selection, search, filter, sort, or requested window. Locale
 precedence follows explicit `--lang`, `HOOKSTAT_LANG`, the saved preference,
 system locale, then English. Machine JSON keys and stable handler keys remain
 locale-neutral.
+
+### Workbench surfaces in the current development line
+
+The unreleased v0.3 development line adds a `Changes` page and a Hook Catalog
+without changing receipt, analytics, trust, proxy, or normal `codex` launch
+semantics. Changes projects only admitted history: it shows first/last/latest
+evidence, ordered revision epochs, coverage-aware regressions/recoveries, and
+historical rows that never claim a hook was removed. The Catalog keeps stable
+keys as metadata, supports safe local Human aliases only after explicit Apply,
+and browses bounded failure categories rather than raw error streams. All
+failure rates retain their sample denominator and all period choices remain
+Today/24h/7d/30d/All.
 
 `diagnostics export` previews by default and writes only with `--apply`. Its
 sanitized JSON excludes prompts, payloads, credentials, raw hook commands,
@@ -206,8 +218,10 @@ cargo package --locked
 cargo publish --dry-run --locked
 ```
 
-Actual crates.io publication, a `v0.2.0` tag, and GitHub Release creation remain
-separate Owner-authorized actions.
+Actual crates.io publication, a release tag, and GitHub Release creation remain
+separate Owner-authorized actions. The current public package is still v0.2.1;
+this repository does not declare a v0.3 release until the dedicated RC/release
+train has closed its Owner-attended gates.
 
 See the architecture, ADRs, and execution contracts under `docs/`,
 `dev_governance_files/`, and `goals/`.
