@@ -2,7 +2,7 @@
 
 ## 0.2.1 — Startup & Period Reliability
 
-HookStat v0.2.1 is an unpublished release candidate focused on making the
+HookStat v0.2.1 is the public release focused on making the
 Reliability Center responsive at real ledger/receipt scale without weakening
 evidence semantics.
 
@@ -29,11 +29,10 @@ evidence semantics.
   independently, while reliability period changes do not rerun Codex probing
   or runtime discovery.
 
-### Release boundary
+### Compatibility and privacy
 
 - preserves normal `codex` launch, opt-in instrumentation, trust boundaries,
   privacy guarantees, and truthful partial/unknown evidence states;
-- is an RC only: no crates.io publication, tag, or GitHub Release is included.
 
 ## 0.2.0
 

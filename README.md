@@ -2,7 +2,7 @@
 
 **Local-first reliability analytics for hooks across coding-agent runtimes.**
 
-HookStat v0.2.1 is the Startup & Period Reliability release candidate: a
+HookStat v0.2.1 is the current public Startup & Period Reliability release: a
 local-first terminal UI that
 turns admitted local hook receipts into a bilingual, human-readable operational
 view. It is Codex-first today, while its canonical ledger, analytics, JSON,
@@ -22,11 +22,11 @@ daemon.
 
 ## Install and update
 
-Install the authorized stable v0.2.0 package from crates.io with Cargo:
+Install the current stable v0.2.1 package from crates.io with Cargo:
 
 ```powershell
-cargo install hookstat --version 0.2.0 --locked
-cargo install hookstat --version 0.2.0 --locked --force
+cargo install hookstat --version 0.2.1 --locked
+cargo install hookstat --version 0.2.1 --locked --force
 ```
 
 For local development from an owned checkout instead:
@@ -36,9 +36,9 @@ cargo install --path . --locked
 hookstat --version
 ```
 
-The checked-out `0.2.1` candidate is not published yet. Its release notes are
-in [CHANGELOG.md](CHANGELOG.md); do not substitute a local RC install for the
-authorized public `0.2.0` package on an Owner workstation.
+Release notes for v0.2.1 are in [CHANGELOG.md](CHANGELOG.md). Local checkout
+installs remain development builds; use the crates.io package for ordinary
+stable installation.
 
 ## Opt-in Codex instrumentation
 
