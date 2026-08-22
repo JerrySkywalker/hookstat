@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "run_kind": "hs_g28_windows_hot_path_baseline",
+  "platform": {
+    "operating_system": "windows",
+    "architecture": "x86_64",
+    "windows_version_build": "10.0.26300",
+    "logical_processors": 16,
+    "benchmark_machine_fingerprint": "095d00be722c7349cc1102e4ab02797cced3c05c0449f2016f7c3485ee4e3985",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "build_profile": "release"
+  },
+  "sample_plan": {
+    "process_iterations": 100,
+    "io_iterations": 10000,
+    "pipe_iterations": 1000,
+    "pipe_warmup_iterations": 25,
+    "bounded_frame_bytes": 64,
+    "percentile_method": "nearest_rank"
+  },
+  "samples": [
+    {
+      "operation": "direct_original_fixture",
+      "classification": "repeated_fresh_windows_shell_handler_fixture_not_cache_cold",
+      "iterations": 100,
+      "statistics_ms": {
+        "min": 27.990399999999998,
+        "p50": 33.4449,
+        "p95": 43.7391,
+        "p99": 56.8258,
+        "max": 116.9117,
+        "mean": 35.54970599999999
+      }
+    },
+    {
+      "operation": "current_v030_proxy",
+      "classification": "repeated_fresh_process_manifest_receipts_journal_shell_job_not_cache_cold",
+      "iterations": 100,
+      "statistics_ms": {
+        "min": 56.4932,
+        "p50": 65.5506,
+        "p95": 81.1786,
+        "p99": 86.2072,
+        "max": 152.6345,
+        "mean": 67.50126999999999
+      }
+    },
+    {
+      "operation": "hookstat_executable_startup",
+      "classification": "repeated_fresh_process_startup_help_path_not_cache_cold",
+      "iterations": 100,
+      "statistics_ms": {
+        "min": 12.2732,
+        "p50": 14.589,
+        "p95": 16.706200000000003,
+        "p99": 22.2322,
+        "max": 23.0274,
+        "mean": 14.801637000000007
+      }
+    },
+    {
+      "operation": "cmd_shell_overhead",
+      "classification": "repeated_fresh_process_cmd_exe_c_not_cache_cold",
+      "iterations": 100,
+      "statistics_ms": {
+        "min": 18.3879,
+        "p50": 21.9236,
+        "p95": 27.0917,
+        "p99": 29.8802,
+        "max": 32.618300000000005,
+        "mean": 22.333698
+      }
+    },
+    {
+      "operation": "rust_createprocess_direct_spawn",
+      "classification": "repeated_fresh_rust_createprocess_not_cache_cold",
+      "iterations": 100,
+      "statistics_ms": {
+        "min": 9.1749,
+        "p50": 10.8343,
+        "p95": 14.2885,
+        "p99": 16.815900000000003,
+        "max": 17.6588,
+        "mean": 11.247771
+      }
+    },
+    {
+      "operation": "windows_job_object_cycle",
+      "classification": "fresh_child_job_create_assign_release",
+      "iterations": 100,
+      "statistics_ms": {
+        "min": 0.0265,
+        "p50": 0.0407,
+        "p95": 0.0773,
+        "p99": 0.1216,
+        "max": 0.1396,
+        "mean": 0.04427300000000001
+      }
+    },
+    {
+      "operation": "current_receipt_start_write",
+      "classification": "warm_atomic_json_start_record",
+      "iterations": 10000,
+      "statistics_ms": {
+        "min": 0.9568,
+        "p50": 2.1298,
+        "p95": 2.9234,
+        "p99": 3.9617999999999998,
+        "max": 32.4718,
+        "mean": 2.1422137199999978
+      }
+    },
+    {
+      "operation": "current_receipt_completion_write",
+      "classification": "warm_atomic_json_completion_record",
+      "iterations": 10000,
+      "statistics_ms": {
+        "min": 1.0024000000000002,
+        "p50": 2.2194,
+        "p95": 3.1971,
+        "p99": 4.3786,
+        "max": 60.4241,
+        "mean": 2.261090180000009
+      }
+    },
+    {
+      "operation": "current_journal_append",
+      "classification": "warm_ndjson_append_without_sync",
+      "iterations": 10000,
+      "statistics_ms": {
+        "min": 0.13190000000000002,
+        "p50": 0.2854,
+        "p95": 0.5327,
+        "p99": 0.743,
+        "max": 8.7676,
+        "mean": 0.2973476400000014
+      }
+    },
+    {
+      "operation": "current_sync_data",
+      "classification": "warm_journal_file_sync_data_after_dirty_append",
+      "iterations": 10000,
+      "statistics_ms": {
+        "min": 0.4848,
+        "p50": 0.8907999999999999,
+        "p95": 1.2277,
+        "p99": 1.4278,
+        "max": 5.436800000000001,
+        "mean": 0.9029886300000013
+      }
+    },
+    {
+      "operation": "minimal_shim_process_start_fixture",
+      "classification": "repeated_fresh_minimal_fixture_process_start_not_cache_cold",
+      "iterations": 100,
+      "statistics_ms": {
+        "min": 10.135299999999999,
+        "p50": 11.8748,
+        "p95": 14.316600000000001,
+        "p99": 15.8009,
+        "max": 21.9927,
+        "mean": 12.253058999999999
+      }
+    },
+    {
+      "operation": "minimal_shim_cache_warmed_process_start_fixture",
+      "classification": "cache_warmed_fresh_minimal_fixture_process_start",
+      "iterations": 100,
+      "statistics_ms": {
+        "min": 9.5855,
+        "p50": 11.5791,
+        "p95": 14.818299999999999,
+        "p99": 18.4743,
+        "max": 21.1368,
+        "mean": 11.983174000000009
+      }
+    },
+    {
+      "operation": "windows_named_pipe_cold_connection",
+      "classification": "cold_local_named_pipe_connect",
+      "iterations": 1000,
+      "statistics_ms": {
+        "min": 0.0129,
+        "p50": 0.0391,
+        "p95": 0.0828,
+        "p99": 0.1325,
+        "max": 0.2159,
+        "mean": 0.04383830000000006
+      }
+    },
+    {
+      "operation": "windows_named_pipe_warm_connection",
+      "classification": "warm_local_named_pipe_connect_after_warmup",
+      "iterations": 1000,
+      "statistics_ms": {
+        "min": 0.0167,
+        "p50": 0.0611,
+        "p95": 0.1525,
+        "p99": 0.216,
+        "max": 0.5777,
+        "mean": 0.07302190000000001
+      }
+    },
+    {
+      "operation": "windows_named_pipe_one_way_bounded_frame_write",
+      "classification": "warm_local_named_pipe_64_byte_write",
+      "iterations": 1000,
+      "statistics_ms": {
+        "min": 0.0071,
+        "p50": 0.0442,
+        "p95": 0.0918,
+        "p99": 0.1347,
+        "max": 8.638,
+        "mean": 0.05998080000000006
+      }
+    },
+    {
+      "operation": "windows_named_pipe_bounded_frame_ack_round_trip",
+      "classification": "warm_local_named_pipe_64_byte_write_ack",
+      "iterations": 1000,
+      "statistics_ms": {
+        "min": 0.035,
+        "p50": 0.0967,
+        "p95": 0.1787,
+        "p99": 0.2434,
+        "max": 0.4257,
+        "mean": 0.1090893000000001
+      }
+    }
+  ],
+  "one_second_timeout_reproduction": {
+    "declaration_timeout_ms": 1000,
+    "start_evidence_emitted": true,
+    "completion_evidence_missing": true,
+    "terminal_status": "incomplete",
+    "isolated_disposable_fixture": true
+  },
+  "privacy": {
+    "owner_live_codex_config_mutated": false,
+    "raw_private_content_captured": false
+  }
+}

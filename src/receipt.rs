@@ -157,6 +157,68 @@ impl ReceiptSpool {
         self.append_journal(&value.invocation_id, JournalStage::Complete)
     }
 
+    /// Writes only the current atomic start-record operation. G28 uses this
+    /// to separate receipt-file work from the separate durable journal append.
+    /// Production callers must continue to use [`Self::write_start`].
+    #[cfg(feature = "performance-harness")]
+    #[doc(hidden)]
+    pub fn performance_write_start_record(&self, value: &ReceiptStart) -> Result<(), ReceiptError> {
+        validate_start(value)?;
+        atomic_json(&self.path_for(&value.invocation_id, "start"), value)
+    }
+
+    /// Writes only the current atomic completion-record operation. G28 uses
+    /// this to make receipt I/O cost visible without changing production flow.
+    #[cfg(feature = "performance-harness")]
+    #[doc(hidden)]
+    pub fn performance_write_completion_record(
+        &self,
+        value: &ReceiptCompletion,
+    ) -> Result<(), ReceiptError> {
+        validate_completion(value)?;
+        atomic_json(&self.path_for(&value.invocation_id, "complete"), value)
+    }
+
+    /// Appends the current NDJSON journal encoding without durability. The
+    /// separate `performance_sync_journal_data` measurement makes the cost of
+    /// the existing per-record `sync_data()` explicit.
+    #[cfg(feature = "performance-harness")]
+    #[doc(hidden)]
+    pub fn performance_append_journal_unflushed(
+        &self,
+        invocation_id: &str,
+    ) -> Result<(), ReceiptError> {
+        if !valid_id(invocation_id) {
+            return Err(ReceiptError::Invalid("invocation_id"));
+        }
+        let entry = JournalEntry {
+            schema_version: 1,
+            invocation_id: invocation_id.to_owned(),
+            stage: JournalStage::Start,
+        };
+        let mut bytes = serde_json::to_vec(&entry)?;
+        bytes.push(b'\n');
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.journal_path())?;
+        file.write_all(&bytes)?;
+        Ok(())
+    }
+
+    /// Measures the exact `File::sync_data` primitive used by the v0.3
+    /// journal after an unflushed append has created the disposable file.
+    #[cfg(feature = "performance-harness")]
+    #[doc(hidden)]
+    pub fn performance_sync_journal_data(&self) -> Result<(), ReceiptError> {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.journal_path())?;
+        file.sync_data()?;
+        Ok(())
+    }
+
     /// Scans records independently of the ledger. An orphan start becomes an
     /// explicit `incomplete` row; a later completion upgrades that row through
     /// the ledger's guarded upsert instead of fabricating an outcome.
