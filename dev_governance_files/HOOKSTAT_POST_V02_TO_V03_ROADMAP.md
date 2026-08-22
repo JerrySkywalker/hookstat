@@ -182,8 +182,11 @@ Detailed plan: `../goals/HS-V021-STARTUP-PERIOD-RELIABILITY.md`.
 HS-G07 through HS-G10 merged on `b6480d835f33af58836e1722d27d5d22c5a9416f`.
 HS-G11 merged on `932e7c38cac24d86444e660ac055200f97f8baf6` with Windows
 native/CMD/BAT/PowerShell Codex command resolution and independent read-only
-diagnostics refresh. HS-G12R is preparing the unpublished `0.2.1` release
-candidate from that exact main; it will not begin v0.3 work or publish.
+diagnostics refresh. HS-G12R acceptance merged on
+`9abd580de3e5ff215e76018f9ad100458438a94c`. The owner-authorized public
+release closes only when the matching `v0.2.1` tag, crates.io package, and
+GitHub Release exist; those immutable records define its final closed state.
+This release train does not begin v0.3 work.
 
 ## v0.2.1 confirmed requirements
 
