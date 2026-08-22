@@ -1,5 +1,6 @@
 //! Semantic theme and typography tokens for the internal terminal UI system.
 
+use jerry_terminal_ui::chrome::ChromeToken;
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::interface_preferences::InterfaceColor;
@@ -98,6 +99,18 @@ impl Theme {
         }
     }
 
+    /// Maps dependency-neutral shared chrome roles to this Ratatui version.
+    pub fn chrome_style(self, token: ChromeToken) -> Style {
+        match token {
+            ChromeToken::HeaderTitle => self.typography_style(TypographyRole::ApplicationTitle),
+            ChromeToken::Base
+            | ChromeToken::Border
+            | ChromeToken::Footer
+            | ChromeToken::CurrentScreen
+            | ChromeToken::Overlay => self.color_style(ColorRole::Primary),
+        }
+    }
+
     pub fn typography_style(self, role: TypographyRole) -> Style {
         let color = match role {
             TypographyRole::ApplicationTitle => ColorRole::Primary,
@@ -126,9 +139,7 @@ fn default_color_style(role: ColorRole) -> Style {
         ColorRole::Info => Style::default().fg(Color::Blue),
         ColorRole::Muted => Style::default().fg(Color::DarkGray),
         ColorRole::Border => Style::default().fg(Color::Gray),
-        ColorRole::Selected => Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
+        ColorRole::Selected => Style::default().add_modifier(Modifier::REVERSED),
         ColorRole::Background => Style::default(),
     }
 }
@@ -174,10 +185,7 @@ mod tests {
         let theme = Theme::default_color();
         assert_eq!(theme.color_style(ColorRole::Danger).fg, Some(Color::Red));
         assert_eq!(theme.color_style(ColorRole::Success).fg, Some(Color::Green));
-        assert_eq!(
-            theme.color_style(ColorRole::Selected).bg,
-            Some(Color::DarkGray)
-        );
+        assert_eq!(theme.color_style(ColorRole::Selected).bg, None);
     }
 
     #[test]

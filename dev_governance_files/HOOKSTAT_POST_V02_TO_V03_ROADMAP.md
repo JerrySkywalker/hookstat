@@ -277,6 +277,27 @@ HS-G26 — Human Interface / Accessibility / Dogfood Hardening
 HS-G27R — v0.3 Hardening & Release
 ```
 
+## v0.3 Human-interface milestone status
+
+`HS-V03-G20-G23-UNIFIED-HUMAN-INTERFACE-TRAIN-001` records the candidate
+implementation against pinned TabBeacon baseline
+`2eb39c0a6af363fd4e680ad968ec17e3ffb05f7d`.
+
+```text
+HS-G20=COMPLETE_CANDIDATE
+HS-G21=COMPLETE_CANDIDATE
+HS-G22=COMPLETE_CANDIDATE
+HS-G23=COMPLETE_CANDIDATE
+HS-G24=NOT_STARTED
+HS-G25=NOT_STARTED
+SHARED_UI_REPO=JerrySkywalker/jerry-terminal-ui
+SHARED_UI_CRATES_IO_PUBLISHED=false
+OWNER_WINDOWS_TERMINAL_A_B_DOGFOOD=PENDING
+```
+
+The status is a development-candidate record, not a v0.3 release declaration.
+The immutable v0.2.1 history above remains unchanged.
+
 ## v0.3 P0 — exact TabBeacon UI/UX convergence
 
 The following are release requirements, not suggestions:

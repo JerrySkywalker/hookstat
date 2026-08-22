@@ -1,15 +1,19 @@
 //! Reusable visual containers for the terminal UI system.
 
+use jerry_terminal_ui::{
+    footer::{FooterAction, FooterState, format_footer},
+    text::truncate_to_width as shared_truncate_to_width,
+};
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
-use unicode_segmentation::UnicodeSegmentation;
+#[cfg(test)]
 use unicode_width::UnicodeWidthStr;
 
-use super::app::{App, Focus, Screen};
+use super::app::{App, Screen};
 use super::localization::{MessageKey, ResolvedLocale, t};
 use super::navigation::{NavigationState, Route};
 use super::theme::{ColorRole, Theme, TypographyRole};
@@ -18,18 +22,30 @@ pub fn themed_block(title: &str, theme: Theme) -> Block<'_> {
     Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(theme.color_style(ColorRole::Border))
+        .border_style(theme.chrome_style(jerry_terminal_ui::chrome::ChromeToken::Border))
 }
 
-pub fn render_title(frame: &mut Frame, area: Rect, locale: ResolvedLocale, theme: Theme) {
-    let title = Paragraph::new(t(locale, MessageKey::AppTitle))
-        .style(theme.typography_style(TypographyRole::ApplicationTitle))
-        .alignment(Alignment::Left)
-        .block(
-            Block::default()
-                .borders(Borders::BOTTOM)
-                .border_style(theme.color_style(ColorRole::Border)),
-        );
+pub fn render_title(
+    frame: &mut Frame,
+    area: Rect,
+    locale: ResolvedLocale,
+    overall_status: &str,
+    theme: Theme,
+) {
+    let title = Paragraph::new(Line::from(vec![
+        Span::styled(
+            t(locale, MessageKey::AppTitle),
+            theme.typography_style(TypographyRole::ApplicationTitle),
+        ),
+        Span::raw(format!(" — {overall_status}")),
+    ]))
+    .style(theme.chrome_style(jerry_terminal_ui::chrome::ChromeToken::Base))
+    .alignment(Alignment::Left)
+    .block(
+        Block::default()
+            .borders(Borders::BOTTOM)
+            .border_style(theme.color_style(ColorRole::Border)),
+    );
     frame.render_widget(title, area);
 }
 
@@ -38,27 +54,17 @@ pub fn render_navigation(
     area: Rect,
     locale: ResolvedLocale,
     navigation: NavigationState,
-    focus: Focus,
     theme: Theme,
 ) {
     let lines = Route::ALL
         .iter()
         .map(|route| {
-            let selected = *route == navigation.selected();
-            let active = *route == navigation.active();
-            let marker = if selected {
-                ">"
-            } else if active {
-                "•"
+            let current = *route == navigation.current();
+            let marker = if current { ">" } else { " " };
+            let style = if current {
+                theme.chrome_style(jerry_terminal_ui::chrome::ChromeToken::CurrentScreen)
             } else {
-                " "
-            };
-            let style = if selected && focus == Focus::Navigation {
-                theme.color_style(ColorRole::Selected)
-            } else if active {
-                theme.color_style(ColorRole::Info)
-            } else {
-                theme.typography_style(TypographyRole::Value)
+                theme.chrome_style(jerry_terminal_ui::chrome::ChromeToken::Base)
             };
             Line::from(Span::styled(
                 format!("{marker} {}", route_label(locale, *route)),
@@ -80,46 +86,59 @@ pub fn render_shortcut_footer(
     app: &App,
     theme: Theme,
 ) {
-    let focus_text = match app.focus() {
-        Focus::Content => t(locale, MessageKey::FooterFocusNavigation),
-        Focus::Navigation => t(locale, MessageKey::FooterFocusContent),
-    };
-    let mut parts = vec![
-        format!("Tab {focus_text}"),
-        format!("↑/↓ {}", t(locale, MessageKey::FooterNavigate)),
-    ];
-    if app.is_search_editing() {
-        parts.push(format!("Esc {}", t(locale, MessageKey::FooterBack)));
-    } else {
-        if matches!(app.screen(), Screen::Hooks | Screen::HookDetail) {
-            parts.push(format!("PgUp/PgDn {}", t(locale, MessageKey::FooterPage)));
-        }
-        match app.screen() {
-            Screen::HookDetail => parts.push(format!("Esc {}", t(locale, MessageKey::FooterBack))),
-            Screen::Overview | Screen::Hooks => {
-                parts.push(format!("Enter {}", t(locale, MessageKey::FooterOpen)));
-            }
-            Screen::Diagnostics => {}
-            Screen::Settings => {}
-        }
-        if app.screen() == Screen::Hooks {
-            parts.push(format!("/ {}", t(locale, MessageKey::FooterSearch)));
-            parts.push(format!("f {}", t(locale, MessageKey::FooterFilter)));
-            parts.push(format!("s {}", t(locale, MessageKey::FooterSort)));
-        }
-        if app.screen() == Screen::Settings {
-            parts.push(format!("←/→ {}", t(locale, MessageKey::FooterChange)));
-            parts.push(format!("a {}", t(locale, MessageKey::FooterApply)));
-            parts.push(format!("x {}", t(locale, MessageKey::FooterRevert)));
-        }
-        parts.push(format!("r {}", t(locale, MessageKey::FooterRefresh)));
-        parts.push(format!("q {}", t(locale, MessageKey::FooterQuit)));
-    }
+    let state = footer_state(app);
+    let footer = format_footer(state, |action| footer_action_text(locale, action));
     frame.render_widget(
-        Paragraph::new(truncate_to_width(&parts.join(" · "), area.width as usize))
-            .style(theme.typography_style(TypographyRole::Metadata)),
+        Paragraph::new(truncate_to_width(&footer, area.width as usize))
+            .style(theme.chrome_style(jerry_terminal_ui::chrome::ChromeToken::Footer)),
         area,
     );
+}
+
+fn footer_state(app: &App) -> FooterState {
+    if app.help_open() {
+        FooterState::HelpOverlay
+    } else if app.discard_confirmation_open() {
+        FooterState::DiscardConfirmation
+    } else if app.settings_save_state() == super::app::SettingsSaveState::Conflict {
+        FooterState::ConflictWarning
+    } else if app.screen() == Screen::Settings && app.settings_editing() {
+        FooterState::SettingsEdit
+    } else if app.screen() == Screen::Settings && app.settings_dirty() {
+        FooterState::DirtyDraft
+    } else if app.screen() == Screen::Settings {
+        FooterState::SettingsNormal
+    } else if app.screen() == Screen::HookDetail {
+        FooterState::Detail
+    } else if app.local_list_active() {
+        FooterState::LocalList
+    } else {
+        FooterState::NormalNavigationWithRefresh
+    }
+}
+
+fn footer_action_text(locale: ResolvedLocale, action: FooterAction) -> &'static str {
+    let key = match action {
+        FooterAction::Navigate => MessageKey::FooterNavigate,
+        FooterAction::Open => MessageKey::FooterOpen,
+        FooterAction::Help => MessageKey::FooterHelp,
+        FooterAction::Refresh => MessageKey::FooterRefresh,
+        FooterAction::Quit => MessageKey::FooterQuit,
+        FooterAction::Select => MessageKey::FooterSelect,
+        FooterAction::Back => MessageKey::FooterBack,
+        FooterAction::Page => MessageKey::FooterPage,
+        FooterAction::Search => MessageKey::FooterSearch,
+        FooterAction::Filter => MessageKey::FooterFilter,
+        FooterAction::Sort => MessageKey::FooterSort,
+        FooterAction::Edit => MessageKey::FooterEdit,
+        FooterAction::Change => MessageKey::FooterChange,
+        FooterAction::Apply => MessageKey::FooterApply,
+        FooterAction::Revert => MessageKey::FooterRevert,
+        FooterAction::Cancel => MessageKey::FooterCancel,
+        FooterAction::Discard => MessageKey::FooterDiscard,
+        FooterAction::Dismiss => MessageKey::FooterDismiss,
+    };
+    t(locale, key)
 }
 
 pub fn render_state_panel(
@@ -148,23 +167,14 @@ pub fn render_minimum_size(frame: &mut Frame, area: Rect, locale: ResolvedLocale
     );
 }
 
+#[cfg(test)]
 pub fn display_width(value: &str) -> usize {
     UnicodeWidthStr::width(value)
 }
 
 /// Truncate by terminal display cells and never split a grapheme cluster.
 pub fn truncate_to_width(value: &str, maximum_width: usize) -> String {
-    let mut result = String::new();
-    let mut used = 0;
-    for grapheme in value.graphemes(true) {
-        let width = display_width(grapheme);
-        if used + width > maximum_width {
-            break;
-        }
-        result.push_str(grapheme);
-        used += width;
-    }
-    result
+    shared_truncate_to_width(value, maximum_width)
 }
 
 fn route_label(locale: ResolvedLocale, route: Route) -> &'static str {

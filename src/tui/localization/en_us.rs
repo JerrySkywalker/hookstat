@@ -12,7 +12,7 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::ViewHookDetail => "Hook detail",
         MessageKey::ViewDiagnostics => "Read-only diagnostics",
         MessageKey::ViewSettings => "Interface settings",
-        MessageKey::SectionNavigation => "Navigation",
+        MessageKey::SectionNavigation => "Sections",
         MessageKey::SectionRuntimeSummary => "Runtime summary",
         MessageKey::SectionRiskyHooks => "Risky hooks",
         MessageKey::SectionRecentFailures => "Recent failures",
@@ -196,6 +196,9 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::FooterNavigate => "navigate",
         MessageKey::FooterPage => "page",
         MessageKey::FooterOpen => "open",
+        MessageKey::FooterHelp => "help",
+        MessageKey::FooterSelect => "select",
+        MessageKey::FooterEdit => "edit",
         MessageKey::FooterBack => "back",
         MessageKey::FooterRefresh => "refresh",
         MessageKey::FooterQuit => "quit",
@@ -207,6 +210,24 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::FooterChange => "change",
         MessageKey::FooterApply => "apply",
         MessageKey::FooterRevert => "revert",
+        MessageKey::FooterCancel => "cancel",
+        MessageKey::FooterDiscard => "discard",
+        MessageKey::FooterDismiss => "dismiss",
+        MessageKey::HelpTitle => "Help",
+        MessageKey::HelpNavigation => {
+            "↑↓ or j/k changes pages directly. Enter opens the current local interaction."
+        }
+        MessageKey::HelpPeriods => "Periods: t Today, 1 24h, 7 7d, 3 30d, a All.",
+        MessageKey::HelpHooks => {
+            "Hooks: Enter selects rows; / search, f filter, s sort; Esc leaves the list."
+        }
+        MessageKey::HelpDetail => "Hook detail: ↑↓ scroll, PgUp/PgDn page, Esc returns to Hooks.",
+        MessageKey::HelpSettings => {
+            "Settings: Enter edit/done, ↑↓ field, ←→ draft, a Apply, r Revert; q confirms dirty discard."
+        }
+        MessageKey::HelpRefresh => {
+            "r refreshes reliability pages. All displayed failure rates include sample counts."
+        }
         MessageKey::MinimumTerminal => "Resize to at least 24x10",
     }
 }

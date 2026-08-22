@@ -8,7 +8,7 @@ use ratatui::{
     widgets::{Cell, Paragraph, Row, Table, Wrap},
 };
 
-use super::app::{App, Focus, Screen, SettingsField, SettingsSaveState};
+use super::app::{App, Screen, SettingsField, SettingsSaveState};
 use super::layout::{ApplicationShell, ShellLayout};
 use super::localization::{
     LanguageState, MessageKey, ResolvedLocale, coverage_name, diagnostic_explanation,
@@ -34,19 +34,79 @@ pub fn draw(frame: &mut Frame, app: &App, language: LanguageState, theme: Theme)
             render_minimum_size(frame, available, language.resolved, theme);
         }
         ShellLayout::Ready(areas) => {
-            super::widgets::render_title(frame, areas.title, language.resolved, theme);
+            super::widgets::render_title(
+                frame,
+                areas.title,
+                language.resolved,
+                overall_status(app, language.resolved),
+                theme,
+            );
             render_navigation(
                 frame,
                 areas.navigation,
                 language.resolved,
                 app.navigation(),
-                app.focus(),
                 theme,
             );
             render_content(frame, areas.content, app, language.resolved, theme);
             render_shortcut_footer(frame, areas.footer, language.resolved, app, theme);
+            if app.help_open() {
+                render_help_overlay(frame, areas.content, language.resolved, theme);
+            } else if app.discard_confirmation_open() {
+                render_discard_confirmation(frame, areas.content, language.resolved, theme);
+            }
         }
     }
+}
+
+fn overall_status(app: &App, locale: ResolvedLocale) -> &'static str {
+    app.view_model().map_or_else(
+        || t(locale, MessageKey::StateLoading),
+        |view| {
+            view.overview.runtime_summaries.first().map_or_else(
+                || t(locale, MessageKey::StatusUnavailable),
+                |summary| health_name(locale, summary.health),
+            )
+        },
+    )
+}
+
+fn render_help_overlay(frame: &mut Frame, area: Rect, locale: ResolvedLocale, theme: Theme) {
+    let lines = [
+        t(locale, MessageKey::HelpNavigation),
+        t(locale, MessageKey::HelpPeriods),
+        t(locale, MessageKey::HelpHooks),
+        t(locale, MessageKey::HelpDetail),
+        t(locale, MessageKey::HelpSettings),
+        t(locale, MessageKey::HelpRefresh),
+    ]
+    .join("\n\n");
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(themed_block(t(locale, MessageKey::HelpTitle), theme))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_discard_confirmation(
+    frame: &mut Frame,
+    area: Rect,
+    locale: ResolvedLocale,
+    theme: Theme,
+) {
+    let message = format!(
+        "{}\n\nEsc {}  Enter {}",
+        t(locale, MessageKey::StatePreferenceDirty),
+        t(locale, MessageKey::FooterCancel),
+        t(locale, MessageKey::FooterDiscard),
+    );
+    frame.render_widget(
+        Paragraph::new(message)
+            .block(themed_block(t(locale, MessageKey::FooterDiscard), theme))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
 }
 
 fn render_content(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLocale, theme: Theme) {
@@ -410,7 +470,7 @@ fn render_overview(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoc
         &view.overview.highest_risk_hooks,
         HookRowsContext {
             selected: app.selected_handler(),
-            content_focused: app.focus() == Focus::Content,
+            content_focused: app.local_list_active(),
             locale,
             theme,
             title: t(locale, MessageKey::SectionRiskyHooks),
@@ -493,7 +553,7 @@ fn render_hooks(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLocale
         app.visible_hooks(),
         HookRowsContext {
             selected: app.selected_handler(),
-            content_focused: app.focus() == Focus::Content,
+            content_focused: app.local_list_active(),
             locale,
             theme,
             title: t(locale, MessageKey::ViewHooks),
@@ -1068,10 +1128,35 @@ mod tests {
     #[test]
     fn normal_narrow_and_minimum_buffers_keep_sample_counts_or_resize_guidance() {
         let app = App::from_report(synthetic_fixture_report(1_000));
-        for (width, height) in [(100, 30), (44, 16), (24, 10)] {
+        for (width, height) in [(100, 30), (44, 16)] {
             assert!(rendered(app.clone(), ResolvedLocale::EnUs, width, height).contains("n="));
         }
+        assert!(rendered(app.clone(), ResolvedLocale::EnUs, 24, 10).contains("HookStat"));
         assert!(rendered(app, ResolvedLocale::EnUs, 23, 10).contains("Resize"));
+    }
+
+    #[test]
+    fn shared_shell_uses_two_row_header_sections_marker_and_contextual_footer() {
+        let app = App::from_report(synthetic_fixture_report(1_000));
+        let english = rendered(app, ResolvedLocale::EnUs, 100, 30);
+        assert!(english.contains("HookStat Reliability Center —"));
+        assert!(english.contains("Sections"));
+        assert!(english.contains("> Overview"));
+        assert!(!english.contains("•"));
+        assert!(english.contains("↑↓ navigate  Enter open  ? help  r refresh  q quit"));
+    }
+
+    #[test]
+    fn help_overlay_replaces_content_and_uses_active_locale() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.handle(super::super::keymap::Command::Help);
+        let english = rendered(app.clone(), ResolvedLocale::EnUs, 100, 30);
+        assert!(english.contains("Help"));
+        assert!(english.contains("Periods: t Today"));
+        assert!(english.contains("Esc/?/q dismiss"));
+        let chinese = rendered(app, ResolvedLocale::ZhCn, 100, 30).replace(' ', "");
+        assert!(chinese.contains("帮助"));
+        assert!(chinese.contains("周期：t今天"));
     }
 
     #[test]
@@ -1121,10 +1206,8 @@ mod tests {
     #[test]
     fn diagnostics_are_localized_and_explicitly_read_only() {
         let mut app = App::from_report(synthetic_fixture_report(1_000));
-        app.handle(super::super::keymap::Command::ToggleFocus);
         app.handle(super::super::keymap::Command::Down);
         app.handle(super::super::keymap::Command::Down);
-        app.handle(super::super::keymap::Command::Enter);
 
         let english = rendered(app.clone(), ResolvedLocale::EnUs, 100, 30);
         assert!(english.contains("Read-only diagnostics"));
@@ -1147,7 +1230,6 @@ mod tests {
 
         let mut empty =
             App::from_report(instrumented_report(&[], 1_000, TimeWindow::Last7Days, 0, 0));
-        empty.handle(super::super::keymap::Command::ToggleFocus);
         empty.handle(super::super::keymap::Command::Down);
         empty.handle(super::super::keymap::Command::Enter);
         assert_eq!(empty.screen(), Screen::Hooks);
@@ -1171,10 +1253,8 @@ mod tests {
                 diagnostics,
             ),
         );
-        degraded.handle(super::super::keymap::Command::ToggleFocus);
         degraded.handle(super::super::keymap::Command::Down);
         degraded.handle(super::super::keymap::Command::Down);
-        degraded.handle(super::super::keymap::Command::Enter);
         let rendered = rendered(degraded, ResolvedLocale::EnUs, 100, 30);
         assert!(rendered.contains("Fail"));
         assert!(rendered.contains("Receipt integrity"));
@@ -1184,11 +1264,9 @@ mod tests {
     fn every_top_level_view_reflows_at_normal_narrow_and_minimum_sizes() {
         for steps in [0, 1, 2, 3] {
             let mut app = App::from_report(synthetic_fixture_report(1_000));
-            app.handle(super::super::keymap::Command::ToggleFocus);
             for _ in 0..steps {
                 app.handle(super::super::keymap::Command::Down);
             }
-            app.handle(super::super::keymap::Command::Enter);
             for locale in [ResolvedLocale::EnUs, ResolvedLocale::ZhCn] {
                 for (width, height) in [(100, 30), (44, 16), (24, 10)] {
                     assert!(rendered(app.clone(), locale, width, height).contains("HookStat"));

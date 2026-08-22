@@ -555,11 +555,13 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "crossterm",
+ "jerry-terminal-ui",
  "ratatui",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
+ "sys-locale",
  "tempfile",
  "toml",
  "unicode-segmentation",
@@ -643,6 +645,15 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "jerry-terminal-ui"
+version = "0.1.0"
+source = "git+https://github.com/JerrySkywalker/jerry-terminal-ui?rev=75eea801a0a2c8f6f72d344da796b847710673f2#75eea801a0a2c8f6f72d344da796b847710673f2"
+dependencies = [
+ "unicode-segmentation",
+ "unicode-width",
+]
 
 [[package]]
 name = "js-sys"
@@ -1509,6 +1520,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "sys-locale"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eab9a99a024a169fe8a903cf9d4a3b3601109bcc13bd9e3c6fff259138626c4"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

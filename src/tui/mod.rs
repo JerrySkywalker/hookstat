@@ -1,7 +1,7 @@
 //! HookStat's internal implementation of the Jerry Terminal UI System.
 //!
-//! The module intentionally remains internal until a second conforming
-//! application proves a stable shared-crate boundary (ADR 0004).
+//! Product-specific rendering adapts the shared `jerry-terminal-ui` semantic
+//! core to HookStat's Ratatui/Crossterm versions and reliability content.
 
 mod app;
 mod keymap;
@@ -195,7 +195,7 @@ fn run_loop(
     mut options: RunLoopOptions,
 ) -> io::Result<()> {
     let environment_locale = std::env::var("HOOKSTAT_LANG").ok();
-    let system_locale = std::env::var("LANG").ok();
+    let system_locale = operating_system_locale();
     let initial_reliability_request = app
         .view_model()
         .is_none()
@@ -314,6 +314,14 @@ fn run_loop(
     }
 }
 
+fn operating_system_locale() -> Option<String> {
+    sys_locale::get_locale().or_else(|| {
+        ["LC_ALL", "LC_MESSAGES", "LANG"]
+            .into_iter()
+            .find_map(|name| std::env::var(name).ok())
+    })
+}
+
 fn resolved_language(
     app: &App,
     explicit_language: Option<localization::InterfaceLanguage>,
@@ -348,7 +356,6 @@ mod tests {
             localization::InterfaceLanguage::EnUs,
             crate::interface_preferences::InterfaceColor::Auto,
         );
-        app.handle(keymap::Command::ToggleFocus);
         app.handle(keymap::Command::Down);
         app.handle(keymap::Command::Down);
         app.handle(keymap::Command::Down);

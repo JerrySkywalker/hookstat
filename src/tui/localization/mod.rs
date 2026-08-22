@@ -8,6 +8,10 @@ use crate::analytics::{
 };
 use crate::domain::{EvidenceCoverage, HookEvent, Runtime, TerminalStatus};
 use crate::tui::view_model::{DiagnosticCheckId, DiagnosticStatus, Health, HookSort};
+use jerry_terminal_ui::locale::{
+    Locale as SharedLocale, LocaleInputs as SharedLocaleInputs, LocaleSource as SharedLocaleSource,
+    resolve_locale as resolve_shared_locale,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InterfaceLanguage {
@@ -206,6 +210,9 @@ pub enum MessageKey {
     FooterNavigate,
     FooterPage,
     FooterOpen,
+    FooterHelp,
+    FooterSelect,
+    FooterEdit,
     FooterBack,
     FooterRefresh,
     FooterQuit,
@@ -217,6 +224,16 @@ pub enum MessageKey {
     FooterChange,
     FooterApply,
     FooterRevert,
+    FooterCancel,
+    FooterDiscard,
+    FooterDismiss,
+    HelpTitle,
+    HelpNavigation,
+    HelpPeriods,
+    HelpHooks,
+    HelpDetail,
+    HelpSettings,
+    HelpRefresh,
     MinimumTerminal,
 }
 
@@ -388,6 +405,9 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::FooterNavigate,
     MessageKey::FooterPage,
     MessageKey::FooterOpen,
+    MessageKey::FooterHelp,
+    MessageKey::FooterSelect,
+    MessageKey::FooterEdit,
     MessageKey::FooterBack,
     MessageKey::FooterRefresh,
     MessageKey::FooterQuit,
@@ -399,6 +419,16 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::FooterChange,
     MessageKey::FooterApply,
     MessageKey::FooterRevert,
+    MessageKey::FooterCancel,
+    MessageKey::FooterDiscard,
+    MessageKey::FooterDismiss,
+    MessageKey::HelpTitle,
+    MessageKey::HelpNavigation,
+    MessageKey::HelpPeriods,
+    MessageKey::HelpHooks,
+    MessageKey::HelpDetail,
+    MessageKey::HelpSettings,
+    MessageKey::HelpRefresh,
     MessageKey::MinimumTerminal,
 ];
 
@@ -429,65 +459,42 @@ impl InterfaceLanguage {
 }
 
 impl LanguageState {
-    /// Resolve the small G00 model. G03 will add CLI, preference, and OS reads.
+    /// Resolves CLI, environment, preference, operating system, then fallback
+    /// through the dependency-neutral shared Human-interface implementation.
     pub fn resolve(
         requested: InterfaceLanguage,
         environment_locale: Option<&str>,
         preference_locale: Option<InterfaceLanguage>,
         system_locale: Option<&str>,
     ) -> Self {
-        match requested {
-            InterfaceLanguage::EnUs => Self {
-                requested,
-                resolved: ResolvedLocale::EnUs,
-                source: LocaleSource::Explicit,
+        let cli = match requested {
+            InterfaceLanguage::Auto => None,
+            concrete => Some(concrete.as_storage()),
+        };
+        let preference = preference_locale.and_then(|value| match value {
+            InterfaceLanguage::Auto => None,
+            concrete => Some(concrete.as_storage()),
+        });
+        let resolution = resolve_shared_locale(SharedLocaleInputs {
+            cli,
+            environment: environment_locale,
+            preference,
+            operating_system: system_locale,
+        });
+        Self {
+            requested,
+            resolved: match resolution.locale {
+                SharedLocale::EnUs => ResolvedLocale::EnUs,
+                SharedLocale::ZhCn => ResolvedLocale::ZhCn,
             },
-            InterfaceLanguage::ZhCn => Self {
-                requested,
-                resolved: ResolvedLocale::ZhCn,
-                source: LocaleSource::Explicit,
+            source: match resolution.source {
+                SharedLocaleSource::Cli => LocaleSource::Explicit,
+                SharedLocaleSource::Environment => LocaleSource::Environment,
+                SharedLocaleSource::Preference => LocaleSource::Preference,
+                SharedLocaleSource::OperatingSystem => LocaleSource::System,
+                SharedLocaleSource::Fallback => LocaleSource::Fallback,
             },
-            InterfaceLanguage::Auto => resolve_auto(
-                requested,
-                environment_locale,
-                preference_locale,
-                system_locale,
-            ),
         }
-    }
-}
-
-fn resolve_auto(
-    requested: InterfaceLanguage,
-    environment_locale: Option<&str>,
-    preference_locale: Option<InterfaceLanguage>,
-    system_locale: Option<&str>,
-) -> LanguageState {
-    for (candidate, source) in [
-        (environment_locale, LocaleSource::Environment),
-        (
-            preference_locale.map(InterfaceLanguage::as_storage),
-            LocaleSource::Preference,
-        ),
-        (system_locale, LocaleSource::System),
-    ] {
-        if let Some(locale) = candidate.and_then(InterfaceLanguage::parse) {
-            let resolved = match locale {
-                InterfaceLanguage::ZhCn => ResolvedLocale::ZhCn,
-                InterfaceLanguage::EnUs => ResolvedLocale::EnUs,
-                InterfaceLanguage::Auto => continue,
-            };
-            return LanguageState {
-                requested,
-                resolved,
-                source,
-            };
-        }
-    }
-    LanguageState {
-        requested,
-        resolved: ResolvedLocale::EnUs,
-        source: LocaleSource::Fallback,
     }
 }
 
