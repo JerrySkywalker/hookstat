@@ -4,6 +4,8 @@
 //! core to HookStat's Ratatui/Crossterm versions and reliability content.
 
 mod app;
+#[cfg(test)]
+mod conformance;
 mod keymap;
 mod layout;
 pub mod localization;
