@@ -31,6 +31,12 @@ pub struct HandlerAlias {
     pub display_name: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AliasSaveOutcome {
+    Saved,
+    Conflict,
+}
+
 /// Durable state for the append-only receipt reconciliation journal. The
 /// cursor is committed in the same SQLite transaction as its accepted rows,
 /// so interruption can only replay idempotent evidence on restart.
@@ -522,6 +528,55 @@ impl Ledger {
         Ok(())
     }
 
+    /// Applies a presentation-only alias only when the stored alias still
+    /// equals the snapshot that the editor opened. This protects a Human
+    /// draft from overwriting another local HookStat presentation edit. It
+    /// never touches Codex configuration or canonical invocation evidence.
+    pub fn set_handler_alias_if_unchanged(
+        &mut self,
+        runtime: Runtime,
+        handler_key: &str,
+        display_name: &str,
+        expected_alias: Option<&str>,
+        updated_at_unix_ms: i64,
+    ) -> Result<AliasSaveOutcome, LedgerError> {
+        if handler_key.trim().is_empty() || handler_key.len() > 128 {
+            return Err(ValidationError::new("handler_key").into());
+        }
+        // `sanitize_display_name` compactly normalizes imported metadata.
+        // Interactive aliases have a stricter contract: control text is an
+        // invalid draft, never an invisible rewrite of what the Human typed.
+        if display_name.chars().any(char::is_control) {
+            return Err(ValidationError::new("handler_alias").into());
+        }
+        let Some(display_name) = sanitize_display_name(display_name) else {
+            return Err(ValidationError::new("handler_alias").into());
+        };
+        let transaction = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let stored = transaction
+            .query_row(
+                "SELECT display_name FROM handler_annotations WHERE runtime = ?1 AND handler_key = ?2",
+                params![runtime.as_storage(), handler_key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if stored.as_deref() != expected_alias {
+            return Ok(AliasSaveOutcome::Conflict);
+        }
+        transaction.execute(
+            "INSERT INTO handler_annotations (runtime, handler_key, display_name, updated_at_unix_ms)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(runtime, handler_key) DO UPDATE SET
+                display_name = excluded.display_name,
+                updated_at_unix_ms = excluded.updated_at_unix_ms",
+            params![runtime.as_storage(), handler_key, display_name, updated_at_unix_ms],
+        )?;
+        transaction.commit()?;
+        Ok(AliasSaveOutcome::Saved)
+    }
+
     /// Returns only the sanitized user-facing aliases, never raw commands or
     /// private configuration material.
     pub fn handler_aliases(&self) -> Result<Vec<HandlerAlias>, LedgerError> {
@@ -906,6 +961,50 @@ mod tests {
                 handler_key: "fixture-handler".into(),
                 display_name: "HAPI Session Hook".into(),
             }]
+        );
+    }
+
+    #[test]
+    fn alias_apply_is_conflict_safe_and_rejects_unsafe_text() {
+        let mut ledger = Ledger::open_in_memory().unwrap();
+        assert_eq!(
+            ledger
+                .set_handler_alias_if_unchanged(
+                    Runtime::Codex,
+                    "fixture-handler",
+                    "Readable Alias",
+                    None,
+                    1_000,
+                )
+                .unwrap(),
+            AliasSaveOutcome::Saved
+        );
+        assert_eq!(
+            ledger
+                .set_handler_alias_if_unchanged(
+                    Runtime::Codex,
+                    "fixture-handler",
+                    "Lost Update",
+                    None,
+                    1_001,
+                )
+                .unwrap(),
+            AliasSaveOutcome::Conflict
+        );
+        assert!(
+            ledger
+                .set_handler_alias_if_unchanged(
+                    Runtime::Codex,
+                    "fixture-handler",
+                    "unsafe\nname",
+                    Some("Readable Alias"),
+                    1_002,
+                )
+                .is_err()
+        );
+        assert_eq!(
+            ledger.handler_aliases().unwrap()[0].display_name,
+            "Readable Alias"
         );
     }
 

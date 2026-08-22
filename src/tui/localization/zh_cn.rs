@@ -9,10 +9,12 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::NavDiagnostics => "诊断",
         MessageKey::NavSettings => "设置",
         MessageKey::ViewOverview => "可靠性概览",
-        MessageKey::ViewHooks => "钩子可靠性",
+        MessageKey::ViewHooks => "钩子目录",
         MessageKey::ViewChanges => "变更与历史",
         MessageKey::ViewChangeDetail => "变更证据",
         MessageKey::ViewHookDetail => "钩子详情",
+        MessageKey::ViewFailureClusters => "失败聚类",
+        MessageKey::ViewFailureClusterDetail => "失败聚类详情",
         MessageKey::ViewDiagnostics => "只读诊断",
         MessageKey::ViewSettings => "界面设置",
         MessageKey::SectionNavigation => "分区",
@@ -26,6 +28,7 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::SectionTrends => "趋势",
         MessageKey::SectionRevisionComparison => "修订版本比较",
         MessageKey::SectionFailureFingerprints => "失败指纹",
+        MessageKey::SectionAlias => "人类别名",
         MessageKey::SectionDiagnostics => "运行检查",
         MessageKey::SectionInterface => "人机界面",
         MessageKey::FieldRuntime => "运行时",
@@ -60,6 +63,12 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::FieldFirstSeen => "首次发现",
         MessageKey::FieldLastSeen => "最后发现",
         MessageKey::FieldLatestEvidence => "最新证据",
+        MessageKey::FieldAlias => "别名",
+        MessageKey::FieldAffectedHooks => "受影响钩子",
+        MessageKey::FieldOccurrences => "发生次数",
+        MessageKey::FieldDataFreshness => "数据新鲜度",
+        MessageKey::FieldRevisionCount => "历史修订数",
+        MessageKey::FieldObservationStatus => "观测状态",
         MessageKey::ColumnName => "名称",
         MessageKey::ColumnEvent => "事件",
         MessageKey::ColumnRuntime => "运行时",
@@ -81,6 +90,12 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::StatePreferenceSaved => "语言偏好已保存到本地。",
         MessageKey::StatePreferenceConflict => "语言偏好已被其他位置修改；应用被拒绝。",
         MessageKey::StatePreferenceSaveFailed => "无法安全保存语言偏好。",
+        MessageKey::StateAliasClean => "没有待应用的别名变更。",
+        MessageKey::StateAliasDirty => "别名变更已暂存；应用后才会保存。",
+        MessageKey::StateAliasSaved => "别名已保存到 HookStat 展示元数据。",
+        MessageKey::StateAliasConflict => "别名已在其他位置变更；应用被拒绝。",
+        MessageKey::StateAliasSaveFailed => "无法安全保存别名。",
+        MessageKey::StateObservedInSelectedPeriod => "在选定周期内已观测",
         MessageKey::StatusHealthy => "✓ 健康",
         MessageKey::StatusDegraded => "! 已降级",
         MessageKey::StatusCoverageLimited => "! 覆盖受限",
@@ -220,11 +235,15 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::HelpPeriods => {
             "周期：t 今天，1 过去 24 小时，7 过去 7 天，3 过去 30 天，a 全部。"
         }
-        MessageKey::HelpHooks => "钩子：Enter 选择行；/ 搜索，f 筛选，s 排序；Esc 离开列表。",
+        MessageKey::HelpHooks => {
+            "钩子目录：Enter 选择行；/ 搜索，f 筛选，s 排序；在详情按 e 编辑人类别名。"
+        }
         MessageKey::HelpChanges => {
             "变更：Enter 选择事件后打开证据和有序修订时间线。历史记录绝不证明钩子已被移除。"
         }
-        MessageKey::HelpDetail => "钩子详情：↑↓ 滚动，PgUp/PgDn 翻页，Esc 返回钩子。",
+        MessageKey::HelpDetail => {
+            "钩子详情：f 打开安全失败聚类；↑↓ 滚动，PgUp/PgDn 翻页，Esc 返回目录。"
+        }
         MessageKey::HelpSettings => {
             "设置：Enter 编辑/完成，↑↓ 选择字段，←→ 调整草稿，a 应用，r 还原；草稿有更改时 q 会确认。"
         }

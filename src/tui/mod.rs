@@ -17,7 +17,8 @@ mod view_model;
 mod widgets;
 
 pub use app::{
-    ChangesRefreshReason, ChangesSnapshot, DiagnosticsRefreshReason, RefreshReason, RefreshSnapshot,
+    AliasAnnotation, AliasApplyOutcome, AliasApplyRequest, ChangesRefreshReason, ChangesSnapshot,
+    DiagnosticsRefreshReason, RefreshReason, RefreshSnapshot,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -40,6 +41,7 @@ type DiagnosticsRefresh = Box<
 >;
 type ChangesRefresh =
     Box<dyn FnMut(RefreshRequest<ChangesRefreshReason>) -> Result<ChangesSnapshot, String> + Send>;
+type AliasApply = Box<dyn FnMut(AliasApplyRequest) -> AliasApplyOutcome + Send>;
 
 struct RunLoopOptions {
     explicit_language: Option<localization::InterfaceLanguage>,
@@ -133,6 +135,7 @@ pub fn run_with_refresh_snapshot_language(
         RefreshController::spawn(refresh),
         None,
         None,
+        None,
         RunLoopOptions {
             explicit_language,
             store,
@@ -161,6 +164,7 @@ pub fn run_loading_with_refreshes_language(
     changes_refresh: impl FnMut(RefreshRequest<ChangesRefreshReason>) -> Result<ChangesSnapshot, String>
     + Send
     + 'static,
+    alias_apply: impl FnMut(AliasApplyRequest) -> AliasApplyOutcome + Send + 'static,
     observatory: StartupObservatory,
 ) -> io::Result<()> {
     let mut guard = terminal::TerminalGuard::enter()?;
@@ -180,12 +184,14 @@ pub fn run_loading_with_refreshes_language(
     let refresh: Refresh = Box::new(reliability_refresh);
     let diagnostics: DiagnosticsRefresh = Box::new(diagnostics_refresh);
     let changes: ChangesRefresh = Box::new(changes_refresh);
+    let alias_apply: AliasApply = Box::new(alias_apply);
     let result = run_loop(
         &mut terminal,
         app,
         RefreshController::spawn(refresh),
         Some(RefreshController::spawn(diagnostics)),
         Some(RefreshController::spawn(changes)),
+        Some(alias_apply),
         RunLoopOptions {
             explicit_language,
             store,
@@ -203,6 +209,7 @@ fn run_loop(
     mut refresh: RefreshController<RefreshReason, RefreshSnapshot>,
     mut diagnostics: Option<RefreshController<DiagnosticsRefreshReason, DiagnosticsReport>>,
     mut changes: Option<RefreshController<ChangesRefreshReason, ChangesSnapshot>>,
+    mut alias_apply: Option<AliasApply>,
     mut options: RunLoopOptions,
 ) -> io::Result<()> {
     let environment_locale = std::env::var("HOOKSTAT_LANG").ok();
@@ -288,7 +295,7 @@ fn run_loop(
                 terminal.autoresize()?;
             }
             Event::Key(key) => {
-                let Some(command) = keymap::command_for(key, app.is_search_editing()) else {
+                let Some(command) = keymap::command_for(key, app.is_text_editing()) else {
                     continue;
                 };
                 match app.handle(command) {
@@ -323,6 +330,19 @@ fn run_loop(
                             changes.request(changes_reason);
                         } else {
                             app.reject_changes();
+                        }
+                    }
+                    AppEffect::ApplyAlias(request) => {
+                        let outcome = alias_apply
+                            .as_mut()
+                            .map_or(AliasApplyOutcome::Failed, |apply| apply(request));
+                        app.alias_apply_result(outcome);
+                        if outcome == AliasApplyOutcome::Saved {
+                            let generation =
+                                refresh.request(RefreshReason::Manual(app.requested_window()));
+                            if let Some(observatory) = options.observatory.as_ref() {
+                                observatory.record_requested_generation(generation);
+                            }
                         }
                     }
                     AppEffect::ApplyInterface { language, color } => {

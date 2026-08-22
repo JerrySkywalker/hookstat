@@ -5,8 +5,8 @@
 //! database handles, receipt paths, or raw runtime payloads.
 
 use crate::analytics::{
-    FailureFingerprintCluster, HandlerAggregate, HandlerIntelligence, RecentFailure,
-    RevisionComparison, RiskScore, TerminalBreakdown, TimeWindow, TrendProjection,
+    FailureFingerprintCluster, FailureFingerprintKind, HandlerAggregate, HandlerIntelligence,
+    RecentFailure, RevisionComparison, RiskScore, TerminalBreakdown, TimeWindow, TrendProjection,
 };
 pub use crate::diagnostics::{
     DiagnosticCheck as DiagnosticCheckViewModel, DiagnosticCheckId, DiagnosticFact,
@@ -127,6 +127,21 @@ pub struct ChangeDetailViewModel {
     pub revision_timeline: Vec<RevisionTimelineEpoch>,
 }
 
+/// Long-history catalog facts produced only by the lazy Changes projection.
+///
+/// Keeping this separate from the ordinary reliability report means the
+/// normal refresh path retains its bounded ledger read, while a Catalog
+/// detail can still be explicit about the full admitted observation range.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CatalogHistoryViewModel {
+    pub internal_ref: HandlerRef,
+    pub first_seen_unix_ms: i64,
+    pub last_seen_unix_ms: i64,
+    pub latest_evidence_unix_ms: i64,
+    pub revision_count: usize,
+    pub historical_status: HistoricalStatus,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChangesViewModel {
     pub window: TimeWindow,
@@ -134,6 +149,7 @@ pub struct ChangesViewModel {
     pub generated_at_unix_ms: i64,
     pub rows: Vec<ChangeRowViewModel>,
     details: Vec<ChangeDetailViewModel>,
+    catalog_history: Vec<CatalogHistoryViewModel>,
 }
 
 impl ChangesViewModel {
@@ -181,12 +197,28 @@ impl ChangesViewModel {
                 })
             })
             .collect();
+        let catalog_history = workbench
+            .handlers
+            .iter()
+            .map(|history| CatalogHistoryViewModel {
+                internal_ref: HandlerRef {
+                    runtime: Runtime::Codex,
+                    handler_key: history.handler.key.clone(),
+                },
+                first_seen_unix_ms: history.first_seen_unix_ms,
+                last_seen_unix_ms: history.last_seen_unix_ms,
+                latest_evidence_unix_ms: history.latest_evidence_unix_ms,
+                revision_count: history.revision_timeline.len(),
+                historical_status: history.historical_status,
+            })
+            .collect();
         Self {
             window: workbench.window,
             coverage: workbench.coverage,
             generated_at_unix_ms: workbench.generated_at_unix_ms,
             rows,
             details,
+            catalog_history,
         }
     }
 
@@ -194,6 +226,12 @@ impl ChangesViewModel {
         self.details
             .iter()
             .find(|detail| detail.row.reference == *reference)
+    }
+
+    pub fn catalog_history(&self, reference: &HandlerRef) -> Option<&CatalogHistoryViewModel> {
+        self.catalog_history
+            .iter()
+            .find(|history| history.internal_ref == *reference)
     }
 }
 
@@ -223,6 +261,30 @@ pub struct HookDetailViewModel {
     pub risk: RiskScore,
     pub failure_fingerprints: Vec<FailureFingerprintCluster>,
     pub revision_comparison: RevisionComparison,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FailureClusterRef {
+    pub kind: FailureFingerprintKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FailureClusterAffectedHook {
+    pub internal_ref: HandlerRef,
+    pub display_identity: DisplayIdentity,
+    pub display_disambiguator: Option<usize>,
+    pub event: HookEvent,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FailureClusterViewModel {
+    pub reference: FailureClusterRef,
+    pub occurrences: u64,
+    pub first_occurred_at_unix_ms: i64,
+    pub latest_occurred_at_unix_ms: i64,
+    pub coverage: EvidenceCoverage,
+    pub window: TimeWindow,
+    pub affected_hooks: Vec<FailureClusterAffectedHook>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -267,6 +329,7 @@ pub struct ReliabilityCenterViewModel {
     pub hooks: HooksViewModel,
     pub diagnostics: DiagnosticsViewModel,
     details: Vec<HookDetailViewModel>,
+    failure_clusters: Vec<FailureClusterViewModel>,
 }
 
 impl ReliabilityCenterViewModel {
@@ -313,6 +376,7 @@ impl ReliabilityCenterViewModel {
             })
             .collect::<Vec<_>>();
         assign_fallback_disambiguators(&mut rows, &mut details);
+        let failure_clusters = failure_clusters(&details, coverage, report.window);
         let total_runs = rows.iter().map(|row| row.runs).sum();
         let terminal_sample_count = rows.iter().map(|row| row.sample_count).sum();
         let failed_runs = rows.iter().map(|row| row.failed_runs).sum();
@@ -351,6 +415,7 @@ impl ReliabilityCenterViewModel {
             },
             diagnostics,
             details,
+            failure_clusters,
         }
     }
 
@@ -358,6 +423,19 @@ impl ReliabilityCenterViewModel {
         self.details
             .iter()
             .find(|detail| detail.internal_ref == *reference)
+    }
+
+    pub fn failure_clusters(&self) -> &[FailureClusterViewModel] {
+        &self.failure_clusters
+    }
+
+    pub fn failure_cluster(
+        &self,
+        reference: FailureClusterRef,
+    ) -> Option<&FailureClusterViewModel> {
+        self.failure_clusters
+            .iter()
+            .find(|cluster| cluster.reference == reference)
     }
 
     pub fn filtered_hooks(&self, query: &HooksQuery) -> Vec<HookRowViewModel> {
@@ -537,6 +615,74 @@ fn hook_detail(
         failure_fingerprints: intelligence.failure_fingerprints.clone(),
         revision_comparison: intelligence.revision_comparison.clone(),
     }
+}
+
+fn failure_clusters(
+    details: &[HookDetailViewModel],
+    coverage: EvidenceCoverage,
+    window: TimeWindow,
+) -> Vec<FailureClusterViewModel> {
+    let mut clusters = std::collections::BTreeMap::<
+        FailureFingerprintKind,
+        (u64, i64, i64, Vec<FailureClusterAffectedHook>),
+    >::new();
+    for detail in details {
+        for cluster in &detail.failure_fingerprints {
+            let entry = clusters.entry(cluster.kind).or_insert_with(|| {
+                (
+                    0,
+                    cluster.first_occurred_at_unix_ms,
+                    cluster.latest_occurred_at_unix_ms,
+                    Vec::new(),
+                )
+            });
+            entry.0 += cluster.occurrences;
+            entry.1 = entry.1.min(cluster.first_occurred_at_unix_ms);
+            entry.2 = entry.2.max(cluster.latest_occurred_at_unix_ms);
+            entry.3.push(FailureClusterAffectedHook {
+                internal_ref: detail.internal_ref.clone(),
+                display_identity: detail.display_identity.clone(),
+                display_disambiguator: detail.display_disambiguator,
+                event: detail.event,
+            });
+        }
+    }
+    let mut result = clusters
+        .into_iter()
+        .map(
+            |(
+                kind,
+                (
+                    occurrences,
+                    first_occurred_at_unix_ms,
+                    latest_occurred_at_unix_ms,
+                    mut affected_hooks,
+                ),
+            )| {
+                affected_hooks.sort_by(|left, right| {
+                    left.internal_ref
+                        .handler_key
+                        .cmp(&right.internal_ref.handler_key)
+                });
+                FailureClusterViewModel {
+                    reference: FailureClusterRef { kind },
+                    occurrences,
+                    first_occurred_at_unix_ms,
+                    latest_occurred_at_unix_ms,
+                    coverage,
+                    window,
+                    affected_hooks,
+                }
+            },
+        )
+        .collect::<Vec<_>>();
+    result.sort_by(|left, right| {
+        right
+            .occurrences
+            .cmp(&left.occurrences)
+            .then_with(|| left.reference.kind.cmp(&right.reference.kind))
+    });
+    result
 }
 
 fn risk_order(left: &HookRowViewModel, right: &HookRowViewModel) -> std::cmp::Ordering {
@@ -791,6 +937,33 @@ mod tests {
         assert_eq!(detail.trends.len(), 5);
         assert!(detail.risk.sample_confidence_percent > 50);
         assert!(detail.revision_comparison.previous.is_none());
+    }
+
+    #[test]
+    fn failure_clusters_aggregate_safe_taxonomy_across_affected_hooks() {
+        let now = 1_000;
+        let values = vec![
+            classified_invocation("one", "hk_one", TerminalStatus::Failed, now - 10),
+            classified_invocation("two", "hk_two", TerminalStatus::Failed, now),
+        ];
+        let view = ReliabilityCenterViewModel::from_report(instrumented_report(
+            &values,
+            now,
+            TimeWindow::All,
+            0,
+            0,
+        ));
+        let cluster = view.failure_clusters().first().unwrap();
+        assert_eq!(cluster.occurrences, 2);
+        assert_eq!(cluster.first_occurred_at_unix_ms, now - 10);
+        assert_eq!(cluster.latest_occurred_at_unix_ms, now);
+        assert_eq!(cluster.affected_hooks.len(), 2);
+        assert!(
+            cluster
+                .affected_hooks
+                .iter()
+                .all(|hook| hook.internal_ref.handler_key.starts_with("hk_"))
+        );
     }
 
     #[test]

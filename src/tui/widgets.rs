@@ -100,15 +100,26 @@ fn footer_state(app: &App) -> FooterState {
         FooterState::HelpOverlay
     } else if app.discard_confirmation_open() {
         FooterState::DiscardConfirmation
-    } else if app.settings_save_state() == super::app::SettingsSaveState::Conflict {
+    } else if app.settings_save_state() == super::app::SettingsSaveState::Conflict
+        || (app.alias_editing() && app.alias_save_state() == super::app::AliasSaveState::Conflict)
+    {
         FooterState::ConflictWarning
+    } else if app.alias_text_editing() {
+        FooterState::SettingsEdit
+    } else if app.alias_editing() && app.alias_dirty() {
+        FooterState::DirtyDraft
+    } else if app.alias_editing() {
+        FooterState::SettingsNormal
     } else if app.screen() == Screen::Settings && app.settings_editing() {
         FooterState::SettingsEdit
     } else if app.screen() == Screen::Settings && app.settings_dirty() {
         FooterState::DirtyDraft
     } else if app.screen() == Screen::Settings {
         FooterState::SettingsNormal
-    } else if matches!(app.screen(), Screen::HookDetail | Screen::ChangeDetail) {
+    } else if matches!(
+        app.screen(),
+        Screen::HookDetail | Screen::ChangeDetail | Screen::FailureClusterDetail
+    ) {
         FooterState::Detail
     } else if app.local_list_active() {
         FooterState::LocalList

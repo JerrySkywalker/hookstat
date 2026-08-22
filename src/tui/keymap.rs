@@ -22,6 +22,7 @@ pub enum Command {
     CloseSearch,
     Filter,
     Sort,
+    EditAlias,
     PreviousSetting,
     NextSetting,
 }
@@ -32,7 +33,10 @@ pub fn command_for(key: KeyEvent, search_editing: bool) -> Option<Command> {
     }
     if search_editing {
         return match key.code {
-            KeyCode::Esc | KeyCode::Enter => Some(Command::CloseSearch),
+            // Esc is a true cancel for an alias draft and a harmless close for
+            // an ordinary Catalog search. The App owns that contextual split.
+            KeyCode::Esc => Some(Command::Back),
+            KeyCode::Enter => Some(Command::CloseSearch),
             KeyCode::Backspace => Some(Command::SearchBackspace),
             KeyCode::Char(value)
                 if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
@@ -62,6 +66,7 @@ pub fn command_for(key: KeyEvent, search_editing: bool) -> Option<Command> {
         KeyCode::Char('/') => Some(Command::Search),
         KeyCode::Char('f') => Some(Command::Filter),
         KeyCode::Char('s') => Some(Command::Sort),
+        KeyCode::Char('e') => Some(Command::EditAlias),
         KeyCode::Left | KeyCode::Char('h') => Some(Command::PreviousSetting),
         KeyCode::Right | KeyCode::Char('l') => Some(Command::NextSetting),
         _ => None,
@@ -123,7 +128,7 @@ mod tests {
         );
         assert_eq!(
             command_for(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), true),
-            Some(Command::CloseSearch)
+            Some(Command::Back)
         );
     }
 }

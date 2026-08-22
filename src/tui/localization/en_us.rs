@@ -9,10 +9,12 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::NavDiagnostics => "Diagnostics",
         MessageKey::NavSettings => "Settings",
         MessageKey::ViewOverview => "Reliability overview",
-        MessageKey::ViewHooks => "Hook reliability",
+        MessageKey::ViewHooks => "Hook catalog",
         MessageKey::ViewChanges => "Changes and history",
         MessageKey::ViewChangeDetail => "Change evidence",
         MessageKey::ViewHookDetail => "Hook detail",
+        MessageKey::ViewFailureClusters => "Failure clusters",
+        MessageKey::ViewFailureClusterDetail => "Failure cluster detail",
         MessageKey::ViewDiagnostics => "Read-only diagnostics",
         MessageKey::ViewSettings => "Interface settings",
         MessageKey::SectionNavigation => "Sections",
@@ -26,6 +28,7 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::SectionTrends => "Trends",
         MessageKey::SectionRevisionComparison => "Revision comparison",
         MessageKey::SectionFailureFingerprints => "Failure fingerprints",
+        MessageKey::SectionAlias => "Human alias",
         MessageKey::SectionDiagnostics => "Operational checks",
         MessageKey::SectionInterface => "Human interface",
         MessageKey::FieldRuntime => "Runtime",
@@ -60,6 +63,12 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::FieldFirstSeen => "First seen",
         MessageKey::FieldLastSeen => "Last seen",
         MessageKey::FieldLatestEvidence => "Latest evidence",
+        MessageKey::FieldAlias => "Alias",
+        MessageKey::FieldAffectedHooks => "Affected hooks",
+        MessageKey::FieldOccurrences => "Occurrences",
+        MessageKey::FieldDataFreshness => "Data freshness",
+        MessageKey::FieldRevisionCount => "Historical revisions",
+        MessageKey::FieldObservationStatus => "Observation status",
         MessageKey::ColumnName => "Name",
         MessageKey::ColumnEvent => "Event",
         MessageKey::ColumnRuntime => "Runtime",
@@ -87,6 +96,12 @@ pub const fn text(key: MessageKey) -> &'static str {
             "Language preference changed elsewhere; apply was refused."
         }
         MessageKey::StatePreferenceSaveFailed => "Language preference could not be saved safely.",
+        MessageKey::StateAliasClean => "No pending alias change.",
+        MessageKey::StateAliasDirty => "Alias change is staged; apply to persist it.",
+        MessageKey::StateAliasSaved => "Alias saved in HookStat presentation metadata.",
+        MessageKey::StateAliasConflict => "Alias changed elsewhere; apply was rejected.",
+        MessageKey::StateAliasSaveFailed => "Alias could not be saved safely.",
+        MessageKey::StateObservedInSelectedPeriod => "Observed in selected period",
         MessageKey::StatusHealthy => "✓ Healthy",
         MessageKey::StatusDegraded => "! Degraded",
         MessageKey::StatusCoverageLimited => "! Coverage limited",
@@ -233,12 +248,14 @@ pub const fn text(key: MessageKey) -> &'static str {
         }
         MessageKey::HelpPeriods => "Periods: t Today, 1 24h, 7 7d, 3 30d, a All.",
         MessageKey::HelpHooks => {
-            "Hooks: Enter selects rows; / search, f filter, s sort; Esc leaves the list."
+            "Hook Catalog: Enter selects rows; / search, f filter, s sort; e edits a Human alias in detail."
         }
         MessageKey::HelpChanges => {
             "Changes: Enter selects events, then opens evidence and the ordered revision timeline. Historical rows never prove a hook was removed."
         }
-        MessageKey::HelpDetail => "Hook detail: ↑↓ scroll, PgUp/PgDn page, Esc returns to Hooks.",
+        MessageKey::HelpDetail => {
+            "Hook detail: f opens safe failure clusters; ↑↓ scroll, PgUp/PgDn page, Esc returns to Catalog."
+        }
         MessageKey::HelpSettings => {
             "Settings: Enter edit/done, ↑↓ field, ←→ draft, a Apply, r Revert; q confirms dirty discard."
         }

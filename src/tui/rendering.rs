@@ -9,7 +9,7 @@ use ratatui::{
     widgets::{Cell, Paragraph, Row, Table, Wrap},
 };
 
-use super::app::{App, Screen, SettingsField, SettingsSaveState};
+use super::app::{AliasSaveState, App, Screen, SettingsField, SettingsSaveState};
 use super::layout::{ApplicationShell, ShellLayout};
 use super::localization::{
     LanguageState, MessageKey, ResolvedLocale, coverage_name, diagnostic_explanation,
@@ -122,6 +122,14 @@ fn render_content(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoca
             render_change_detail(frame, area, app, locale, theme);
             return;
         }
+        Screen::FailureClusters => {
+            render_failure_clusters(frame, area, app, locale, theme);
+            return;
+        }
+        Screen::FailureClusterDetail => {
+            render_failure_cluster_detail(frame, area, app, locale, theme);
+            return;
+        }
         Screen::Overview
         | Screen::Hooks
         | Screen::Diagnostics
@@ -150,7 +158,10 @@ fn render_content(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoca
     match app.screen() {
         Screen::Overview => render_overview(frame, area, app, locale, theme),
         Screen::Hooks => render_hooks(frame, area, app, locale, theme),
-        Screen::Changes | Screen::ChangeDetail => unreachable!("handled before reliability view"),
+        Screen::Changes
+        | Screen::ChangeDetail
+        | Screen::FailureClusters
+        | Screen::FailureClusterDetail => unreachable!("handled before reliability view"),
         Screen::Diagnostics => match app.diagnostics() {
             Some(diagnostics) => render_diagnostics(frame, area, diagnostics, locale, theme),
             None => {
@@ -271,6 +282,17 @@ fn settings_message(locale: ResolvedLocale, state: SettingsSaveState) -> &'stati
         SettingsSaveState::Saved => MessageKey::StatePreferenceSaved,
         SettingsSaveState::Conflict => MessageKey::StatePreferenceConflict,
         SettingsSaveState::Failed => MessageKey::StatePreferenceSaveFailed,
+    };
+    t(locale, key)
+}
+
+fn alias_save_message(locale: ResolvedLocale, state: AliasSaveState) -> &'static str {
+    let key = match state {
+        AliasSaveState::Clean => MessageKey::StateAliasClean,
+        AliasSaveState::Dirty => MessageKey::StateAliasDirty,
+        AliasSaveState::Saved => MessageKey::StateAliasSaved,
+        AliasSaveState::Conflict => MessageKey::StateAliasConflict,
+        AliasSaveState::Failed => MessageKey::StateAliasSaveFailed,
     };
     t(locale, key)
 }
@@ -1044,14 +1066,17 @@ fn render_hook_detail(
 ) {
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(12), Constraint::Min(9)])
+        .constraints([
+            Constraint::Length(if app.alias_editing() { 15 } else { 12 }),
+            Constraint::Min(9),
+        ])
         .split(area);
     let identity = display_identity(
         locale,
         &detail.display_identity,
         detail.display_disambiguator,
     );
-    let facts = vec![
+    let mut facts = vec![
         Line::from(Span::styled(
             period_selector(app, locale),
             theme.typography_style(TypographyRole::Metadata),
@@ -1106,6 +1131,19 @@ fn render_hook_detail(
             theme,
         ),
     ];
+    if let Some(alias) = app.alias_draft() {
+        let marker = if app.alias_text_editing() { ">" } else { " " };
+        facts.push(key_value_line(
+            locale,
+            MessageKey::SectionAlias,
+            &format!("{marker} {alias}"),
+            theme,
+        ));
+        facts.push(Line::from(Span::styled(
+            alias_save_message(locale, app.alias_save_state()),
+            theme.typography_style(TypographyRole::Metadata),
+        )));
+    }
     frame.render_widget(
         Paragraph::new(facts)
             .block(themed_block(&identity, theme))
@@ -1139,6 +1177,32 @@ fn render_hook_detail(
         .collect::<Vec<_>>()
         .join("\n");
     let revision = revision_detail(locale, &detail.revision_comparison);
+    let catalog_history = app.selected_catalog_history().map_or_else(
+        || {
+            format!(
+                "{}: {}",
+                t(locale, MessageKey::FieldDataFreshness),
+                t(locale, MessageKey::StateLoading)
+            )
+        },
+        |history| {
+            format!(
+                "{}: {} · {}: {} · {}: {}\n{}: {} · {}: {} · {}: {}",
+                t(locale, MessageKey::FieldFirstSeen),
+                history.first_seen_unix_ms,
+                t(locale, MessageKey::FieldLastSeen),
+                history.last_seen_unix_ms,
+                t(locale, MessageKey::FieldLatestEvidence),
+                history.latest_evidence_unix_ms,
+                t(locale, MessageKey::FieldRevisionCount),
+                history.revision_count,
+                t(locale, MessageKey::FieldObservationStatus),
+                catalog_observation_status(locale, history.historical_status),
+                t(locale, MessageKey::FieldDataFreshness),
+                history.latest_evidence_unix_ms,
+            )
+        },
+    );
     let fingerprints = if detail.failure_fingerprints.is_empty() {
         t(locale, MessageKey::StateNoRecentFailures).to_owned()
     } else {
@@ -1147,16 +1211,20 @@ fn render_hook_detail(
             .iter()
             .map(|cluster| {
                 format!(
-                    "{}: {}",
+                    "{}: {} · {} {} · {} {}",
                     fingerprint_name(locale, cluster.kind),
                     cluster.occurrences,
+                    t(locale, MessageKey::FieldFirstSeen),
+                    cluster.first_occurred_at_unix_ms,
+                    t(locale, MessageKey::FieldLatestEvidence),
+                    cluster.latest_occurred_at_unix_ms,
                 )
             })
             .collect::<Vec<_>>()
             .join(" · ")
     };
     let body = format!(
-        "{}: {} · {}: {} · {}: {}\n{}: {} · {}: {} · {}: {}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}",
+        "{catalog_history}\n\n{}: {} · {}: {} · {}: {}\n{}: {} · {}: {} · {}: {}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}",
         t(locale, MessageKey::FieldSuccesses),
         terminal.completed,
         t(locale, MessageKey::FieldFailures),
@@ -1218,6 +1286,238 @@ fn render_hook_detail(
             .scroll((app.detail_scroll_lines(), 0)),
         sections[1],
     );
+}
+
+fn render_failure_clusters(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    locale: ResolvedLocale,
+    theme: Theme,
+) {
+    let clusters = app.failure_clusters();
+    if clusters.is_empty() {
+        render_state_panel(
+            frame,
+            area,
+            t(locale, MessageKey::ViewFailureClusters),
+            t(locale, MessageKey::StateNoRecentFailures),
+            ColorRole::Info,
+            theme,
+        );
+        return;
+    }
+    let selected_index = app.selected_failure_cluster().map_or(0, |selected| {
+        clusters
+            .iter()
+            .position(|cluster| cluster.reference == selected)
+            .unwrap_or(0)
+    });
+    if area.width < 58 {
+        let rows = visible_rows(
+            clusters,
+            selected_index,
+            area.height.saturating_sub(2) as usize / 3,
+        );
+        let content = rows
+            .iter()
+            .map(|cluster| {
+                let marker = if app.selected_failure_cluster() == Some(cluster.reference) {
+                    ">"
+                } else {
+                    " "
+                };
+                format!(
+                    "{marker} {}\n  {}: {} · {}: {}\n  {}: {}",
+                    fingerprint_name(locale, cluster.reference.kind),
+                    t(locale, MessageKey::FieldOccurrences),
+                    cluster.occurrences,
+                    t(locale, MessageKey::FieldAffectedHooks),
+                    cluster.affected_hooks.len(),
+                    t(locale, MessageKey::FieldLatestEvidence),
+                    cluster.latest_occurred_at_unix_ms,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        frame.render_widget(
+            Paragraph::new(content)
+                .style(theme.typography_style(TypographyRole::Value))
+                .block(themed_block(
+                    t(locale, MessageKey::ViewFailureClusters),
+                    theme,
+                ))
+                .wrap(Wrap { trim: true }),
+            area,
+        );
+        return;
+    }
+    let rows = visible_rows(
+        clusters,
+        selected_index,
+        area.height.saturating_sub(3) as usize,
+    );
+    let header = Row::new([
+        t(locale, MessageKey::SectionFailureFingerprints),
+        t(locale, MessageKey::FieldOccurrences),
+        t(locale, MessageKey::FieldAffectedHooks),
+        t(locale, MessageKey::FieldFirstSeen),
+        t(locale, MessageKey::FieldLatestEvidence),
+    ])
+    .style(theme.typography_style(TypographyRole::SectionTitle));
+    let rows = rows.iter().map(|cluster| {
+        let style = if app.selected_failure_cluster() == Some(cluster.reference)
+            && app.local_list_active()
+        {
+            theme.color_style(ColorRole::Selected)
+        } else {
+            theme.typography_style(TypographyRole::Value)
+        };
+        Row::new(vec![
+            Cell::from(fingerprint_name(locale, cluster.reference.kind)),
+            Cell::from(cluster.occurrences.to_string()),
+            Cell::from(cluster.affected_hooks.len().to_string()),
+            Cell::from(cluster.first_occurred_at_unix_ms.to_string()),
+            Cell::from(cluster.latest_occurred_at_unix_ms.to_string()),
+        ])
+        .style(style)
+    });
+    frame.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Min(18),
+                Constraint::Length(14),
+                Constraint::Length(16),
+                Constraint::Length(18),
+                Constraint::Length(18),
+            ],
+        )
+        .header(header)
+        .block(themed_block(
+            t(locale, MessageKey::ViewFailureClusters),
+            theme,
+        )),
+        area,
+    );
+}
+
+fn render_failure_cluster_detail(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    locale: ResolvedLocale,
+    theme: Theme,
+) {
+    let cluster = app.selected_failure_cluster().and_then(|reference| {
+        app.view_model()
+            .and_then(|view| view.failure_cluster(reference))
+    });
+    let Some(cluster) = cluster else {
+        render_state_panel(
+            frame,
+            area,
+            t(locale, MessageKey::ViewFailureClusterDetail),
+            t(locale, MessageKey::StateEmpty),
+            ColorRole::Warning,
+            theme,
+        );
+        return;
+    };
+    let affected = cluster
+        .affected_hooks
+        .iter()
+        .map(|hook| {
+            format!(
+                "{} · {}",
+                display_identity(locale, &hook.display_identity, hook.display_disambiguator),
+                event_name(locale, hook.event),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let facts = vec![
+        key_value_line(
+            locale,
+            MessageKey::SectionFailureFingerprints,
+            fingerprint_name(locale, cluster.reference.kind),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldOccurrences,
+            &cluster.occurrences.to_string(),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldWindow,
+            window_name(locale, cluster.window),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldCoverage,
+            coverage_name(locale, cluster.coverage),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldFirstSeen,
+            &cluster.first_occurred_at_unix_ms.to_string(),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldLatestEvidence,
+            &cluster.latest_occurred_at_unix_ms.to_string(),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldDataFreshness,
+            &cluster.latest_occurred_at_unix_ms.to_string(),
+            theme,
+        ),
+    ];
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(11), Constraint::Min(6)])
+        .split(area);
+    frame.render_widget(
+        Paragraph::new(facts)
+            .block(themed_block(
+                t(locale, MessageKey::ViewFailureClusterDetail),
+                theme,
+            ))
+            .wrap(Wrap { trim: true }),
+        sections[0],
+    );
+    frame.render_widget(
+        Paragraph::new(affected)
+            .style(theme.typography_style(TypographyRole::Value))
+            .block(themed_block(
+                t(locale, MessageKey::FieldAffectedHooks),
+                theme,
+            ))
+            .wrap(Wrap { trim: true })
+            .scroll((app.detail_scroll_lines(), 0)),
+        sections[1],
+    );
+}
+
+fn catalog_observation_status(
+    locale: ResolvedLocale,
+    status: crate::workbench::HistoricalStatus,
+) -> &'static str {
+    match status {
+        crate::workbench::HistoricalStatus::ObservedInSelectedPeriod => {
+            t(locale, MessageKey::StateObservedInSelectedPeriod)
+        }
+        crate::workbench::HistoricalStatus::HistoricalOutsideSelectedPeriod => {
+            t(locale, MessageKey::StateHistoricalOnly)
+        }
+    }
 }
 
 fn visible_rows<T>(rows: &[T], selected_index: usize, capacity: usize) -> &[T] {
@@ -1702,6 +2002,31 @@ mod tests {
         assert!(detail.contains("首次发现"));
         assert!(detail.contains("最后发现"));
         assert!(detail.contains("修订版本"));
+    }
+
+    #[test]
+    fn catalog_alias_and_failure_cluster_surfaces_are_bilingual_and_narrow_safe() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.handle(super::super::keymap::Command::Enter);
+        assert_eq!(app.screen(), Screen::HookDetail);
+        app.handle(super::super::keymap::Command::EditAlias);
+        app.handle(super::super::keymap::Command::SearchInput('名'));
+        let chinese = rendered(app.clone(), ResolvedLocale::ZhCn, 100, 40).replace(' ', "");
+        assert!(chinese.contains("人类别名"));
+        assert!(chinese.contains("别名变更已暂存"));
+
+        app.handle(super::super::keymap::Command::Back);
+        app.handle(super::super::keymap::Command::Filter);
+        assert_eq!(app.screen(), Screen::FailureClusters);
+        let english = rendered(app.clone(), ResolvedLocale::EnUs, 100, 30);
+        assert!(english.contains("Failure clusters"));
+        assert!(english.contains("Occurrences"));
+        assert!(rendered(app.clone(), ResolvedLocale::EnUs, 44, 16).contains("Failure"));
+        app.handle(super::super::keymap::Command::Enter);
+        assert_eq!(app.screen(), Screen::FailureClusterDetail);
+        let detail = rendered(app, ResolvedLocale::EnUs, 100, 30);
+        assert!(detail.contains("Affected hooks"));
+        assert!(detail.contains("Coverage"));
     }
 
     #[test]
