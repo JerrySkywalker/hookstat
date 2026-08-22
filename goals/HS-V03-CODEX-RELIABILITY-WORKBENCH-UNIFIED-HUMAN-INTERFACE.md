@@ -165,7 +165,7 @@ Evaluate and select one reuse strategy:
 Conceptually:
 
 ```text
-jerry-terminal-ui
+terminal-ui-contract
   ├ shell/layout
   ├ Human chrome style
   ├ navigation

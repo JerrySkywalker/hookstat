@@ -1,7 +1,7 @@
 //! Semantic theme and typography tokens for the internal terminal UI system.
 
-use jerry_terminal_ui::chrome::ChromeToken;
 use ratatui::style::{Color, Modifier, Style};
+use terminal_ui_contract::chrome::ChromeToken;
 
 use crate::interface_preferences::InterfaceColor;
 

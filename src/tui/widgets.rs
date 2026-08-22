@@ -1,14 +1,14 @@
 //! Reusable visual containers for the terminal UI system.
 
-use jerry_terminal_ui::{
-    footer::{FooterAction, FooterState, format_footer},
-    text::truncate_to_width as shared_truncate_to_width,
-};
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph, Wrap},
+};
+use terminal_ui_contract::{
+    footer::{FooterAction, FooterState, format_footer},
+    text::truncate_to_width as shared_truncate_to_width,
 };
 #[cfg(test)]
 use unicode_width::UnicodeWidthStr;
@@ -22,7 +22,7 @@ pub fn themed_block(title: &str, theme: Theme) -> Block<'_> {
     Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(theme.chrome_style(jerry_terminal_ui::chrome::ChromeToken::Border))
+        .border_style(theme.chrome_style(terminal_ui_contract::chrome::ChromeToken::Border))
 }
 
 pub fn render_title(
@@ -39,7 +39,7 @@ pub fn render_title(
         ),
         Span::raw(format!(" — {overall_status}")),
     ]))
-    .style(theme.chrome_style(jerry_terminal_ui::chrome::ChromeToken::Base))
+    .style(theme.chrome_style(terminal_ui_contract::chrome::ChromeToken::Base))
     .alignment(Alignment::Left)
     .block(
         Block::default()
@@ -62,9 +62,9 @@ pub fn render_navigation(
             let current = *route == navigation.current();
             let marker = if current { ">" } else { " " };
             let style = if current {
-                theme.chrome_style(jerry_terminal_ui::chrome::ChromeToken::CurrentScreen)
+                theme.chrome_style(terminal_ui_contract::chrome::ChromeToken::CurrentScreen)
             } else {
-                theme.chrome_style(jerry_terminal_ui::chrome::ChromeToken::Base)
+                theme.chrome_style(terminal_ui_contract::chrome::ChromeToken::Base)
             };
             Line::from(Span::styled(
                 format!("{marker} {}", route_label(locale, *route)),
@@ -90,7 +90,7 @@ pub fn render_shortcut_footer(
     let footer = format_footer(state, |action| footer_action_text(locale, action));
     frame.render_widget(
         Paragraph::new(truncate_to_width(&footer, area.width as usize))
-            .style(theme.chrome_style(jerry_terminal_ui::chrome::ChromeToken::Footer)),
+            .style(theme.chrome_style(terminal_ui_contract::chrome::ChromeToken::Footer)),
         area,
     );
 }

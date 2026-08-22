@@ -8,14 +8,14 @@ COPY_PASTE_STATE_MACHINE_BASELINE=false
 TABBEACON_REMAINS_REFERENCE=true
 HOOKSTAT_DOMAIN_BOUNDARY_EXPLICIT=true
 SHARED_UI_STRATEGY=dedicated dependency-neutral crate with product adapters
-SHARED_UI_REPO=JerrySkywalker/jerry-terminal-ui
-SHARED_UI_SHA=5bf1db60ba911c5ea7a01c7f7ef3924f730a0054
-SHARED_UI_CRATES_IO_PUBLISHED=false
+SHARED_UI_REPO=JerrySkywalker/terminal-ui-contract
+SHARED_UI_SHA=7fde0040f3135e2772461833846b5525732564ea
+SHARED_UI_CRATES_IO_PUBLISHED=true
 ```
 
-`jerry-terminal-ui` is a Rust 2024 / MSRV 1.97.1 MIT infrastructure crate.
+`terminal-ui-contract` is a Rust 2024 / MSRV 1.97.1 MIT infrastructure crate.
 It exposes no Ratatui, Crossterm, HookStat, or TabBeacon type. Both consumers
-pin the exact Git revision above while the crate is unpublished.
+bind the exact crates.io `0.1.0` release above.
 
 ## Shared ownership
 
@@ -46,8 +46,6 @@ input-admission, locale-precedence, or chrome implementation.
 
 ## Future publication ordering
 
-The Git pin is for reproducible development only. Before any crates.io
-consumer release: publish and verify `jerry-terminal-ui` first; update each
-consumer from the Git revision to the released semver dependency; then run
-that consumer's package/install gates before publishing it. This train creates
-no tag, GitHub Release, or crates.io publication.
+The published registry binding is required before a consumer release. Verify
+`terminal-ui-contract` first, bind consumers to its exact released semver
+dependency, then run each consumer's package/install gates before publishing.

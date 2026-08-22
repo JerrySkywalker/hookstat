@@ -6,7 +6,7 @@ use crate::domain::{HookInvocation, Runtime};
 use crate::interface_preferences::InterfaceColor;
 use crate::report::{MachineReport, instrumented_report};
 use crate::workbench::{ChangesWorkbench, changes_workbench};
-use jerry_terminal_ui::interaction::{
+use terminal_ui_contract::interaction::{
     DiscardDecision, OverlayDismissKey, OverlayState, QuitDisposition, SettingsEditor,
 };
 

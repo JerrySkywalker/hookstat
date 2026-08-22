@@ -1,7 +1,7 @@
 //! Responsive application-shell geometry.
 
-use jerry_terminal_ui::layout::HUMAN_SHELL;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use terminal_ui_contract::layout::HUMAN_SHELL;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ApplicationShell;

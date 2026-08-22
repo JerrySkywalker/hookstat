@@ -1,6 +1,6 @@
 //! Top-level route state delegated to the shared Human interface core.
 
-use jerry_terminal_ui::navigation::TopLevelNavigation;
+use terminal_ui_contract::navigation::TopLevelNavigation;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Route {

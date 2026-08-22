@@ -8,7 +8,7 @@ use crate::analytics::{
 };
 use crate::domain::{EvidenceCoverage, HookEvent, Runtime, TerminalStatus};
 use crate::tui::view_model::{DiagnosticCheckId, DiagnosticStatus, Health, HookSort};
-use jerry_terminal_ui::locale::{
+use terminal_ui_contract::locale::{
     Locale as SharedLocale, LocaleInputs as SharedLocaleInputs, LocaleSource as SharedLocaleSource,
     resolve_locale as resolve_shared_locale,
 };

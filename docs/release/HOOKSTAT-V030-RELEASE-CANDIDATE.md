@@ -13,7 +13,7 @@ or GitHub Release.
   and revision history views derived solely from admitted evidence.
 - Hook Catalog with Human aliases, revision metadata, selected-period sample
   confidence, freshness, compact trends, and bounded failure exploration.
-- Shared `jerry-terminal-ui` `=0.1.0` implementation boundary for the
+- Shared `terminal-ui-contract` `=0.1.0` implementation boundary for the
   TabBeacon-compatible Human shell, navigation, footer, editing, Help, locale,
   CJK-safe layout, and terminal lifecycle.
 

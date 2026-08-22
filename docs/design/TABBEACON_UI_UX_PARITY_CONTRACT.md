@@ -428,7 +428,7 @@ v0.3 therefore MUST select an enforceable reuse strategy.
 Preferred conceptual package:
 
 ```text
-jerry-terminal-ui
+terminal-ui-contract
   ├ shell/layout
   ├ header/sidebar/footer chrome
   ├ top-level navigation
