@@ -18,6 +18,7 @@ pub mod receipt;
 pub mod render;
 pub mod report;
 pub mod tui;
+pub mod workbench;
 
 pub use domain::{EvidenceAdmission, EvidenceCoverage, EvidenceSourceClass, SourceQualification};
 pub use report::{MachineReport, instrumented_report, synthetic_fixture_report};

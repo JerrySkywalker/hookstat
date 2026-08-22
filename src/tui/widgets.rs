@@ -108,7 +108,7 @@ fn footer_state(app: &App) -> FooterState {
         FooterState::DirtyDraft
     } else if app.screen() == Screen::Settings {
         FooterState::SettingsNormal
-    } else if app.screen() == Screen::HookDetail {
+    } else if matches!(app.screen(), Screen::HookDetail | Screen::ChangeDetail) {
         FooterState::Detail
     } else if app.local_list_active() {
         FooterState::LocalList
@@ -181,6 +181,7 @@ fn route_label(locale: ResolvedLocale, route: Route) -> &'static str {
     let key = match route {
         Route::Overview => MessageKey::NavOverview,
         Route::Hooks => MessageKey::NavHooks,
+        Route::Changes => MessageKey::NavChanges,
         Route::Diagnostics => MessageKey::NavDiagnostics,
         Route::Settings => MessageKey::NavSettings,
     };

@@ -5,16 +5,20 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::AppTitle => "HookStat Reliability Center",
         MessageKey::NavOverview => "Overview",
         MessageKey::NavHooks => "Hooks",
+        MessageKey::NavChanges => "Changes",
         MessageKey::NavDiagnostics => "Diagnostics",
         MessageKey::NavSettings => "Settings",
         MessageKey::ViewOverview => "Reliability overview",
         MessageKey::ViewHooks => "Hook reliability",
+        MessageKey::ViewChanges => "Changes and history",
+        MessageKey::ViewChangeDetail => "Change evidence",
         MessageKey::ViewHookDetail => "Hook detail",
         MessageKey::ViewDiagnostics => "Read-only diagnostics",
         MessageKey::ViewSettings => "Interface settings",
         MessageKey::SectionNavigation => "Sections",
         MessageKey::SectionRuntimeSummary => "Runtime summary",
         MessageKey::SectionRiskyHooks => "Risky hooks",
+        MessageKey::SectionChanges => "Recent changes",
         MessageKey::SectionRecentFailures => "Recent failures",
         MessageKey::SectionTerminalBreakdown => "Terminal breakdown",
         MessageKey::SectionTimeline => "Timeline",
@@ -53,6 +57,9 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::FieldPreviousPeriod => "Previous period",
         MessageKey::FieldRecency => "Recency",
         MessageKey::FieldImpact => "Impact",
+        MessageKey::FieldFirstSeen => "First seen",
+        MessageKey::FieldLastSeen => "Last seen",
+        MessageKey::FieldLatestEvidence => "Latest evidence",
         MessageKey::ColumnName => "Name",
         MessageKey::ColumnEvent => "Event",
         MessageKey::ColumnRuntime => "Runtime",
@@ -70,6 +77,9 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::StateInsufficientSamples => "Insufficient samples",
         MessageKey::StateCoverageLimited => "Coverage limited",
         MessageKey::StateNoRecentFailures => "No recent execution failures in this window.",
+        MessageKey::StateHistoricalOnly => {
+            "Historical outside this period; this is not an inactive or removed-hook claim."
+        }
         MessageKey::StatePreferenceClean => "No pending language change.",
         MessageKey::StatePreferenceDirty => "Language change is staged; apply to persist it.",
         MessageKey::StatePreferenceSaved => "Language preference saved locally.",
@@ -86,6 +96,10 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::StatusImprovement => "↓ Improvement",
         MessageKey::StatusStable => "→ Stable",
         MessageKey::StatusInsufficientEvidence => "Insufficient evidence",
+        MessageKey::ChangeRegression => "Regression",
+        MessageKey::ChangeRecovery => "Recovery",
+        MessageKey::ChangeRevision => "Revision change",
+        MessageKey::ChangeNewHook => "New admitted hook",
         MessageKey::DiagnosticPass => "Pass",
         MessageKey::DiagnosticWarning => "Attention",
         MessageKey::DiagnosticFail => "Fail",
@@ -220,6 +234,9 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::HelpPeriods => "Periods: t Today, 1 24h, 7 7d, 3 30d, a All.",
         MessageKey::HelpHooks => {
             "Hooks: Enter selects rows; / search, f filter, s sort; Esc leaves the list."
+        }
+        MessageKey::HelpChanges => {
+            "Changes: Enter selects events, then opens evidence and the ordered revision timeline. Historical rows never prove a hook was removed."
         }
         MessageKey::HelpDetail => "Hook detail: ↑↓ scroll, PgUp/PgDn page, Esc returns to Hooks.",
         MessageKey::HelpSettings => {

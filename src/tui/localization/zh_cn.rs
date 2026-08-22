@@ -5,16 +5,20 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::AppTitle => "HookStat 可靠性中心",
         MessageKey::NavOverview => "概览",
         MessageKey::NavHooks => "钩子",
+        MessageKey::NavChanges => "变更",
         MessageKey::NavDiagnostics => "诊断",
         MessageKey::NavSettings => "设置",
         MessageKey::ViewOverview => "可靠性概览",
         MessageKey::ViewHooks => "钩子可靠性",
+        MessageKey::ViewChanges => "变更与历史",
+        MessageKey::ViewChangeDetail => "变更证据",
         MessageKey::ViewHookDetail => "钩子详情",
         MessageKey::ViewDiagnostics => "只读诊断",
         MessageKey::ViewSettings => "界面设置",
         MessageKey::SectionNavigation => "分区",
         MessageKey::SectionRuntimeSummary => "运行时摘要",
         MessageKey::SectionRiskyHooks => "高风险钩子",
+        MessageKey::SectionChanges => "最近变更",
         MessageKey::SectionRecentFailures => "最近失败",
         MessageKey::SectionTerminalBreakdown => "终止状态明细",
         MessageKey::SectionTimeline => "时间线",
@@ -53,6 +57,9 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::FieldPreviousPeriod => "上一周期",
         MessageKey::FieldRecency => "近期性",
         MessageKey::FieldImpact => "影响",
+        MessageKey::FieldFirstSeen => "首次发现",
+        MessageKey::FieldLastSeen => "最后发现",
+        MessageKey::FieldLatestEvidence => "最新证据",
         MessageKey::ColumnName => "名称",
         MessageKey::ColumnEvent => "事件",
         MessageKey::ColumnRuntime => "运行时",
@@ -68,6 +75,7 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::StateInsufficientSamples => "样本不足",
         MessageKey::StateCoverageLimited => "覆盖范围受限",
         MessageKey::StateNoRecentFailures => "此时间范围内没有最近的执行失败。",
+        MessageKey::StateHistoricalOnly => "仅在此周期外有历史记录；这不表示钩子已停用或移除。",
         MessageKey::StatePreferenceClean => "没有待应用的语言变更。",
         MessageKey::StatePreferenceDirty => "语言变更已暂存；应用后才会保存。",
         MessageKey::StatePreferenceSaved => "语言偏好已保存到本地。",
@@ -82,6 +90,10 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::StatusImprovement => "↓ 改善",
         MessageKey::StatusStable => "→ 稳定",
         MessageKey::StatusInsufficientEvidence => "证据不足",
+        MessageKey::ChangeRegression => "回归",
+        MessageKey::ChangeRecovery => "恢复",
+        MessageKey::ChangeRevision => "修订版本变更",
+        MessageKey::ChangeNewHook => "新接纳钩子",
         MessageKey::DiagnosticPass => "通过",
         MessageKey::DiagnosticWarning => "需注意",
         MessageKey::DiagnosticFail => "失败",
@@ -209,6 +221,9 @@ pub const fn text(key: MessageKey) -> &'static str {
             "周期：t 今天，1 过去 24 小时，7 过去 7 天，3 过去 30 天，a 全部。"
         }
         MessageKey::HelpHooks => "钩子：Enter 选择行；/ 搜索，f 筛选，s 排序；Esc 离开列表。",
+        MessageKey::HelpChanges => {
+            "变更：Enter 选择事件后打开证据和有序修订时间线。历史记录绝不证明钩子已被移除。"
+        }
         MessageKey::HelpDetail => "钩子详情：↑↓ 滚动，PgUp/PgDn 翻页，Esc 返回钩子。",
         MessageKey::HelpSettings => {
             "设置：Enter 编辑/完成，↑↓ 选择字段，←→ 调整草稿，a 应用，r 还原；草稿有更改时 q 会确认。"

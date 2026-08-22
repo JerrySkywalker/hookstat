@@ -5,6 +5,7 @@ use crate::diagnostics::DiagnosticsReport;
 use crate::domain::HookInvocation;
 use crate::interface_preferences::InterfaceColor;
 use crate::report::{MachineReport, instrumented_report};
+use crate::workbench::{ChangesWorkbench, changes_workbench};
 use jerry_terminal_ui::interaction::{
     DiscardDecision, OverlayDismissKey, OverlayState, QuitDisposition, SettingsEditor,
 };
@@ -15,12 +16,17 @@ use super::navigation::{NavigationState, Route};
 use super::state::ResourceState;
 #[cfg(test)]
 use super::view_model::HookSort;
-use super::view_model::{HandlerRef, HookRowViewModel, HooksQuery, ReliabilityCenterViewModel};
+use super::view_model::{
+    ChangeRef, ChangeRowViewModel, ChangesViewModel, HandlerRef, HookRowViewModel, HooksQuery,
+    ReliabilityCenterViewModel,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
     Overview,
     Hooks,
+    Changes,
+    ChangeDetail,
     HookDetail,
     Diagnostics,
     Settings,
@@ -30,6 +36,7 @@ pub enum Screen {
 enum LocalMode {
     None,
     HooksList,
+    ChangesList,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,6 +57,21 @@ impl RefreshReason {
 pub enum DiagnosticsRefreshReason {
     Initial,
     Explicit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChangesRefreshReason {
+    Entered(TimeWindow),
+    Window(TimeWindow),
+    Explicit(TimeWindow),
+}
+
+impl ChangesRefreshReason {
+    pub const fn window(self) -> TimeWindow {
+        match self {
+            Self::Entered(window) | Self::Window(window) | Self::Explicit(window) => window,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -93,12 +115,41 @@ impl RefreshSnapshot {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct ChangesSnapshot {
+    view_model: ChangesViewModel,
+}
+
+impl ChangesSnapshot {
+    pub fn from_values(
+        values: Vec<HookInvocation>,
+        generated_at_unix_ms: i64,
+        window: TimeWindow,
+        coverage: crate::domain::EvidenceCoverage,
+    ) -> Self {
+        Self::from_workbench(changes_workbench(
+            &values,
+            generated_at_unix_ms,
+            window,
+            coverage,
+        ))
+    }
+
+    pub fn from_workbench(workbench: ChangesWorkbench) -> Self {
+        Self {
+            view_model: ChangesViewModel::from_workbench(workbench),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AppEffect {
     None,
     Quit,
     RequestRefresh(RefreshReason),
     RequestDiagnostics(DiagnosticsRefreshReason),
+    RequestChanges(ChangesRefreshReason),
+    RequestRefreshAndChanges(RefreshReason, ChangesRefreshReason),
     ApplyInterface {
         language: InterfaceLanguage,
         color: InterfaceColor,
@@ -132,12 +183,16 @@ pub struct App {
     help_overlay: OverlayState,
     requested_window: TimeWindow,
     selected_handler: Option<HandlerRef>,
+    selected_change: Option<ChangeRef>,
     view: ResourceState<ReliabilityCenterViewModel>,
     diagnostics: ResourceState<DiagnosticsReport>,
+    changes: ResourceState<ChangesViewModel>,
     hooks_query: HooksQuery,
     visible_hooks: Vec<HookRowViewModel>,
+    visible_changes: Vec<ChangeRowViewModel>,
     search_editing: bool,
     detail_scroll_lines: u16,
+    changes_detail_scroll_lines: u16,
     accepted_language: InterfaceLanguage,
     draft_language: InterfaceLanguage,
     accepted_color: InterfaceColor,
@@ -166,16 +221,20 @@ impl App {
             help_overlay: OverlayState::None,
             requested_window: window,
             selected_handler: None,
+            selected_change: None,
             view: ResourceState::Loading {
                 last_accepted: None,
             },
             diagnostics: ResourceState::Loading {
                 last_accepted: None,
             },
+            changes: ResourceState::Empty,
             hooks_query: HooksQuery::default(),
             visible_hooks: Vec::new(),
+            visible_changes: Vec::new(),
             search_editing: false,
             detail_scroll_lines: 0,
+            changes_detail_scroll_lines: 0,
             accepted_language: InterfaceLanguage::Auto,
             draft_language: InterfaceLanguage::Auto,
             accepted_color: InterfaceColor::Auto,
@@ -202,12 +261,16 @@ impl App {
             help_overlay: OverlayState::None,
             requested_window: view_model.overview.window,
             selected_handler,
+            selected_change: None,
             view: ResourceState::Ready(view_model),
             diagnostics: ResourceState::Ready(diagnostics),
+            changes: ResourceState::Empty,
             hooks_query,
             visible_hooks,
+            visible_changes: Vec::new(),
             search_editing: false,
             detail_scroll_lines: 0,
+            changes_detail_scroll_lines: 0,
             accepted_language: InterfaceLanguage::Auto,
             draft_language: InterfaceLanguage::Auto,
             accepted_color: InterfaceColor::Auto,
@@ -245,12 +308,28 @@ impl App {
         self.diagnostics.accepted()
     }
 
+    pub const fn changes_state(&self) -> &ResourceState<ChangesViewModel> {
+        &self.changes
+    }
+
+    pub fn changes(&self) -> Option<&ChangesViewModel> {
+        self.changes.accepted()
+    }
+
     pub fn selected_handler(&self) -> Option<&HandlerRef> {
         self.selected_handler.as_ref()
     }
 
+    pub fn selected_change(&self) -> Option<&ChangeRef> {
+        self.selected_change.as_ref()
+    }
+
     pub const fn detail_scroll_lines(&self) -> u16 {
         self.detail_scroll_lines
+    }
+
+    pub const fn changes_detail_scroll_lines(&self) -> u16 {
+        self.changes_detail_scroll_lines
     }
 
     pub const fn hooks_query(&self) -> &HooksQuery {
@@ -298,11 +377,18 @@ impl App {
     }
 
     pub const fn local_list_active(&self) -> bool {
-        matches!(self.local_mode, LocalMode::HooksList)
+        matches!(
+            self.local_mode,
+            LocalMode::HooksList | LocalMode::ChangesList
+        )
     }
 
     const fn hooks_list_active(&self) -> bool {
-        self.local_list_active()
+        matches!(self.local_mode, LocalMode::HooksList)
+    }
+
+    const fn changes_list_active(&self) -> bool {
+        matches!(self.local_mode, LocalMode::ChangesList)
     }
 
     pub const fn settings_save_state(&self) -> SettingsSaveState {
@@ -349,14 +435,8 @@ impl App {
                 AppEffect::None
             }
             Command::Discard => AppEffect::None,
-            Command::Up => {
-                self.move_direction(-1);
-                AppEffect::None
-            }
-            Command::Down => {
-                self.move_direction(1);
-                AppEffect::None
-            }
+            Command::Up => self.move_direction(-1),
+            Command::Down => self.move_direction(1),
             Command::PageUp => {
                 self.page_content(-1);
                 AppEffect::None
@@ -373,6 +453,15 @@ impl App {
                 } else if self.screen == Screen::Hooks && !self.hooks_list_active() {
                     self.local_mode = LocalMode::HooksList;
                     self.repair_handler_selection();
+                } else if self.screen == Screen::Changes && !self.changes_list_active() {
+                    self.local_mode = LocalMode::ChangesList;
+                    self.repair_change_selection();
+                } else if self.screen == Screen::Changes
+                    && self.changes_list_active()
+                    && self.selected_change.is_some()
+                {
+                    self.screen = Screen::ChangeDetail;
+                    self.changes_detail_scroll_lines = 0;
                 } else if matches!(self.screen, Screen::Overview | Screen::Hooks)
                     && self.selected_handler.is_some()
                 {
@@ -394,6 +483,14 @@ impl App {
                     self.repair_handler_selection();
                 } else if self.screen == Screen::Hooks && self.hooks_list_active() {
                     self.local_mode = LocalMode::None;
+                } else if self.screen == Screen::ChangeDetail {
+                    self.navigation.activate(Route::Changes);
+                    self.screen = Screen::Changes;
+                    self.local_mode = LocalMode::ChangesList;
+                    self.changes_detail_scroll_lines = 0;
+                    self.repair_change_selection();
+                } else if self.screen == Screen::Changes && self.changes_list_active() {
+                    self.local_mode = LocalMode::None;
                 } else if self.screen == Screen::Settings && self.settings_editor.is_editing() {
                     self.settings_editor.enter_or_finish();
                 }
@@ -408,13 +505,23 @@ impl App {
             Command::Refresh if self.screen == Screen::Diagnostics => {
                 self.request_diagnostics(DiagnosticsRefreshReason::Explicit)
             }
+            Command::Refresh if self.screen == Screen::Changes => {
+                self.request_changes(ChangesRefreshReason::Explicit(self.requested_window))
+            }
             Command::Refresh => self.request_refresh(RefreshReason::Manual(self.requested_window)),
             Command::Window(window) => {
                 if self.screen == Screen::Settings && self.settings_editor.is_editing() {
                     return self.apply_interface();
                 }
                 self.requested_window = window;
-                self.request_refresh(RefreshReason::Window(window))
+                if matches!(self.screen, Screen::Changes | Screen::ChangeDetail) {
+                    self.request_refresh_and_changes(
+                        RefreshReason::Window(window),
+                        ChangesRefreshReason::Window(window),
+                    )
+                } else {
+                    self.request_refresh(RefreshReason::Window(window))
+                }
             }
             Command::Search => {
                 if self.screen == Screen::Hooks && self.hooks_list_active() {
@@ -506,6 +613,21 @@ impl App {
             .error("diagnostics_refresh_failed");
     }
 
+    pub fn apply_changes(&mut self, snapshot: ChangesSnapshot) {
+        if snapshot.view_model.window != self.requested_window {
+            return;
+        }
+        self.changes =
+            std::mem::replace(&mut self.changes, ResourceState::Empty).ready(snapshot.view_model);
+        self.rebuild_visible_changes();
+        self.repair_change_selection();
+    }
+
+    pub fn reject_changes(&mut self) {
+        self.changes = std::mem::replace(&mut self.changes, ResourceState::Empty)
+            .error("changes_refresh_failed");
+    }
+
     fn handle_help_overlay(&mut self, command: Command) -> AppEffect {
         let dismissal = match command {
             Command::Back => Some(OverlayDismissKey::Escape),
@@ -555,23 +677,38 @@ impl App {
         self.settings_save_state = SettingsSaveState::Clean;
     }
 
-    fn move_direction(&mut self, delta: isize) {
+    fn move_direction(&mut self, delta: isize) -> AppEffect {
         if self.screen == Screen::HookDetail {
             self.move_detail_scroll(delta);
+            AppEffect::None
+        } else if self.screen == Screen::ChangeDetail {
+            self.move_changes_detail_scroll(delta);
+            AppEffect::None
         } else if self.screen == Screen::Settings && self.settings_editor.is_editing() {
             let _ = self.settings_editor.move_field(&SettingsField::ALL, delta);
+            AppEffect::None
         } else if self.screen == Screen::Hooks && self.hooks_list_active() {
             self.move_content(delta);
+            AppEffect::None
+        } else if self.screen == Screen::Changes && self.changes_list_active() {
+            self.move_change(delta);
+            AppEffect::None
         } else {
             self.navigation.move_by(delta);
             self.screen = match self.navigation.current() {
                 Route::Overview => Screen::Overview,
                 Route::Hooks => Screen::Hooks,
+                Route::Changes => Screen::Changes,
                 Route::Diagnostics => Screen::Diagnostics,
                 Route::Settings => Screen::Settings,
             };
             self.local_mode = LocalMode::None;
             self.repair_handler_selection();
+            if self.screen == Screen::Changes {
+                self.request_changes(ChangesRefreshReason::Entered(self.requested_window))
+            } else {
+                AppEffect::None
+            }
         }
     }
 
@@ -586,6 +723,21 @@ impl App {
         // arrives, just as reliability refreshes retain their accepted view.
         self.diagnostics = std::mem::replace(&mut self.diagnostics, ResourceState::Empty).loading();
         AppEffect::RequestDiagnostics(reason)
+    }
+
+    fn request_changes(&mut self, reason: ChangesRefreshReason) -> AppEffect {
+        self.changes = std::mem::replace(&mut self.changes, ResourceState::Empty).loading();
+        AppEffect::RequestChanges(reason)
+    }
+
+    fn request_refresh_and_changes(
+        &mut self,
+        refresh: RefreshReason,
+        changes: ChangesRefreshReason,
+    ) -> AppEffect {
+        self.view = std::mem::replace(&mut self.view, ResourceState::Empty).loading();
+        self.changes = std::mem::replace(&mut self.changes, ResourceState::Empty).loading();
+        AppEffect::RequestRefreshAndChanges(refresh, changes)
     }
 
     fn cycle_current_setting(&mut self, delta: isize) {
@@ -677,8 +829,12 @@ impl App {
     fn page_content(&mut self, direction: isize) {
         if self.screen == Screen::HookDetail {
             self.move_detail_scroll(direction.saturating_mul(6));
+        } else if self.screen == Screen::ChangeDetail {
+            self.move_changes_detail_scroll(direction.saturating_mul(6));
         } else if self.screen == Screen::Hooks && self.hooks_list_active() {
             self.move_content(direction.saturating_mul(5));
+        } else if self.screen == Screen::Changes && self.changes_list_active() {
+            self.move_change(direction.saturating_mul(5));
         }
     }
 
@@ -691,12 +847,63 @@ impl App {
         };
     }
 
+    fn move_changes_detail_scroll(&mut self, delta: isize) {
+        self.changes_detail_scroll_lines = if delta.is_negative() {
+            self.changes_detail_scroll_lines
+                .saturating_sub(delta.unsigned_abs() as u16)
+        } else {
+            self.changes_detail_scroll_lines
+                .saturating_add(delta as u16)
+        };
+    }
+
     fn rebuild_visible_hooks(&mut self) {
         self.visible_hooks = self
             .view
             .accepted()
             .map(|view| view.filtered_hooks(&self.hooks_query))
             .unwrap_or_default();
+    }
+
+    fn rebuild_visible_changes(&mut self) {
+        self.visible_changes = self
+            .changes
+            .accepted()
+            .map(|view| view.rows.clone())
+            .unwrap_or_default();
+    }
+
+    fn move_change(&mut self, delta: isize) {
+        if self.visible_changes.is_empty() {
+            self.selected_change = None;
+            return;
+        }
+        let current = self
+            .selected_change
+            .as_ref()
+            .and_then(|selected| {
+                self.visible_changes
+                    .iter()
+                    .position(|candidate| candidate.reference == *selected)
+            })
+            .unwrap_or(0);
+        let next =
+            (current as isize + delta).rem_euclid(self.visible_changes.len() as isize) as usize;
+        self.selected_change = Some(self.visible_changes[next].reference.clone());
+    }
+
+    fn repair_change_selection(&mut self) {
+        let preserved = self.selected_change.as_ref().is_some_and(|selected| {
+            self.visible_changes
+                .iter()
+                .any(|candidate| candidate.reference == *selected)
+        });
+        if !preserved {
+            self.selected_change = self
+                .visible_changes
+                .first()
+                .map(|row| row.reference.clone());
+        }
     }
 
     fn repair_handler_selection(&mut self) {
@@ -722,7 +929,7 @@ impl App {
                 .map(|view| view.overview.highest_risk_hooks.clone())
                 .unwrap_or_default(),
             Screen::Hooks | Screen::HookDetail => self.visible_hooks.clone(),
-            Screen::Diagnostics => Vec::new(),
+            Screen::Changes | Screen::ChangeDetail | Screen::Diagnostics => Vec::new(),
             Screen::Settings => Vec::new(),
         }
     }
@@ -861,6 +1068,7 @@ mod tests {
         let mut app = App::from_report(synthetic_fixture_report(1_000));
         app.handle(Command::Down);
         app.handle(Command::Down);
+        app.handle(Command::Down);
         assert_eq!(app.navigation().current(), Route::Diagnostics);
         assert_eq!(app.screen(), Screen::Diagnostics);
         assert!(app.view_model().is_some());
@@ -935,6 +1143,19 @@ mod tests {
         app.handle(Command::Up);
         assert_eq!(app.screen(), Screen::Overview);
         assert_eq!(app.navigation().current(), Route::Overview);
+    }
+
+    #[test]
+    fn changes_navigation_requests_its_lazy_history_snapshot() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        assert_eq!(app.handle(Command::Down), AppEffect::None);
+        assert_eq!(
+            app.handle(Command::Down),
+            AppEffect::RequestChanges(ChangesRefreshReason::Entered(TimeWindow::Last7Days))
+        );
+        assert_eq!(app.screen(), Screen::Changes);
+        assert_eq!(app.navigation().current(), Route::Changes);
+        assert!(app.changes_state().is_loading());
     }
 
     #[test]

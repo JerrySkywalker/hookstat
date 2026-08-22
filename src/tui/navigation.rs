@@ -6,14 +6,16 @@ use jerry_terminal_ui::navigation::TopLevelNavigation;
 pub enum Route {
     Overview,
     Hooks,
+    Changes,
     Diagnostics,
     Settings,
 }
 
 impl Route {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Overview,
         Self::Hooks,
+        Self::Changes,
         Self::Diagnostics,
         Self::Settings,
     ];

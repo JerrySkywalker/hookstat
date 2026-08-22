@@ -16,7 +16,9 @@ mod theme;
 mod view_model;
 mod widgets;
 
-pub use app::{DiagnosticsRefreshReason, RefreshReason, RefreshSnapshot};
+pub use app::{
+    ChangesRefreshReason, ChangesSnapshot, DiagnosticsRefreshReason, RefreshReason, RefreshSnapshot,
+};
 
 use crate::diagnostics::DiagnosticsReport;
 use crate::domain::HookInvocation;
@@ -36,6 +38,8 @@ type Refresh =
 type DiagnosticsRefresh = Box<
     dyn FnMut(RefreshRequest<DiagnosticsRefreshReason>) -> Result<DiagnosticsReport, String> + Send,
 >;
+type ChangesRefresh =
+    Box<dyn FnMut(RefreshRequest<ChangesRefreshReason>) -> Result<ChangesSnapshot, String> + Send>;
 
 struct RunLoopOptions {
     explicit_language: Option<localization::InterfaceLanguage>,
@@ -128,6 +132,7 @@ pub fn run_with_refresh_snapshot_language(
         app,
         RefreshController::spawn(refresh),
         None,
+        None,
         RunLoopOptions {
             explicit_language,
             store,
@@ -153,6 +158,9 @@ pub fn run_loading_with_refreshes_language(
     ) -> Result<DiagnosticsReport, String>
     + Send
     + 'static,
+    changes_refresh: impl FnMut(RefreshRequest<ChangesRefreshReason>) -> Result<ChangesSnapshot, String>
+    + Send
+    + 'static,
     observatory: StartupObservatory,
 ) -> io::Result<()> {
     let mut guard = terminal::TerminalGuard::enter()?;
@@ -171,11 +179,13 @@ pub fn run_loading_with_refreshes_language(
     }
     let refresh: Refresh = Box::new(reliability_refresh);
     let diagnostics: DiagnosticsRefresh = Box::new(diagnostics_refresh);
+    let changes: ChangesRefresh = Box::new(changes_refresh);
     let result = run_loop(
         &mut terminal,
         app,
         RefreshController::spawn(refresh),
         Some(RefreshController::spawn(diagnostics)),
+        Some(RefreshController::spawn(changes)),
         RunLoopOptions {
             explicit_language,
             store,
@@ -192,6 +202,7 @@ fn run_loop(
     mut app: App,
     mut refresh: RefreshController<RefreshReason, RefreshSnapshot>,
     mut diagnostics: Option<RefreshController<DiagnosticsRefreshReason, DiagnosticsReport>>,
+    mut changes: Option<RefreshController<ChangesRefreshReason, ChangesSnapshot>>,
     mut options: RunLoopOptions,
 ) -> io::Result<()> {
     let environment_locale = std::env::var("HOOKSTAT_LANG").ok();
@@ -226,6 +237,13 @@ fn run_loop(
                     }
                 }
                 RefreshPoll::Failed | RefreshPoll::WorkerUnavailable => app.reject_diagnostics(),
+                RefreshPoll::Pending | RefreshPoll::Stale => {}
+            }
+        }
+        if let Some(changes) = &mut changes {
+            match changes.poll() {
+                RefreshPoll::Ready { value, .. } => app.apply_changes(value),
+                RefreshPoll::Failed | RefreshPoll::WorkerUnavailable => app.reject_changes(),
                 RefreshPoll::Pending | RefreshPoll::Stale => {}
             }
         }
@@ -287,6 +305,24 @@ fn run_loop(
                             diagnostics.request(reason);
                         } else {
                             app.reject_diagnostics();
+                        }
+                    }
+                    AppEffect::RequestChanges(reason) => {
+                        if let Some(changes) = &mut changes {
+                            changes.request(reason);
+                        } else {
+                            app.reject_changes();
+                        }
+                    }
+                    AppEffect::RequestRefreshAndChanges(refresh_reason, changes_reason) => {
+                        let generation = refresh.request(refresh_reason);
+                        if let Some(observatory) = options.observatory.as_ref() {
+                            observatory.record_requested_generation(generation);
+                        }
+                        if let Some(changes) = &mut changes {
+                            changes.request(changes_reason);
+                        } else {
+                            app.reject_changes();
                         }
                     }
                     AppEffect::ApplyInterface { language, color } => {
@@ -356,6 +392,7 @@ mod tests {
             localization::InterfaceLanguage::EnUs,
             crate::interface_preferences::InterfaceColor::Auto,
         );
+        app.handle(keymap::Command::Down);
         app.handle(keymap::Command::Down);
         app.handle(keymap::Command::Down);
         app.handle(keymap::Command::Down);
