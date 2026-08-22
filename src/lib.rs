@@ -9,6 +9,7 @@ pub mod analytics;
 pub mod codex;
 pub mod diagnostics;
 pub mod domain;
+pub mod evidence;
 pub mod identity;
 pub mod interface_preferences;
 pub mod ledger;
