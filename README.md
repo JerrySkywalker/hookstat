@@ -140,6 +140,14 @@ All remains the explicit full-history view. Startup first draws a loading shell
 while reliability reconciliation and diagnostics refresh on independent
 background paths.
 
+On Windows, the Codex check resolves the ordinary PATH command rather than
+assuming every install is a directly spawnable executable. Native executables,
+CMD/BAT shims, and PowerShell script shims use bounded literal `--version`
+invocations; paths and process output are never retained in diagnostics.
+Diagnostics load once in the background at startup and then only through an
+explicit refresh on the Diagnostics page. Changing Today/24h/7d/30d/All never
+reprobes Codex or rediscovers runtime state.
+
 They also provide
 previous-period comparisons, per-handler counts, terminal states, and
 coverage warnings. Trend, regression, and revision panels explicitly say when
@@ -166,7 +174,7 @@ without creating a ledger or spool.
 | `Enter` / `Esc` | Open the selected hook / return to Hooks. |
 | `/`, `f`, `s` | Search, toggle failed-only, or change Hooks sort. |
 | `t`, `1`, `7`, `3`, `a` | Request Today, 24h, 7d, 30d, or All history (or apply Settings with `a`). |
-| `r`, `q` | Request asynchronous refresh / cleanly quit. |
+| `r`, `q` | Refresh reliability, or Diagnostics when that page is open / cleanly quit. |
 
 Settings stages `auto`, `en-US`, or `zh-CN` and a color preference. Applying
 the setting changes the next frame and persists the choice without losing the

@@ -179,12 +179,12 @@ Detailed plan: `../goals/HS-V021-STARTUP-PERIOD-RELIABILITY.md`.
 
 ## v0.2.1 train status
 
-The HS-V021-G07-G10 startup, period, and bounded-data implementation train is
-settled locally and awaiting its exact-head hosted CI/merge evidence. It adds
-the G07 observability surface, G08 asynchronous first frame, G09 five-period
-selector, and G10 bounded ledger and incremental receipt paths. HS-G11 remains
-`NOT_STARTED`: the known Windows doctor false-negative for a PATH-resolved
-Codex binary shim is still open and is deliberately outside this train.
+HS-G07 through HS-G10 merged on `b6480d835f33af58836e1722d27d5d22c5a9416f`.
+The current HS-G11 candidate resolves Windows native/CMD/BAT/PowerShell Codex
+command forms through a bounded read-only probe and keeps diagnostics refresh
+independent from period changes. It is awaiting its own exact-head CI/merge
+evidence. HS-G12R remains `NOT_STARTED`; it will version the accepted G11 main
+as the unpublished v0.2.1 release candidate and will not begin v0.3 work.
 
 ## v0.2.1 confirmed requirements
 
