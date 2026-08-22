@@ -2,14 +2,15 @@
 
 **Local-first reliability analytics for hooks across coding-agent runtimes.**
 
-HookStat v0.2.1 is the current public Startup & Period Reliability release: a
-local-first terminal UI that
-turns admitted local hook receipts into a bilingual, human-readable operational
-view. It is Codex-first today, while its canonical ledger, analytics, JSON,
-and TUI remain evidence-source-neutral. Passive durable receipts remain the
-preferred architecture. When passive per-handler terminal evidence is not
-available, HookStat supports an **opt-in transparent instrumented receipt
-source**.
+HookStat v0.3.0 is an unpublished release candidate for the Codex Reliability
+Workbench: a local-first terminal UI that turns admitted local hook receipts
+into a bilingual, human-readable operational view. It adds a Changes workbench,
+Hook Catalog, revision timeline, safe Human aliases, and bounded failure
+exploration through the shared TabBeacon-compatible Human interface. It is
+Codex-first today, while its canonical ledger, analytics, JSON, and TUI remain
+evidence-source-neutral. Passive durable receipts remain the preferred
+architecture. When passive per-handler terminal evidence is not available,
+HookStat supports an **opt-in transparent instrumented receipt source**.
 
 Normal daily launch is unchanged:
 
@@ -22,7 +23,8 @@ daemon.
 
 ## Install and update
 
-Install the current stable v0.2.1 package from crates.io with Cargo:
+The current public stable package remains v0.2.1 until a separately authorized
+v0.3.0 publication. Install that public release from crates.io with Cargo:
 
 ```powershell
 cargo install hookstat --version 0.2.1 --locked
@@ -36,9 +38,9 @@ cargo install --path . --locked
 hookstat --version
 ```
 
-Release notes for v0.2.1 are in [CHANGELOG.md](CHANGELOG.md). Local checkout
-installs remain development builds; use the crates.io package for ordinary
-stable installation.
+Release notes for the unpublished v0.3.0 candidate and the public v0.2.1
+release are in [CHANGELOG.md](CHANGELOG.md). Local checkout installs remain
+development builds; use the crates.io package for ordinary stable installation.
 
 ## Opt-in Codex instrumentation
 
@@ -188,16 +190,16 @@ precedence follows explicit `--lang`, `HOOKSTAT_LANG`, the saved preference,
 system locale, then English. Machine JSON keys and stable handler keys remain
 locale-neutral.
 
-### Workbench surfaces in the current development line
+### Reliability workbench surfaces
 
-The unreleased v0.3 development line adds a `Changes` page and a Hook Catalog
-without changing receipt, analytics, trust, proxy, or normal `codex` launch
-semantics. Changes projects only admitted history: it shows first/last/latest
-evidence, ordered revision epochs, coverage-aware regressions/recoveries, and
-historical rows that never claim a hook was removed. The Catalog keeps stable
-keys as metadata, supports safe local Human aliases only after explicit Apply,
-and browses bounded failure categories rather than raw error streams. All
-failure rates retain their sample denominator and all period choices remain
+The v0.3.0 release candidate adds a `Changes` page and a Hook Catalog without
+changing receipt, analytics, trust, proxy, or normal `codex` launch semantics.
+Changes projects only admitted history: it shows first/last/latest evidence,
+ordered revision epochs, coverage-aware regressions/recoveries, and historical
+rows that never claim a hook was removed. The Catalog keeps stable keys as
+metadata, supports safe local Human aliases only after explicit Apply, and
+browses bounded failure categories rather than raw error streams. All failure
+rates retain their sample denominator and all period choices remain
 Today/24h/7d/30d/All.
 
 `diagnostics export` previews by default and writes only with `--apply`. Its
@@ -219,9 +221,9 @@ cargo publish --dry-run --locked
 ```
 
 Actual crates.io publication, a release tag, and GitHub Release creation remain
-separate Owner-authorized actions. The current public package is still v0.2.1;
-this repository does not declare a v0.3 release until the dedicated RC/release
-train has closed its Owner-attended gates.
+separate Owner-authorized actions. This v0.3.0 candidate is not a public release;
+the current public package remains v0.2.1 until the Owner release gate grants
+publication authority.
 
 See the architecture, ADRs, and execution contracts under `docs/`,
 `dev_governance_files/`, and `goals/`.
