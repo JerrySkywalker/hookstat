@@ -252,8 +252,9 @@ fn tui_command(arguments: &[String]) -> ExitCode {
     let reliability_observatory = observatory.clone();
     let diagnostics_root = root.clone();
     let diagnostics_observatory = observatory.clone();
-    let changes_root = root;
+    let changes_root = root.clone();
     let changes_observatory = observatory.clone();
+    let alias_root = root;
     match tui::run_loading_with_refreshes_language(
         TimeWindow::Last7Days,
         explicit_language,
@@ -288,6 +289,25 @@ fn tui_command(arguments: &[String]) -> ExitCode {
                     .record_latency("changes_workbench_snapshot", started.elapsed().as_millis());
             }
             result
+        },
+        move |request| {
+            let mut ledger = match Ledger::open_path(alias_root.join("ledger.sqlite3")) {
+                Ok(ledger) => ledger,
+                Err(_) => return tui::AliasApplyOutcome::Failed,
+            };
+            match ledger.set_handler_alias_if_unchanged(
+                request.runtime,
+                &request.handler_key,
+                &request.draft,
+                request.expected_alias.as_deref(),
+                now_unix_ms(),
+            ) {
+                Ok(hookstat::ledger::AliasSaveOutcome::Saved) => tui::AliasApplyOutcome::Saved,
+                Ok(hookstat::ledger::AliasSaveOutcome::Conflict) => {
+                    tui::AliasApplyOutcome::Conflict
+                }
+                Err(_) => tui::AliasApplyOutcome::Failed,
+            }
         },
         observatory.clone(),
     ) {
@@ -621,7 +641,18 @@ fn load_reliability_snapshot_at(
         reconciled.incomplete,
     );
     enrich_report_from_ledger(&ledger, &mut report, now)?;
-    Ok(tui::RefreshSnapshot::from_report(report))
+    let alias_annotations = aliases
+        .into_iter()
+        .map(|alias| tui::AliasAnnotation {
+            runtime: alias.runtime,
+            handler_key: alias.handler_key,
+            display_name: alias.display_name,
+        })
+        .collect();
+    Ok(tui::RefreshSnapshot::from_report_with_aliases(
+        report,
+        alias_annotations,
+    ))
 }
 
 /// Loads the historical workbench only when its page is requested. This path

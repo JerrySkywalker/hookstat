@@ -288,6 +288,7 @@ pub enum FailureFingerprintKind {
 pub struct FailureFingerprintCluster {
     pub kind: FailureFingerprintKind,
     pub occurrences: u64,
+    pub first_occurred_at_unix_ms: i64,
     pub latest_occurred_at_unix_ms: i64,
 }
 
@@ -706,24 +707,30 @@ fn failure_fingerprint_clusters(
     now: i64,
     window: TimeWindow,
 ) -> Vec<FailureFingerprintCluster> {
-    let mut clusters = BTreeMap::<FailureFingerprintKind, (u64, i64)>::new();
+    let mut clusters = BTreeMap::<FailureFingerprintKind, (u64, i64, i64)>::new();
     for value in values.iter().copied().filter(|value| {
         in_current_window(value.occurred_at_unix_ms, now, window)
             && value.terminal_status.is_execution_failure()
     }) {
-        let entry = clusters
-            .entry(failure_fingerprint_kind(value))
-            .or_insert((0, value.occurred_at_unix_ms));
+        let entry = clusters.entry(failure_fingerprint_kind(value)).or_insert((
+            0,
+            value.occurred_at_unix_ms,
+            value.occurred_at_unix_ms,
+        ));
         entry.0 += 1;
-        entry.1 = entry.1.max(value.occurred_at_unix_ms);
+        entry.1 = entry.1.min(value.occurred_at_unix_ms);
+        entry.2 = entry.2.max(value.occurred_at_unix_ms);
     }
     let mut result = clusters
         .into_iter()
         .map(
-            |(kind, (occurrences, latest_occurred_at_unix_ms))| FailureFingerprintCluster {
-                kind,
-                occurrences,
-                latest_occurred_at_unix_ms,
+            |(kind, (occurrences, first_occurred_at_unix_ms, latest_occurred_at_unix_ms))| {
+                FailureFingerprintCluster {
+                    kind,
+                    occurrences,
+                    first_occurred_at_unix_ms,
+                    latest_occurred_at_unix_ms,
+                }
             },
         )
         .collect::<Vec<_>>();
@@ -1303,6 +1310,12 @@ mod tests {
                 .iter()
                 .any(|cluster| cluster.kind == FailureFingerprintKind::ExecutionFailed)
         );
+        let timeout_cluster = clusters
+            .iter()
+            .find(|cluster| cluster.kind == FailureFingerprintKind::TimedOut)
+            .unwrap();
+        assert_eq!(timeout_cluster.first_occurred_at_unix_ms, now - 2);
+        assert_eq!(timeout_cluster.latest_occurred_at_unix_ms, now - 2);
         assert!(!format!("{clusters:?}").contains("must not appear"));
         let recent = recent_failures(&[private_like, timeout], now, TimeWindow::Last7Days, 10);
         assert!(

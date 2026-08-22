@@ -2,7 +2,7 @@
 
 use crate::analytics::TimeWindow;
 use crate::diagnostics::DiagnosticsReport;
-use crate::domain::HookInvocation;
+use crate::domain::{HookInvocation, Runtime};
 use crate::interface_preferences::InterfaceColor;
 use crate::report::{MachineReport, instrumented_report};
 use crate::workbench::{ChangesWorkbench, changes_workbench};
@@ -17,7 +17,8 @@ use super::state::ResourceState;
 #[cfg(test)]
 use super::view_model::HookSort;
 use super::view_model::{
-    ChangeRef, ChangeRowViewModel, ChangesViewModel, HandlerRef, HookRowViewModel, HooksQuery,
+    CatalogHistoryViewModel, ChangeRef, ChangeRowViewModel, ChangesViewModel, DisplayIdentity,
+    FailureClusterRef, FailureClusterViewModel, HandlerRef, HookRowViewModel, HooksQuery,
     ReliabilityCenterViewModel,
 };
 
@@ -28,6 +29,8 @@ pub enum Screen {
     Changes,
     ChangeDetail,
     HookDetail,
+    FailureClusters,
+    FailureClusterDetail,
     Diagnostics,
     Settings,
 }
@@ -37,6 +40,7 @@ enum LocalMode {
     None,
     HooksList,
     ChangesList,
+    FailureClusters,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -77,6 +81,29 @@ impl ChangesRefreshReason {
 #[derive(Clone, Debug)]
 pub struct RefreshSnapshot {
     view_model: ReliabilityCenterViewModel,
+    alias_annotations: Vec<AliasAnnotation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AliasAnnotation {
+    pub runtime: Runtime,
+    pub handler_key: String,
+    pub display_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AliasApplyRequest {
+    pub runtime: Runtime,
+    pub handler_key: String,
+    pub draft: String,
+    pub expected_alias: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AliasApplyOutcome {
+    Saved,
+    Conflict,
+    Failed,
 }
 
 impl RefreshSnapshot {
@@ -98,6 +125,17 @@ impl RefreshSnapshot {
     pub fn from_report(report: MachineReport) -> Self {
         Self {
             view_model: ReliabilityCenterViewModel::from_report(report),
+            alias_annotations: Vec::new(),
+        }
+    }
+
+    pub fn from_report_with_aliases(
+        report: MachineReport,
+        alias_annotations: Vec<AliasAnnotation>,
+    ) -> Self {
+        Self {
+            view_model: ReliabilityCenterViewModel::from_report(report),
+            alias_annotations,
         }
     }
 
@@ -107,11 +145,14 @@ impl RefreshSnapshot {
     ) -> Self {
         let mut view_model = ReliabilityCenterViewModel::from_report(report);
         view_model.diagnostics = diagnostics;
-        Self { view_model }
+        Self {
+            view_model,
+            alias_annotations: Vec::new(),
+        }
     }
 
-    fn into_view_model(self) -> ReliabilityCenterViewModel {
-        self.view_model
+    fn into_parts(self) -> (ReliabilityCenterViewModel, Vec<AliasAnnotation>) {
+        (self.view_model, self.alias_annotations)
     }
 }
 
@@ -142,7 +183,7 @@ impl ChangesSnapshot {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AppEffect {
     None,
     Quit,
@@ -150,6 +191,7 @@ pub enum AppEffect {
     RequestDiagnostics(DiagnosticsRefreshReason),
     RequestChanges(ChangesRefreshReason),
     RequestRefreshAndChanges(RefreshReason, ChangesRefreshReason),
+    ApplyAlias(AliasApplyRequest),
     ApplyInterface {
         language: InterfaceLanguage,
         color: InterfaceColor,
@@ -171,6 +213,20 @@ pub enum SettingsField {
     Color,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AliasField {
+    Name,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AliasSaveState {
+    Clean,
+    Dirty,
+    Saved,
+    Conflict,
+    Failed,
+}
+
 impl SettingsField {
     const ALL: [Self; 2] = [Self::Language, Self::Color];
 }
@@ -184,6 +240,7 @@ pub struct App {
     requested_window: TimeWindow,
     selected_handler: Option<HandlerRef>,
     selected_change: Option<ChangeRef>,
+    selected_failure_cluster: Option<FailureClusterRef>,
     view: ResourceState<ReliabilityCenterViewModel>,
     diagnostics: ResourceState<DiagnosticsReport>,
     changes: ResourceState<ChangesViewModel>,
@@ -191,6 +248,7 @@ pub struct App {
     visible_hooks: Vec<HookRowViewModel>,
     visible_changes: Vec<ChangeRowViewModel>,
     search_editing: bool,
+    alias_text_editing: bool,
     detail_scroll_lines: u16,
     changes_detail_scroll_lines: u16,
     accepted_language: InterfaceLanguage,
@@ -199,6 +257,13 @@ pub struct App {
     draft_color: InterfaceColor,
     settings_editor: SettingsEditor<SettingsField>,
     settings_save_state: SettingsSaveState,
+    alias_annotations: Vec<AliasAnnotation>,
+    alias_editor: SettingsEditor<AliasField>,
+    alias_handler: Option<HandlerRef>,
+    alias_expected: Option<String>,
+    alias_base_label: String,
+    alias_draft: String,
+    alias_save_state: AliasSaveState,
 }
 
 impl App {
@@ -208,7 +273,10 @@ impl App {
     }
 
     pub fn from_snapshot(snapshot: RefreshSnapshot) -> Self {
-        Self::from_view_model(snapshot.into_view_model())
+        let (view_model, alias_annotations) = snapshot.into_parts();
+        let mut app = Self::from_view_model(view_model);
+        app.alias_annotations = alias_annotations;
+        app
     }
 
     /// Creates an interactive shell before any receipt, SQLite, diagnostics,
@@ -222,6 +290,7 @@ impl App {
             requested_window: window,
             selected_handler: None,
             selected_change: None,
+            selected_failure_cluster: None,
             view: ResourceState::Loading {
                 last_accepted: None,
             },
@@ -233,6 +302,7 @@ impl App {
             visible_hooks: Vec::new(),
             visible_changes: Vec::new(),
             search_editing: false,
+            alias_text_editing: false,
             detail_scroll_lines: 0,
             changes_detail_scroll_lines: 0,
             accepted_language: InterfaceLanguage::Auto,
@@ -241,6 +311,13 @@ impl App {
             draft_color: InterfaceColor::Auto,
             settings_editor: SettingsEditor::new(SettingsField::Language),
             settings_save_state: SettingsSaveState::Clean,
+            alias_annotations: Vec::new(),
+            alias_editor: SettingsEditor::new(AliasField::Name),
+            alias_handler: None,
+            alias_expected: None,
+            alias_base_label: String::new(),
+            alias_draft: String::new(),
+            alias_save_state: AliasSaveState::Clean,
         }
     }
 
@@ -262,6 +339,7 @@ impl App {
             requested_window: view_model.overview.window,
             selected_handler,
             selected_change: None,
+            selected_failure_cluster: None,
             view: ResourceState::Ready(view_model),
             diagnostics: ResourceState::Ready(diagnostics),
             changes: ResourceState::Empty,
@@ -269,6 +347,7 @@ impl App {
             visible_hooks,
             visible_changes: Vec::new(),
             search_editing: false,
+            alias_text_editing: false,
             detail_scroll_lines: 0,
             changes_detail_scroll_lines: 0,
             accepted_language: InterfaceLanguage::Auto,
@@ -277,6 +356,13 @@ impl App {
             draft_color: InterfaceColor::Auto,
             settings_editor: SettingsEditor::new(SettingsField::Language),
             settings_save_state: SettingsSaveState::Clean,
+            alias_annotations: Vec::new(),
+            alias_editor: SettingsEditor::new(AliasField::Name),
+            alias_handler: None,
+            alias_expected: None,
+            alias_base_label: String::new(),
+            alias_draft: String::new(),
+            alias_save_state: AliasSaveState::Clean,
         }
     }
 
@@ -320,8 +406,27 @@ impl App {
         self.selected_handler.as_ref()
     }
 
+    /// Historical catalog metadata is intentionally sourced from the lazy
+    /// long-history snapshot rather than the bounded normal report.
+    pub fn selected_catalog_history(&self) -> Option<&CatalogHistoryViewModel> {
+        self.selected_handler.as_ref().and_then(|reference| {
+            self.changes()
+                .and_then(|changes| changes.catalog_history(reference))
+        })
+    }
+
     pub fn selected_change(&self) -> Option<&ChangeRef> {
         self.selected_change.as_ref()
+    }
+
+    pub const fn selected_failure_cluster(&self) -> Option<FailureClusterRef> {
+        self.selected_failure_cluster
+    }
+
+    pub fn failure_clusters(&self) -> &[FailureClusterViewModel] {
+        self.view_model()
+            .map(ReliabilityCenterViewModel::failure_clusters)
+            .unwrap_or_default()
     }
 
     pub const fn detail_scroll_lines(&self) -> u16 {
@@ -340,8 +445,8 @@ impl App {
         &self.visible_hooks
     }
 
-    pub const fn is_search_editing(&self) -> bool {
-        self.search_editing
+    pub const fn is_text_editing(&self) -> bool {
+        self.search_editing || self.alias_text_editing
     }
 
     pub const fn accepted_language(&self) -> InterfaceLanguage {
@@ -374,12 +479,13 @@ impl App {
 
     pub const fn discard_confirmation_open(&self) -> bool {
         self.settings_editor.awaiting_discard_confirmation()
+            || self.alias_editor.awaiting_discard_confirmation()
     }
 
     pub const fn local_list_active(&self) -> bool {
         matches!(
             self.local_mode,
-            LocalMode::HooksList | LocalMode::ChangesList
+            LocalMode::HooksList | LocalMode::ChangesList | LocalMode::FailureClusters
         )
     }
 
@@ -391,8 +497,39 @@ impl App {
         matches!(self.local_mode, LocalMode::ChangesList)
     }
 
+    const fn failure_clusters_active(&self) -> bool {
+        matches!(self.local_mode, LocalMode::FailureClusters)
+    }
+
     pub const fn settings_save_state(&self) -> SettingsSaveState {
         self.settings_save_state
+    }
+
+    pub const fn alias_editing(&self) -> bool {
+        self.alias_handler.is_some()
+    }
+
+    pub const fn alias_text_editing(&self) -> bool {
+        self.alias_text_editing
+    }
+
+    pub fn alias_draft(&self) -> Option<&str> {
+        self.alias_handler
+            .as_ref()
+            .map(|_| self.alias_draft.as_str())
+    }
+
+    pub const fn alias_save_state(&self) -> AliasSaveState {
+        self.alias_save_state
+    }
+
+    pub fn alias_dirty(&self) -> bool {
+        self.alias_handler.is_some()
+            && self.alias_draft
+                != self
+                    .alias_expected
+                    .as_deref()
+                    .unwrap_or(&self.alias_base_label)
     }
 
     pub fn settings_dirty(&self) -> bool {
@@ -425,7 +562,7 @@ impl App {
         if self.help_overlay.is_open() {
             return self.handle_help_overlay(command);
         }
-        if self.settings_editor.awaiting_discard_confirmation() {
+        if self.discard_confirmation_open() {
             return self.handle_discard_confirmation(command);
         }
         match command {
@@ -446,7 +583,9 @@ impl App {
                 AppEffect::None
             }
             Command::Enter => {
-                if self.search_editing {
+                if self.alias_text_editing {
+                    self.finish_alias_text_edit();
+                } else if self.search_editing {
                     self.search_editing = false;
                 } else if self.screen == Screen::Settings {
                     self.settings_editor.enter_or_finish();
@@ -462,6 +601,12 @@ impl App {
                 {
                     self.screen = Screen::ChangeDetail;
                     self.changes_detail_scroll_lines = 0;
+                } else if self.screen == Screen::FailureClusters
+                    && self.failure_clusters_active()
+                    && self.selected_failure_cluster.is_some()
+                {
+                    self.screen = Screen::FailureClusterDetail;
+                    self.detail_scroll_lines = 0;
                 } else if matches!(self.screen, Screen::Overview | Screen::Hooks)
                     && self.selected_handler.is_some()
                 {
@@ -469,11 +614,17 @@ impl App {
                     self.screen = Screen::HookDetail;
                     self.local_mode = LocalMode::HooksList;
                     self.detail_scroll_lines = 0;
+                    if matches!(self.changes_state(), ResourceState::Empty) {
+                        return self
+                            .request_changes(ChangesRefreshReason::Entered(self.requested_window));
+                    }
                 }
                 AppEffect::None
             }
             Command::Back => {
-                if self.search_editing {
+                if self.alias_text_editing || self.alias_editing() {
+                    self.cancel_alias_edit();
+                } else if self.search_editing {
                     self.search_editing = false;
                 } else if self.screen == Screen::HookDetail {
                     self.navigation.activate(Route::Hooks);
@@ -491,9 +642,21 @@ impl App {
                     self.repair_change_selection();
                 } else if self.screen == Screen::Changes && self.changes_list_active() {
                     self.local_mode = LocalMode::None;
+                } else if self.screen == Screen::FailureClusterDetail {
+                    self.screen = Screen::FailureClusters;
+                    self.local_mode = LocalMode::FailureClusters;
+                    self.detail_scroll_lines = 0;
+                    self.repair_failure_cluster_selection();
+                } else if self.screen == Screen::FailureClusters && self.failure_clusters_active() {
+                    self.screen = Screen::HookDetail;
+                    self.local_mode = LocalMode::HooksList;
                 } else if self.screen == Screen::Settings && self.settings_editor.is_editing() {
                     self.settings_editor.enter_or_finish();
                 }
+                AppEffect::None
+            }
+            Command::Refresh if self.alias_editing() => {
+                self.revert_alias();
                 AppEffect::None
             }
             Command::Refresh
@@ -510,11 +673,17 @@ impl App {
             }
             Command::Refresh => self.request_refresh(RefreshReason::Manual(self.requested_window)),
             Command::Window(window) => {
+                if self.alias_editing() {
+                    return self.apply_alias();
+                }
                 if self.screen == Screen::Settings && self.settings_editor.is_editing() {
                     return self.apply_interface();
                 }
                 self.requested_window = window;
-                if matches!(self.screen, Screen::Changes | Screen::ChangeDetail) {
+                if matches!(
+                    self.screen,
+                    Screen::Hooks | Screen::HookDetail | Screen::Changes | Screen::ChangeDetail
+                ) {
                     self.request_refresh_and_changes(
                         RefreshReason::Window(window),
                         ChangesRefreshReason::Window(window),
@@ -530,7 +699,14 @@ impl App {
                 AppEffect::None
             }
             Command::SearchInput(value) => {
-                if self.search_editing {
+                if self.alias_text_editing {
+                    self.alias_draft.push(value);
+                    self.alias_save_state = if self.alias_dirty() {
+                        AliasSaveState::Dirty
+                    } else {
+                        AliasSaveState::Clean
+                    };
+                } else if self.search_editing {
                     self.hooks_query.search.push(value);
                     self.rebuild_visible_hooks();
                     self.repair_handler_selection();
@@ -538,7 +714,14 @@ impl App {
                 AppEffect::None
             }
             Command::SearchBackspace => {
-                if self.search_editing {
+                if self.alias_text_editing {
+                    self.alias_draft.pop();
+                    self.alias_save_state = if self.alias_dirty() {
+                        AliasSaveState::Dirty
+                    } else {
+                        AliasSaveState::Clean
+                    };
+                } else if self.search_editing {
                     self.hooks_query.search.pop();
                     self.rebuild_visible_hooks();
                     self.repair_handler_selection();
@@ -546,7 +729,11 @@ impl App {
                 AppEffect::None
             }
             Command::CloseSearch => {
-                self.search_editing = false;
+                if self.alias_text_editing {
+                    self.finish_alias_text_edit();
+                } else {
+                    self.search_editing = false;
+                }
                 AppEffect::None
             }
             Command::Filter => {
@@ -554,6 +741,10 @@ impl App {
                     self.hooks_query.failures_only = !self.hooks_query.failures_only;
                     self.rebuild_visible_hooks();
                     self.repair_handler_selection();
+                } else if self.screen == Screen::HookDetail {
+                    self.screen = Screen::FailureClusters;
+                    self.local_mode = LocalMode::FailureClusters;
+                    self.repair_failure_cluster_selection();
                 }
                 AppEffect::None
             }
@@ -562,6 +753,12 @@ impl App {
                     self.hooks_query.sort = self.hooks_query.sort.next();
                     self.rebuild_visible_hooks();
                     self.repair_handler_selection();
+                }
+                AppEffect::None
+            }
+            Command::EditAlias => {
+                if self.screen == Screen::HookDetail {
+                    self.begin_alias_edit();
                 }
                 AppEffect::None
             }
@@ -581,15 +778,16 @@ impl App {
     }
 
     pub fn apply_refresh(&mut self, snapshot: RefreshSnapshot) {
-        if snapshot.view_model.overview.window != self.requested_window {
+        let (view_model, alias_annotations) = snapshot.into_parts();
+        if view_model.overview.window != self.requested_window {
             // Belt-and-braces request ownership: a worker response for an old
             // period cannot overwrite a newer visible request even if a future
             // transport implementation becomes concurrent.
             return;
         }
-        self.requested_window = snapshot.view_model.overview.window;
-        self.view =
-            std::mem::replace(&mut self.view, ResourceState::Empty).ready(snapshot.view_model);
+        self.requested_window = view_model.overview.window;
+        self.view = std::mem::replace(&mut self.view, ResourceState::Empty).ready(view_model);
+        self.alias_annotations = alias_annotations;
         self.rebuild_visible_hooks();
         self.repair_handler_selection();
     }
@@ -642,6 +840,23 @@ impl App {
     }
 
     fn handle_discard_confirmation(&mut self, command: Command) -> AppEffect {
+        if self.alias_editor.awaiting_discard_confirmation() {
+            return match command {
+                Command::Back | Command::Quit => {
+                    let _ = self.alias_editor.resolve_discard(DiscardDecision::Cancel);
+                    AppEffect::None
+                }
+                Command::Enter | Command::Discard => {
+                    if self.alias_editor.resolve_discard(DiscardDecision::Discard) {
+                        self.cancel_alias_edit();
+                        AppEffect::Quit
+                    } else {
+                        AppEffect::None
+                    }
+                }
+                _ => AppEffect::None,
+            };
+        }
         match command {
             Command::Back | Command::Quit => {
                 let _ = self
@@ -665,6 +880,12 @@ impl App {
     }
 
     fn request_quit(&mut self) -> AppEffect {
+        if self.alias_editing() {
+            return match self.alias_editor.request_quit(self.alias_dirty()) {
+                QuitDisposition::Quit => AppEffect::Quit,
+                QuitDisposition::ConfirmDiscard => AppEffect::None,
+            };
+        }
         match self.settings_editor.request_quit(self.settings_dirty()) {
             QuitDisposition::Quit => AppEffect::Quit,
             QuitDisposition::ConfirmDiscard => AppEffect::None,
@@ -678,7 +899,7 @@ impl App {
     }
 
     fn move_direction(&mut self, delta: isize) -> AppEffect {
-        if self.screen == Screen::HookDetail {
+        if self.screen == Screen::HookDetail || self.screen == Screen::FailureClusterDetail {
             self.move_detail_scroll(delta);
             AppEffect::None
         } else if self.screen == Screen::ChangeDetail {
@@ -693,6 +914,9 @@ impl App {
         } else if self.screen == Screen::Changes && self.changes_list_active() {
             self.move_change(delta);
             AppEffect::None
+        } else if self.screen == Screen::FailureClusters && self.failure_clusters_active() {
+            self.move_failure_cluster(delta);
+            AppEffect::None
         } else {
             self.navigation.move_by(delta);
             self.screen = match self.navigation.current() {
@@ -704,7 +928,9 @@ impl App {
             };
             self.local_mode = LocalMode::None;
             self.repair_handler_selection();
-            if self.screen == Screen::Changes {
+            if matches!(self.screen, Screen::Changes | Screen::Hooks)
+                && !self.changes_state().is_loading()
+            {
                 self.request_changes(ChangesRefreshReason::Entered(self.requested_window))
             } else {
                 AppEffect::None
@@ -796,6 +1022,109 @@ impl App {
         }
     }
 
+    fn begin_alias_edit(&mut self) {
+        let Some(reference) = self.selected_handler.clone() else {
+            return;
+        };
+        let Some(detail) = self.view_model().and_then(|view| view.detail(&reference)) else {
+            return;
+        };
+        let base_label = match &detail.display_identity {
+            DisplayIdentity::ExistingMetadata(label) => label.clone(),
+            DisplayIdentity::EventFallback(event) => event.as_storage().replace('_', " "),
+        };
+        let expected_alias = self
+            .alias_annotations
+            .iter()
+            .find(|alias| {
+                alias.runtime == reference.runtime && alias.handler_key == reference.handler_key
+            })
+            .map(|alias| alias.display_name.clone());
+        self.alias_handler = Some(reference);
+        self.alias_expected = expected_alias.clone();
+        self.alias_base_label = base_label;
+        self.alias_draft = expected_alias.unwrap_or_else(|| self.alias_base_label.clone());
+        self.alias_editor = SettingsEditor::new(AliasField::Name);
+        self.alias_editor.enter_or_finish();
+        self.alias_text_editing = true;
+        self.alias_save_state = AliasSaveState::Clean;
+    }
+
+    fn finish_alias_text_edit(&mut self) {
+        self.alias_text_editing = false;
+        if self.alias_editor.is_editing() {
+            self.alias_editor.enter_or_finish();
+        }
+        self.alias_save_state = if self.alias_dirty() {
+            AliasSaveState::Dirty
+        } else {
+            AliasSaveState::Clean
+        };
+    }
+
+    fn cancel_alias_edit(&mut self) {
+        self.alias_text_editing = false;
+        self.alias_editor = SettingsEditor::new(AliasField::Name);
+        self.alias_handler = None;
+        self.alias_expected = None;
+        self.alias_base_label.clear();
+        self.alias_draft.clear();
+        self.alias_save_state = AliasSaveState::Clean;
+    }
+
+    fn revert_alias(&mut self) {
+        if self.alias_handler.is_none() {
+            return;
+        }
+        self.alias_draft = self
+            .alias_expected
+            .clone()
+            .unwrap_or_else(|| self.alias_base_label.clone());
+        self.alias_text_editing = false;
+        if self.alias_editor.is_editing() {
+            self.alias_editor.enter_or_finish();
+        }
+        self.alias_save_state = AliasSaveState::Clean;
+    }
+
+    fn apply_alias(&mut self) -> AppEffect {
+        if !self.alias_dirty() {
+            return AppEffect::None;
+        }
+        let Some(reference) = self.alias_handler.as_ref() else {
+            return AppEffect::None;
+        };
+        AppEffect::ApplyAlias(AliasApplyRequest {
+            runtime: reference.runtime,
+            handler_key: reference.handler_key.clone(),
+            draft: self.alias_draft.clone(),
+            expected_alias: self.alias_expected.clone(),
+        })
+    }
+
+    pub fn alias_apply_result(&mut self, outcome: AliasApplyOutcome) {
+        match outcome {
+            AliasApplyOutcome::Saved => {
+                if let Some(reference) = &self.alias_handler {
+                    self.alias_annotations.retain(|alias| {
+                        alias.runtime != reference.runtime
+                            || alias.handler_key != reference.handler_key
+                    });
+                    self.alias_annotations.push(AliasAnnotation {
+                        runtime: reference.runtime,
+                        handler_key: reference.handler_key.clone(),
+                        display_name: self.alias_draft.clone(),
+                    });
+                }
+                self.alias_expected = Some(self.alias_draft.clone());
+                self.alias_save_state = AliasSaveState::Saved;
+                self.alias_text_editing = false;
+            }
+            AliasApplyOutcome::Conflict => self.alias_save_state = AliasSaveState::Conflict,
+            AliasApplyOutcome::Failed => self.alias_save_state = AliasSaveState::Failed,
+        }
+    }
+
     fn move_content(&mut self, delta: isize) {
         if self.screen == Screen::HookDetail {
             self.move_detail_scroll(delta);
@@ -827,7 +1156,7 @@ impl App {
     }
 
     fn page_content(&mut self, direction: isize) {
-        if self.screen == Screen::HookDetail {
+        if self.screen == Screen::HookDetail || self.screen == Screen::FailureClusterDetail {
             self.move_detail_scroll(direction.saturating_mul(6));
         } else if self.screen == Screen::ChangeDetail {
             self.move_changes_detail_scroll(direction.saturating_mul(6));
@@ -835,6 +1164,8 @@ impl App {
             self.move_content(direction.saturating_mul(5));
         } else if self.screen == Screen::Changes && self.changes_list_active() {
             self.move_change(direction.saturating_mul(5));
+        } else if self.screen == Screen::FailureClusters && self.failure_clusters_active() {
+            self.move_failure_cluster(direction.saturating_mul(5));
         }
     }
 
@@ -906,6 +1237,38 @@ impl App {
         }
     }
 
+    fn move_failure_cluster(&mut self, delta: isize) {
+        let clusters = self.failure_clusters();
+        if clusters.is_empty() {
+            self.selected_failure_cluster = None;
+            return;
+        }
+        let current = self
+            .selected_failure_cluster
+            .and_then(|selected| {
+                clusters
+                    .iter()
+                    .position(|cluster| cluster.reference == selected)
+            })
+            .unwrap_or(0);
+        let next = (current as isize + delta).rem_euclid(clusters.len() as isize) as usize;
+        self.selected_failure_cluster = Some(clusters[next].reference);
+    }
+
+    fn repair_failure_cluster_selection(&mut self) {
+        let preserved = self.selected_failure_cluster.is_some_and(|selected| {
+            self.failure_clusters()
+                .iter()
+                .any(|cluster| cluster.reference == selected)
+        });
+        if !preserved {
+            self.selected_failure_cluster = self
+                .failure_clusters()
+                .first()
+                .map(|cluster| cluster.reference);
+        }
+    }
+
     fn repair_handler_selection(&mut self) {
         let candidates = self
             .selectable_rows()
@@ -929,7 +1292,11 @@ impl App {
                 .map(|view| view.overview.highest_risk_hooks.clone())
                 .unwrap_or_default(),
             Screen::Hooks | Screen::HookDetail => self.visible_hooks.clone(),
-            Screen::Changes | Screen::ChangeDetail | Screen::Diagnostics => Vec::new(),
+            Screen::Changes
+            | Screen::ChangeDetail
+            | Screen::FailureClusters
+            | Screen::FailureClusterDetail
+            | Screen::Diagnostics => Vec::new(),
             Screen::Settings => Vec::new(),
         }
     }
@@ -1146,13 +1513,15 @@ mod tests {
     }
 
     #[test]
-    fn changes_navigation_requests_its_lazy_history_snapshot() {
+    fn catalog_and_changes_navigation_share_one_lazy_history_snapshot() {
         let mut app = App::from_report(synthetic_fixture_report(1_000));
-        assert_eq!(app.handle(Command::Down), AppEffect::None);
         assert_eq!(
             app.handle(Command::Down),
             AppEffect::RequestChanges(ChangesRefreshReason::Entered(TimeWindow::Last7Days))
         );
+        assert_eq!(app.screen(), Screen::Hooks);
+        assert!(app.changes_state().is_loading());
+        assert_eq!(app.handle(Command::Down), AppEffect::None);
         assert_eq!(app.screen(), Screen::Changes);
         assert_eq!(app.navigation().current(), Route::Changes);
         assert!(app.changes_state().is_loading());
@@ -1189,5 +1558,53 @@ mod tests {
         app.handle(Command::Quit);
         assert!(!app.help_open());
         assert_eq!(app.screen(), Screen::Overview);
+    }
+
+    #[test]
+    fn alias_edit_is_draft_only_until_conflict_safe_apply_result() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.handle(Command::Enter);
+        assert_eq!(app.screen(), Screen::HookDetail);
+        app.handle(Command::EditAlias);
+        assert!(app.alias_editing());
+        app.handle(Command::SearchInput('!'));
+        assert!(app.alias_dirty());
+        app.handle(Command::Enter);
+        let effect = app.handle(Command::Window(TimeWindow::All));
+        let AppEffect::ApplyAlias(request) = effect else {
+            panic!("alias apply must be explicit");
+        };
+        assert!(request.expected_alias.is_none());
+        app.alias_apply_result(AliasApplyOutcome::Saved);
+        assert_eq!(app.alias_save_state(), AliasSaveState::Saved);
+        assert!(!app.alias_dirty());
+
+        app.handle(Command::EditAlias);
+        app.handle(Command::SearchInput('?'));
+        app.handle(Command::Enter);
+        app.alias_apply_result(AliasApplyOutcome::Conflict);
+        assert_eq!(app.alias_save_state(), AliasSaveState::Conflict);
+        app.handle(Command::Back);
+        assert!(!app.alias_editing());
+    }
+
+    #[test]
+    fn dirty_alias_quit_uses_the_shared_discard_confirmation() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.handle(Command::Enter);
+        app.handle(Command::EditAlias);
+        app.handle(Command::SearchInput('!'));
+        app.handle(Command::Enter);
+        assert!(app.alias_dirty());
+
+        assert_eq!(app.handle(Command::Quit), AppEffect::None);
+        assert!(app.discard_confirmation_open());
+        app.handle(Command::Back);
+        assert!(!app.discard_confirmation_open());
+        assert!(app.alias_dirty());
+
+        assert_eq!(app.handle(Command::Quit), AppEffect::None);
+        assert_eq!(app.handle(Command::Discard), AppEffect::Quit);
+        assert!(!app.alias_editing());
     }
 }
