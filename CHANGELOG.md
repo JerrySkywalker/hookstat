@@ -2,9 +2,9 @@
 
 ## 0.3.0 — Codex Reliability Workbench
 
-HookStat v0.3.0 is an unpublished release candidate for the Codex Reliability
-Workbench and the shared TabBeacon-compatible Human interface. Publication,
-tagging, and GitHub Release creation remain separate Owner-authorized actions.
+HookStat v0.3.0 is the public release for the Codex Reliability Workbench and
+the shared TabBeacon-compatible Human interface. Its immutable crate, tag, and
+GitHub Release bind to the exact release commit.
 
 ### Reliability workbench
 

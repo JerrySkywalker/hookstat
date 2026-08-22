@@ -291,7 +291,7 @@ HS-G23=COMPLETE
 HS-G24=COMPLETE
 HS-G25=COMPLETE
 HS-G26=COMPLETE_OWNER_A_B_ACCEPTED
-HS-G27R=V03_RELEASE_CANDIDATE_UNPUBLISHED
+HS-G27R=V03_PUBLIC_RELEASE_AUTHORIZED
 SHARED_UI_REPO=JerrySkywalker/terminal-ui-contract
 SHARED_UI_VERSION=0.1.0
 SHARED_UI_REGISTRY_BINDING=EXACT
@@ -299,7 +299,8 @@ OWNER_WINDOWS_TERMINAL_A_B_DOGFOOD=PASS
 TABBEACON_UI_UX_PARITY=PASS
 ```
 
-This is an unpublished v0.3.0 candidate record, not a publication declaration.
+This is the Owner-authorized v0.3.0 public-release record. Final closure binds
+the exact release commit to its immutable crate, tag, and GitHub Release.
 The immutable v0.2.1 history above remains unchanged.
 
 ## v0.3 P0 — exact TabBeacon UI/UX convergence
