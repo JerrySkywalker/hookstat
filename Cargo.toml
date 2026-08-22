@@ -18,7 +18,7 @@ sha2 = "0.10"
 toml = "0.9"
 ratatui = "0.30"
 crossterm = "0.29"
-jerry-terminal-ui = { git = "https://github.com/JerrySkywalker/jerry-terminal-ui", rev = "75eea801a0a2c8f6f72d344da796b847710673f2" }
+jerry-terminal-ui = { git = "https://github.com/JerrySkywalker/jerry-terminal-ui", rev = "5bf1db60ba911c5ea7a01c7f7ef3924f730a0054" }
 unicode-segmentation = "1"
 unicode-width = "0.2"
 chrono = "0.4"

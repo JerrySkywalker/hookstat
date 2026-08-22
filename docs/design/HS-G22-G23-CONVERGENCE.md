@@ -6,7 +6,7 @@
 GOALS=HS-G22,HS-G23
 TABBEACON_BASELINE=2eb39c0a6af363fd4e680ad968ec17e3ffb05f7d
 SHARED_UI_REPO=JerrySkywalker/jerry-terminal-ui
-SHARED_UI_SHA=75eea801a0a2c8f6f72d344da796b847710673f2
+SHARED_UI_SHA=5bf1db60ba911c5ea7a01c7f7ef3924f730a0054
 ```
 
 HookStat retains its reliability model, period semantics, asynchronous refresh,
