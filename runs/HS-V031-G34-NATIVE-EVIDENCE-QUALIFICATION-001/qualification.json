@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "run_id": "HS-V031-G34-NATIVE-EVIDENCE-QUALIFICATION-001",
+  "kind": "controlled_codex_native_l1_qualification",
+  "result": "qualified_identity_limited_not_admitted",
+  "codex": {
+    "cli_version": "0.149.0",
+    "release_tag": "rust-v0.149.0",
+    "source_commit": "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0",
+    "app_server_v2_schema_sha256": "9B3DE71A5A2FFC980B792A18AA8F8DEC3F85F48829560222A0264FE494B679A9"
+  },
+  "controlled_evidence": {
+    "hook_started": 2,
+    "hook_completed": 2,
+    "terminal_statuses": ["completed", "failed"],
+    "duration_present": 2,
+    "distinct_location_references": 2,
+    "restart_same_configuration": "location_and_revision_match",
+    "config_change": "location_matches_revision_changes"
+  },
+  "capability_limits": {
+    "stable_handler_attribution": "not_proven",
+    "replay_or_delivery_characteristics": "not_proven",
+    "event_surface_completeness": "synchronous_only",
+    "ordinary_codex_attach_tested": false
+  },
+  "privacy": {
+    "raw_native_private_content_persisted": false,
+    "owner_live_codex_config_mutated": false
+  }
+}
