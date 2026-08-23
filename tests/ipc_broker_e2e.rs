@@ -275,10 +275,11 @@ fn concurrency_matrix_accepts_16_clients_10k_frames_and_100_clients_100k_frames(
     let temp = tempfile::tempdir().unwrap();
     let mut scale_config = config(temp.path());
     // This correctness matrix intentionally permits a larger but still
-    // finite producer deadline while 100 synthetic threads contend for a
-    // finite Windows test VM. The separate warm/concurrent smoke tests own
-    // the frozen G28 latency limits.
-    scale_config.ack_timeout = Duration::from_secs(1);
+    // finite producer deadline while 100 synthetic threads stage local-pipe
+    // connections on a finite CI VM. Production retains its 5 ms policy;
+    // the separate optimized warm/concurrent smoke tests own the frozen G28
+    // latency limits.
+    scale_config.ack_timeout = Duration::from_secs(5);
     let host = BrokerHost::start(scale_config).unwrap();
     run_clients(&host, 16, 625);
     run_clients(&host, 100, 1_000);
