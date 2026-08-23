@@ -19,6 +19,8 @@ pub mod observability;
 #[cfg(feature = "performance-harness")]
 pub mod performance;
 pub mod proxy;
+#[cfg(feature = "performance-harness")]
+pub mod qualification;
 pub mod receipt;
 pub mod render;
 pub mod report;

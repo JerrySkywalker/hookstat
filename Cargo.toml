@@ -62,6 +62,13 @@ required-features = ["performance-harness"]
 test = false
 bench = false
 
+[[bin]]
+name = "hookstat-ipc-qualify"
+path = "src/bin/hookstat_ipc_qualify.rs"
+required-features = ["performance-harness"]
+test = false
+bench = false
+
 [lints.rust]
 unsafe_code = "forbid"
 
