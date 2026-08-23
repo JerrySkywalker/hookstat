@@ -536,7 +536,7 @@ fn wait_with_original_budget(
 ) -> Result<(Option<ExitStatus>, bool), ShimError> {
     let deadline = Instant::now() + budget;
     loop {
-        if Instant::now() >= deadline {
+        if deadline_expired(Instant::now(), deadline) {
             let _ = child.kill();
             let _ = child.wait();
             return Ok((None, true));
@@ -550,6 +550,13 @@ fn wait_with_original_budget(
                 .min(Duration::from_millis(1)),
         );
     }
+}
+
+/// The exact deadline is owned by the original-handler budget: equality is a
+/// timeout, so a child observed only after its allotted budget cannot be
+/// reported as an on-time success.
+fn deadline_expired(now: Instant, deadline: Instant) -> bool {
+    now >= deadline
 }
 
 fn completion_from_status(
@@ -855,6 +862,40 @@ mod tests {
         ));
         assert!(capsule().lifecycle("invocation".into(), 1).is_ok());
     }
+
+    #[test]
+    fn sealed_capsule_rejects_wrong_key_truncation_unknown_version_and_signed_trailing_bytes() {
+        let key = [7_u8; CAPSULE_MAC_BYTES];
+        let sealed = capsule().seal(&key).unwrap();
+        assert!(matches!(
+            HandlerCapsule::unseal(&sealed, &[8_u8; CAPSULE_MAC_BYTES]),
+            Err(CapsuleError::Tampered)
+        ));
+        assert!(HandlerCapsule::unseal(&sealed[..sealed.len() - 1], &key).is_err());
+
+        let (body, _) = sealed.split_at(sealed.len() - CAPSULE_MAC_BYTES);
+        let mut unknown_version = body.to_vec();
+        unknown_version[CAPSULE_MAGIC.len()] = CAPSULE_SCHEMA_VERSION + 1;
+        append_test_mac(&mut unknown_version, &key);
+        assert!(matches!(
+            HandlerCapsule::unseal(&unknown_version, &key),
+            Err(CapsuleError::Invalid("schema"))
+        ));
+
+        let mut trailing = body.to_vec();
+        trailing.push(0);
+        append_test_mac(&mut trailing, &key);
+        assert!(matches!(
+            HandlerCapsule::unseal(&trailing, &key),
+            Err(CapsuleError::Invalid("trailing_bytes"))
+        ));
+    }
+
+    fn append_test_mac(body: &mut Vec<u8>, key: &[u8; CAPSULE_MAC_BYTES]) {
+        let mut mac = HmacSha256::new_from_slice(key).unwrap();
+        mac.update(body);
+        body.extend_from_slice(&mac.finalize().into_bytes());
+    }
     #[test]
     fn capsule_root_rejects_redirection_and_outside_file() {
         let temp = tempfile::tempdir().unwrap();
@@ -931,6 +972,24 @@ mod tests {
         let data = capsule();
         assert_eq!(data.original_budget.0, Duration::from_millis(25));
         assert_eq!(data.instrumentation_envelope.0, Duration::from_millis(20));
+    }
+
+    #[test]
+    fn original_budget_deadline_is_fail_closed_at_the_exact_boundary() {
+        let deadline = Instant::now() + Duration::from_millis(10);
+        let well_inside = deadline
+            .checked_sub(Duration::from_millis(5))
+            .expect("test deadline has room");
+        let close_below = deadline
+            .checked_sub(Duration::from_nanos(1))
+            .expect("test deadline has room");
+        assert!(!deadline_expired(well_inside, deadline));
+        assert!(!deadline_expired(close_below, deadline));
+        assert!(deadline_expired(deadline, deadline));
+        assert!(deadline_expired(
+            deadline + Duration::from_nanos(1),
+            deadline
+        ));
     }
 
     #[test]
