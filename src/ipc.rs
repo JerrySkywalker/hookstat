@@ -418,6 +418,7 @@ fn read_exact_bounded(
     mut buffer: &mut [u8],
     deadline: Instant,
 ) -> Result<(), IpcError> {
+    #[cfg(windows)]
     let mut spins = 0_u32;
     while !buffer.is_empty() {
         match input.read(buffer) {
@@ -425,18 +426,28 @@ fn read_exact_bounded(
             // a peer has connected but has not written yet. Treat it like
             // `WouldBlock` and keep the same bounded deadline.
             Ok(0) => {
-                if Instant::now() >= deadline {
+                #[cfg(unix)]
+                {
                     return Err(IpcError::Io(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "bounded IPC read",
+                        io::ErrorKind::UnexpectedEof,
+                        "Unix IPC peer closed",
                     )));
                 }
-                spins += 1;
-                if spins < 8 {
-                    std::hint::spin_loop();
-                } else {
-                    spins = 0;
-                    thread::yield_now();
+                #[cfg(windows)]
+                {
+                    if Instant::now() >= deadline {
+                        return Err(IpcError::Io(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "bounded IPC read",
+                        )));
+                    }
+                    spins += 1;
+                    if spins < 8 {
+                        std::hint::spin_loop();
+                    } else {
+                        spins = 0;
+                        thread::yield_now();
+                    }
                 }
             }
             Ok(read) => {
