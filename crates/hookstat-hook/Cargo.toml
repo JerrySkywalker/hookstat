@@ -7,6 +7,12 @@ description = "Private minimal transparent HookStat IPC shim"
 license = "MIT"
 publish = false
 
+[[bin]]
+name = "hookstat-hook-fixture"
+path = "src/bin/hookstat_hook_fixture.rs"
+test = false
+bench = false
+
 [dependencies]
 hookstat-ipc-client = { path = "../hookstat-ipc-client" }
 hmac = "0.12"

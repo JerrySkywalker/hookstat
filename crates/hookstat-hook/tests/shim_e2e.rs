@@ -72,23 +72,14 @@ fn invoke(root: &Path, capsule: &Path) -> std::process::Output {
     shim_command(root, capsule).output().unwrap()
 }
 
-fn descendant_plan(delay_seconds: u8) -> ExecutionPlan {
+fn descendant_plan(started: &Path, leaked: &Path, delay_seconds: u8) -> ExecutionPlan {
     ExecutionPlan::Direct {
-        executable: "powershell.exe".into(),
+        executable: env!("CARGO_BIN_EXE_hookstat-hook-fixture").into(),
         arguments: vec![
-            "-NoProfile".into(),
-            "-NonInteractive".into(),
-            "-Command".into(),
-            format!(
-                concat!(
-                    "Start-Process -FilePath powershell.exe -ArgumentList @(",
-                    "'-NoProfile','-NonInteractive','-Command',",
-                    "'Set-Content -LiteralPath $env:HS_G36_STARTED -Value started; ",
-                    "Start-Sleep -Seconds {delay_seconds}; Set-Content -LiteralPath $env:HS_G36_LEAK -Value leaked'); ",
-                    "Start-Sleep -Seconds 10"
-                ),
-                delay_seconds = delay_seconds,
-            ),
+            "--parent".into(),
+            started.to_string_lossy().into_owned(),
+            leaked.to_string_lossy().into_owned(),
+            (u64::from(delay_seconds) * 1_000).to_string(),
         ],
     }
 }
@@ -288,7 +279,10 @@ fn timeout_keeps_descendants_contained_after_shim_exit() {
     let leaked = temp.path().join("descendant-leaked.txt");
     let fixture = seal(
         temp.path(),
-        capsule(descendant_plan(8), Duration::from_secs(6)),
+        capsule(
+            descendant_plan(&started, &leaked, 8),
+            Duration::from_secs(6),
+        ),
     );
     let output = shim_command(temp.path(), &fixture)
         .env("HS_G36_STARTED", &started)
@@ -309,7 +303,10 @@ fn externally_killed_shim_keeps_descendants_contained() {
     let leaked = temp.path().join("forced-leaked.txt");
     let fixture = seal(
         temp.path(),
-        capsule(descendant_plan(8), Duration::from_secs(10)),
+        capsule(
+            descendant_plan(&started, &leaked, 8),
+            Duration::from_secs(10),
+        ),
     );
     let mut shim = shim_command(temp.path(), &fixture)
         .env("HS_G36_STARTED", &started)
