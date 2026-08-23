@@ -3,13 +3,14 @@
 ```text
 RUN_ID=HS-V031-G35-G36-ASYNC-ACCEPTANCE-HARDENING-002
 G35_CODE_HEAD=42868b7640cd7644126d3a2bc4b5dd25b6e073f9
-G35_QUALIFICATION_RECEIPT=g35-qualification-attempt-001.json
+G35_QUALIFICATION_RECEIPTS=g35-qualification-attempt-001.json;g35-qualification-attempt-002.json
 G35_QUALIFICATION_OUTCOME=BLOCKED_NO_QUALIFYING_WINDOW
 G35_LEGACY_CPU_HEURISTIC=LEGACY_EXPERIMENTAL_HOST_HEURISTIC
 G35_CONTROL_METHOD=PAIRED_LOCAL_BROKER_ACK_CONTROL
-G35_CONTROL_ATTEMPTS=10
+G35_QUALIFICATION_ATTEMPTS=2
+G35_CONTROL_ATTEMPTS=20
 G35_CONTROL_ADMITTED=0
-G35_CONTROL_REJECTED=10
+G35_CONTROL_REJECTED=20
 G35_SINGLE_QUALIFYING_RUNS=0_OF_5
 G35_CLIENT16_QUALIFYING_RUNS=0_OF_5
 G35_PERFORMANCE=BLOCKED_NO_QUALIFYING_WINDOW
@@ -21,7 +22,7 @@ RAW_PRIVATE_CONTENT_CAPTURED=false
 NEXT_SAFE_STEP=BOUNDED_LOW_FREQUENCY_RETRY_WITH_THE_SAME_CONTROL_AND_RETAIN_EVERY_RECEIPT
 ```
 
-The receipt contains only bounded synthetic IPC metadata and percentile
-statistics. It records every rejected control and no candidate result was
+Both receipts contain only bounded synthetic IPC metadata and percentile
+statistics. Each records every rejected control and no candidate result was
 admitted, so this checkpoint is neither a latency-budget failure nor a passing
 performance claim.
