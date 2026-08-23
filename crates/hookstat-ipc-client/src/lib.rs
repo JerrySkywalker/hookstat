@@ -324,7 +324,10 @@ pub fn write_frame(mut output: impl Write, frame: &IpcFrame) -> Result<(), IpcEr
 }
 
 pub fn read_frame_bounded(input: &mut Stream, timeout: Duration) -> Result<IpcFrame, IpcError> {
-    let deadline = Instant::now() + timeout;
+    read_frame_until(input, Instant::now() + timeout)
+}
+
+fn read_frame_until(input: &mut Stream, deadline: Instant) -> Result<IpcFrame, IpcError> {
     let mut header = [0_u8; FRAME_HEADER_BYTES];
     read_exact_bounded(input, &mut header, deadline)?;
     let length = u16::from_le_bytes([header[8], header[9]]) as usize;
@@ -344,8 +347,16 @@ pub fn write_frame_bounded(
     frame: &IpcFrame,
     timeout: Duration,
 ) -> Result<(), IpcError> {
+    write_frame_until(stream, frame, Instant::now() + timeout)
+}
+
+fn write_frame_until(
+    stream: &mut Stream,
+    frame: &IpcFrame,
+    deadline: Instant,
+) -> Result<(), IpcError> {
     let encoded = frame.encode()?;
-    write_all_bounded(stream, &encoded, Instant::now() + timeout)
+    write_all_bounded(stream, &encoded, deadline)
 }
 
 fn read_exact_bounded(
@@ -689,17 +700,42 @@ pub struct IpcClient {
 
 impl IpcClient {
     pub fn connect(endpoint: &LocalEndpoint, timeout: Duration) -> Result<Self, IpcError> {
+        Self::connect_with_timeouts(endpoint, timeout, timeout)
+    }
+
+    /// Connect and acknowledge under independently bounded budgets. The
+    /// producer contract reserves a short endpoint probe separately from the
+    /// complete write-plus-acknowledgement exchange.
+    pub fn connect_with_timeouts(
+        endpoint: &LocalEndpoint,
+        connect_timeout: Duration,
+        acknowledgement_timeout: Duration,
+    ) -> Result<Self, IpcError> {
+        if connect_timeout.is_zero() || acknowledgement_timeout.is_zero() {
+            return Err(IpcError::Invalid("client_timeout"));
+        }
         Ok(Self {
-            stream: endpoint.connect_stream(timeout)?,
-            timeout,
+            stream: endpoint.connect_stream(connect_timeout)?,
+            timeout: acknowledgement_timeout,
         })
     }
     pub fn send(&mut self, frame: &IpcFrame) -> Result<BrokerAcknowledgement, IpcError> {
+        self.send_with_timeout(frame, self.timeout)
+    }
+    pub fn send_with_timeout(
+        &mut self,
+        frame: &IpcFrame,
+        timeout: Duration,
+    ) -> Result<BrokerAcknowledgement, IpcError> {
         if !frame.is_lifecycle() {
             return Err(IpcError::Invalid("producer_frame_type"));
         }
-        write_frame_bounded(&mut self.stream, frame, self.timeout)?;
-        match read_frame_bounded(&mut self.stream, self.timeout)? {
+        if timeout.is_zero() {
+            return Err(timed_out("bounded IPC acknowledgement"));
+        }
+        let deadline = Instant::now() + timeout;
+        write_frame_until(&mut self.stream, frame, deadline)?;
+        match read_frame_until(&mut self.stream, deadline)? {
             IpcFrame::Ack(value) => Ok(value),
             _ => Err(IpcError::Invalid("acknowledgement")),
         }
@@ -727,6 +763,7 @@ pub enum ObservationDisposition {
     Busy,
     Rejected,
     Unavailable,
+    BudgetExhausted,
 }
 
 /// Tiny, runtime-neutral START/COMPLETE producer. Every failure mode is an
@@ -767,16 +804,65 @@ impl CooperativeProducer {
         })
     }
     pub fn emit(&self, frame: IpcFrame) -> ObservationDisposition {
-        let timeout = self
+        self.emit_with_budget(frame, Duration::MAX)
+    }
+
+    /// Emit one observation without spending more than `budget` on the
+    /// endpoint probe plus the complete frame/acknowledgement exchange. This
+    /// is deliberately an observation result: a depleted budget never changes
+    /// an observed Hook's terminal result.
+    pub fn emit_with_budget(&self, frame: IpcFrame, budget: Duration) -> ObservationDisposition {
+        if budget.is_zero() {
+            return ObservationDisposition::BudgetExhausted;
+        }
+        let deadline = Instant::now().checked_add(budget);
+        let Some(deadline) = deadline else {
+            return self.emit_unbounded(frame);
+        };
+        let connect_timeout = self
             .policy
             .connect_timeout
-            .min(self.policy.acknowledgement_timeout);
-        let Ok(mut client) = IpcClient::connect(&self.endpoint, timeout) else {
+            .min(deadline.saturating_duration_since(Instant::now()));
+        if connect_timeout.is_zero() {
+            return ObservationDisposition::BudgetExhausted;
+        }
+        let Ok(mut client) = IpcClient::connect_with_timeouts(
+            &self.endpoint,
+            connect_timeout,
+            self.policy.acknowledgement_timeout,
+        ) else {
             return ObservationDisposition::Unavailable;
         };
-        client
-            .send(&frame)
-            .map_or(ObservationDisposition::Rejected, observation_from_ack)
+        let acknowledgement_timeout = self
+            .policy
+            .acknowledgement_timeout
+            .min(deadline.saturating_duration_since(Instant::now()));
+        if acknowledgement_timeout.is_zero() {
+            return ObservationDisposition::BudgetExhausted;
+        }
+        match client.send_with_timeout(&frame, acknowledgement_timeout) {
+            Ok(value) => observation_from_ack(value),
+            Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::TimedOut => {
+                ObservationDisposition::BudgetExhausted
+            }
+            Err(IpcError::Io(_)) => ObservationDisposition::Unavailable,
+            Err(_) => ObservationDisposition::Rejected,
+        }
+    }
+
+    fn emit_unbounded(&self, frame: IpcFrame) -> ObservationDisposition {
+        let Ok(mut client) = IpcClient::connect_with_timeouts(
+            &self.endpoint,
+            self.policy.connect_timeout,
+            self.policy.acknowledgement_timeout,
+        ) else {
+            return ObservationDisposition::Unavailable;
+        };
+        match client.send(&frame) {
+            Ok(value) => observation_from_ack(value),
+            Err(IpcError::Io(_)) => ObservationDisposition::Unavailable,
+            Err(_) => ObservationDisposition::Rejected,
+        }
     }
 }
 
@@ -1072,5 +1158,57 @@ mod tests {
             observation_from_ack(BrokerAcknowledgement::Rejected),
             ObservationDisposition::Rejected
         );
+    }
+
+    #[test]
+    fn producer_keeps_the_acknowledgement_budget_after_a_fast_connection() {
+        let temp = tempfile::tempdir().unwrap();
+        let endpoint = LocalEndpoint::from_state_root(temp.path()).unwrap();
+        let listener = endpoint.bind().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (hold_ack_tx, hold_ack_rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok(stream) => break stream,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "producer did not connect");
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("listener failed: {error}"),
+                }
+            };
+            assert!(matches!(
+                read_frame_bounded(&mut stream, Duration::from_millis(100)),
+                Ok(IpcFrame::Start(_))
+            ));
+            // This deliberately exceeds the short connect budget but remains
+            // inside the independent acknowledgement budget.
+            thread::sleep(Duration::from_millis(30));
+            write_frame_bounded(
+                &mut stream,
+                &IpcFrame::Ack(BrokerAcknowledgement::Accepted),
+                Duration::from_millis(100),
+            )
+            .unwrap();
+            hold_ack_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        });
+        ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let producer = CooperativeProducer::new(
+            endpoint,
+            ProducerPolicy {
+                connect_timeout: Duration::from_millis(10),
+                acknowledgement_timeout: Duration::from_millis(100),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            producer.emit_start(lifecycle()),
+            ObservationDisposition::Accepted
+        );
+        hold_ack_tx.send(()).unwrap();
+        server.join().unwrap();
     }
 }

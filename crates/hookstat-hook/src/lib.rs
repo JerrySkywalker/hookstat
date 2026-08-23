@@ -6,10 +6,10 @@
 
 use hmac::{Hmac, Mac};
 use hookstat_ipc_client::{
-    Completion, CooperativeProducer, ExitClassification, LifecycleFrame, ObservationDisposition,
-    TerminalOutcome,
+    Completion, CooperativeProducer, ExitClassification, IpcFrame, LifecycleFrame,
+    ObservationDisposition, TerminalOutcome,
 };
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -80,6 +80,7 @@ impl HandlerCapsule {
         // timeout increase; it is the maximum metadata envelope that a later
         // runtime declaration may reserve for instrumentation alone.
         if self.original_budget.0.is_zero()
+            || self.original_budget.0.as_millis() > u128::from(u64::MAX)
             || self.instrumentation_envelope.0 > Duration::from_millis(50)
         {
             return Err(CapsuleError::Invalid("budget"));
@@ -234,6 +235,31 @@ impl HandlerCapsule {
     }
 }
 
+/// The exact private file name derived from the HMAC-protected identity
+/// fields. The activation writer uses this to prevent one valid capsule from
+/// being substituted at another handler's selected path.
+pub fn capsule_file_name(capsule: &HandlerCapsule) -> Result<String, CapsuleError> {
+    capsule.validate()?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"hookstat-handler-capsule-path-v1\0");
+    for value in [
+        &capsule.handler_key,
+        &capsule.revision,
+        &capsule.definition_fingerprint,
+    ] {
+        hasher.update(value.as_bytes());
+        hasher.update(b"\0");
+    }
+    let digest = hasher.finalize();
+    Ok(format!(
+        "hshc-{}.bin",
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    ))
+}
+
 /// Private capsule store: root, file, and key are all checked before bytes
 /// are read. The HMAC stops a capsule edit from becoming executable dispatch.
 pub struct CapsuleStore {
@@ -253,7 +279,13 @@ impl CapsuleStore {
             &self.root,
             Path::new("capsule.key"),
         )?)?;
-        HandlerCapsule::unseal(&fs::read(file).map_err(|_| CapsuleError::Io)?, &key)
+        let capsule =
+            HandlerCapsule::unseal(&fs::read(&file).map_err(|_| CapsuleError::Io)?, &key)?;
+        let expected = capsule_file_name(&capsule)?;
+        if file.file_name().and_then(|name| name.to_str()) != Some(expected.as_str()) {
+            return Err(CapsuleError::Path);
+        }
+        Ok(capsule)
     }
     pub fn write_for_test(
         &self,
@@ -261,6 +293,9 @@ impl CapsuleStore {
         capsule: &HandlerCapsule,
         key: &[u8; CAPSULE_MAC_BYTES],
     ) -> Result<(), CapsuleError> {
+        if relative != Path::new(&capsule_file_name(capsule)?) {
+            return Err(CapsuleError::Path);
+        }
         let path = self.root.join(relative);
         if path.parent() != Some(self.root.as_path()) {
             return Err(CapsuleError::Path);
@@ -293,16 +328,20 @@ pub struct ShimOutcome {
 
 pub fn run_capsule(capsule: &HandlerCapsule, state_root: &Path) -> Result<ShimOutcome, ShimError> {
     capsule.validate().map_err(ShimError::Capsule)?;
-    let producer = CooperativeProducer::for_state_root(state_root).map_err(ShimError::Ipc)?;
+    // IPC state is observational. A bad, unavailable, or concurrently removed
+    // state root must not prevent the original handler from executing.
+    let producer = CooperativeProducer::for_state_root(state_root).ok();
+    let mut instrumentation = InstrumentationAllowance::new(capsule.instrumentation_envelope.0);
     let started_at = now_unix_ms();
     let invocation = invocation_key(started_at);
     let lifecycle = capsule
         .lifecycle(invocation, started_at)
         .map_err(ShimError::Capsule)?;
     let started = emit_or_request_on_demand_broker(
-        &producer,
+        producer.as_ref(),
         IpcFrameKind::Start(lifecycle.clone()),
         state_root,
+        &mut instrumentation,
     );
     let mut containment = ProcessContainment::establish()?;
     let mut command = command_for(&capsule.execution);
@@ -336,7 +375,7 @@ pub fn run_capsule(capsule: &HandlerCapsule, state_root: &Path) -> Result<ShimOu
     let (exit_code, terminal_status, exit_classification, exit_value) =
         completion_from_status(status.as_ref(), timed_out);
     let completed = emit_or_request_on_demand_broker(
-        &producer,
+        producer.as_ref(),
         IpcFrameKind::Complete(
             lifecycle,
             Completion {
@@ -347,6 +386,7 @@ pub fn run_capsule(capsule: &HandlerCapsule, state_root: &Path) -> Result<ShimOu
             },
         ),
         state_root,
+        &mut instrumentation,
     );
     if timed_out {
         // Closing a kill-on-close Job while this shim itself is a member can
@@ -369,25 +409,70 @@ enum IpcFrameKind {
     Complete(LifecycleFrame, Completion),
 }
 
+/// Tracks the finite post-handler allowance separately from business time.
+/// The child always receives its full `OriginalHandlerBudget`; exhausted
+/// instrumentation time merely creates an explicit observation gap.
+struct InstrumentationAllowance {
+    remaining: Duration,
+}
+
+impl InstrumentationAllowance {
+    const fn new(remaining: Duration) -> Self {
+        Self { remaining }
+    }
+
+    fn observe(
+        &mut self,
+        producer: Option<&CooperativeProducer>,
+        frame: IpcFrameKind,
+        state_root: &Path,
+    ) -> ObservationDisposition {
+        let started = Instant::now();
+        let result = match (producer, frame) {
+            (Some(producer), IpcFrameKind::Start(lifecycle)) => {
+                producer.emit_with_budget(IpcFrame::Start(lifecycle), self.remaining)
+            }
+            (Some(producer), IpcFrameKind::Complete(lifecycle, completion)) => producer
+                .emit_with_budget(
+                    IpcFrame::Complete {
+                        lifecycle,
+                        completion,
+                    },
+                    self.remaining,
+                ),
+            (None, _) => ObservationDisposition::Unavailable,
+        };
+        if result == ObservationDisposition::Unavailable {
+            request_broker_start_async(state_root);
+        }
+        self.remaining = self.remaining.saturating_sub(started.elapsed());
+        result
+    }
+}
+
 /// The shim never waits for a broker process to become ready. An absent broker
 /// is an observation gap, not a Hook failure or a reason to consume the
 /// original business timeout. It requests the private idle-expiring broker in
 /// the background for a subsequent lifecycle event or invocation.
 fn emit_or_request_on_demand_broker(
-    producer: &CooperativeProducer,
+    producer: Option<&CooperativeProducer>,
     frame: IpcFrameKind,
     state_root: &Path,
+    instrumentation: &mut InstrumentationAllowance,
 ) -> ObservationDisposition {
-    let result = match frame {
-        IpcFrameKind::Start(lifecycle) => producer.emit_start(lifecycle),
-        IpcFrameKind::Complete(lifecycle, completion) => {
-            producer.emit_complete(lifecycle, completion)
-        }
-    };
-    if result == ObservationDisposition::Unavailable {
-        let _ = request_broker_start(state_root);
-    }
-    result
+    instrumentation.observe(producer, frame, state_root)
+}
+
+fn request_broker_start_async(state_root: &Path) {
+    let state_root = state_root.to_path_buf();
+    // Broker startup can involve process creation, so it cannot remain on the
+    // observed Hook's deadline. The request is best-effort for a following
+    // lifecycle event or invocation and never changes this handler's result.
+    let _ = thread::Builder::new()
+        .name("hookstat-ipc-broker-request".into())
+        .spawn(move || {
+            let _ = request_broker_start(&state_root);
+        });
 }
 
 fn request_broker_start(state_root: &Path) -> Result<(), ShimError> {
@@ -451,15 +536,19 @@ fn wait_with_original_budget(
 ) -> Result<(Option<ExitStatus>, bool), ShimError> {
     let deadline = Instant::now() + budget;
     loop {
-        if let Some(status) = child.try_wait().map_err(|_| ShimError::Wait)? {
-            return Ok((Some(status), false));
-        }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
             return Ok((None, true));
         }
-        thread::sleep(Duration::from_millis(1));
+        if let Some(status) = child.try_wait().map_err(|_| ShimError::Wait)? {
+            return Ok((Some(status), false));
+        }
+        thread::sleep(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(1)),
+        );
     }
 }
 
@@ -779,19 +868,16 @@ mod tests {
         let store = CapsuleStore::open(&root).unwrap();
         let key = [9_u8; CAPSULE_MAC_BYTES];
         write_key_for_test(&root, &key).unwrap();
+        let name = capsule_file_name(&capsule()).unwrap();
         store
-            .write_for_test(Path::new("fixture.bin"), &capsule(), &key)
+            .write_for_test(Path::new(&name), &capsule(), &key)
             .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(root.join("fixture.bin"), fs::Permissions::from_mode(0o600))
-                .unwrap();
+            fs::set_permissions(root.join(&name), fs::Permissions::from_mode(0o600)).unwrap();
         }
-        assert_eq!(
-            store.load("fixture.bin").unwrap().handler_key,
-            "hk_synthetic"
-        );
+        assert_eq!(store.load(&name).unwrap().handler_key, "hk_synthetic");
         assert!(store.load(temp.path().join("elsewhere.bin")).is_err());
     }
 
@@ -808,18 +894,16 @@ mod tests {
         let store = CapsuleStore::open(&root).unwrap();
         let key = [5_u8; CAPSULE_MAC_BYTES];
         write_key_for_test(&root, &key).unwrap();
+        let name = capsule_file_name(&capsule()).unwrap();
         store
-            .write_for_test(Path::new("fixture.bin"), &capsule(), &key)
+            .write_for_test(Path::new(&name), &capsule(), &key)
             .unwrap();
-        let path = root.join("fixture.bin");
+        let path = root.join(&name);
         let mut bytes = fs::read(&path).unwrap();
         let final_byte = bytes.len() - 1;
         bytes[final_byte] ^= 1;
         fs::write(&path, bytes).unwrap();
-        assert!(matches!(
-            store.load("fixture.bin"),
-            Err(CapsuleError::Tampered)
-        ));
+        assert!(matches!(store.load(&name), Err(CapsuleError::Tampered)));
     }
 
     #[cfg(windows)]
@@ -847,5 +931,42 @@ mod tests {
         let data = capsule();
         assert_eq!(data.original_budget.0, Duration::from_millis(25));
         assert_eq!(data.instrumentation_envelope.0, Duration::from_millis(20));
+    }
+
+    #[test]
+    fn capsule_file_name_binds_handler_revision_and_definition() {
+        let key = [3_u8; CAPSULE_MAC_BYTES];
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("capsules");
+        fs::create_dir(&root).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let store = CapsuleStore::open(&root).unwrap();
+        write_key_for_test(&root, &key).unwrap();
+        let first = capsule();
+        let first_name = capsule_file_name(&first).unwrap();
+        store
+            .write_for_test(Path::new(&first_name), &first, &key)
+            .unwrap();
+        let mut replacement = first.clone();
+        replacement.revision = "rev_2".into();
+        let replacement_bytes = replacement.seal(&key).unwrap();
+        fs::write(root.join(&first_name), replacement_bytes).unwrap();
+        assert!(matches!(store.load(&first_name), Err(CapsuleError::Path)));
+    }
+
+    #[test]
+    fn original_budget_rejects_millisecond_serialization_overflow() {
+        let mut data = capsule();
+        data.original_budget = OriginalHandlerBudget(
+            Duration::from_millis(u64::MAX).saturating_add(Duration::from_millis(1)),
+        );
+        assert!(matches!(
+            data.validate(),
+            Err(CapsuleError::Invalid("budget"))
+        ));
     }
 }

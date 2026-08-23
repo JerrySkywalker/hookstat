@@ -603,6 +603,7 @@ version = "0.3.0"
 dependencies = [
  "hmac",
  "hookstat-ipc-client",
+ "interprocess",
  "sha2",
  "tempfile",
  "win32job",
@@ -615,6 +616,7 @@ dependencies = [
  "interprocess",
  "nix",
  "sha2",
+ "tempfile",
  "widestring",
 ]
 

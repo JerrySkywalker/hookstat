@@ -2,11 +2,16 @@
 
 use hookstat_hook::{
     CapsuleStore, ExecutionPlan, HandlerCapsule, InstrumentationEnvelope, OriginalHandlerBudget,
-    write_key_for_test,
+    capsule_file_name, run_capsule, write_key_for_test,
 };
+use hookstat_ipc_client::{
+    BrokerAcknowledgement, IpcFrame, LocalEndpoint, read_frame_bounded, write_frame_bounded,
+};
+use interprocess::local_socket::prelude::*;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, mpsc};
+use std::thread;
 use std::time::{Duration, Instant};
 
 static PROCESS_TREE_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -30,13 +35,18 @@ fn seal(root: &Path, capsule: HandlerCapsule) -> std::path::PathBuf {
     let key = [3_u8; 32];
     let store = CapsuleStore::open(root).unwrap();
     write_key_for_test(root, &key).unwrap();
+    let name = capsule_file_name(&capsule).unwrap();
     store
-        .write_for_test(Path::new("fixture.hshc"), &capsule, &key)
+        .write_for_test(Path::new(&name), &capsule, &key)
         .unwrap();
-    root.join("fixture.hshc")
+    root.join(name)
 }
 
 fn shim_command(root: &Path, capsule: &Path) -> Command {
+    shim_command_with_state(root, capsule, &root.join("ipc-state"))
+}
+
+fn shim_command_with_state(root: &Path, capsule: &Path, state_root: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_hookstat-hook"));
     command
         .env("HOOKSTAT_IPC_NO_BROKER_START", "1")
@@ -45,7 +55,7 @@ fn shim_command(root: &Path, capsule: &Path) -> Command {
         .args(["--capsule-root"])
         .arg(root)
         .args(["--state-root"])
-        .arg(root.join("ipc-state"));
+        .arg(state_root);
     command
 }
 
@@ -133,6 +143,86 @@ fn original_timeout_is_exact_and_outer_envelope_does_not_extend_business_runtime
     let output = invoke(temp.path(), &fixture);
     assert_eq!(output.status.code(), Some(124));
     assert!(started.elapsed() < Duration::from_millis(500));
+}
+
+#[test]
+fn invalid_or_unavailable_ipc_state_is_fail_open_for_the_original_handler() {
+    let temp = tempfile::tempdir().unwrap();
+    let invalid_state = temp.path().join("not-a-directory");
+    std::fs::write(&invalid_state, b"fixture").unwrap();
+    let fixture = seal(
+        temp.path(),
+        capsule(
+            ExecutionPlan::Direct {
+                executable: "cmd.exe".into(),
+                arguments: vec!["/C".into(), "exit /b 0".into()],
+            },
+            Duration::from_secs(1),
+        ),
+    );
+    let output = shim_command_with_state(temp.path(), &fixture, &invalid_state)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn accepted_start_then_missing_complete_is_an_observation_gap_not_a_hook_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_root = temp.path().join("ipc-state");
+    let endpoint = LocalEndpoint::from_state_root(&state_root).unwrap();
+    let listener = endpoint.bind().unwrap();
+    let (ready, ready_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        ready.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok(stream) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "shim did not emit START");
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("listener failed: {error}"),
+            }
+        };
+        assert!(matches!(
+            read_frame_bounded(&mut stream, Duration::from_millis(100)),
+            Ok(IpcFrame::Start(_))
+        ));
+        write_frame_bounded(
+            &mut stream,
+            &IpcFrame::Ack(BrokerAcknowledgement::Accepted),
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        // Drop the only endpoint after START. COMPLETE therefore cannot be
+        // emitted, but the original handler must keep its terminal result.
+        drop(stream);
+        drop(listener);
+    });
+    ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    let result = run_capsule(
+        &capsule(
+            ExecutionPlan::Direct {
+                executable: "cmd.exe".into(),
+                arguments: vec!["/C".into(), "ping -n 2 127.0.0.1 >nul".into()],
+            },
+            Duration::from_secs(3),
+        ),
+        &state_root,
+    )
+    .unwrap();
+    server.join().unwrap();
+    assert_eq!(result.exit_code, 0);
+    assert_eq!(
+        result.started,
+        hookstat_ipc_client::ObservationDisposition::Accepted
+    );
+    assert_eq!(
+        result.completed,
+        hookstat_ipc_client::ObservationDisposition::Unavailable
+    );
 }
 
 #[test]
