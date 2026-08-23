@@ -12,9 +12,10 @@ use crate::evidence::{
     RuntimeNeutralEvidenceCore, SourceCoverage, SourceScope,
 };
 use interprocess::ConnectWaitMode;
+#[cfg(windows)]
+use interprocess::local_socket::GenericNamespaced;
 use interprocess::local_socket::{
-    ConnectOptions, GenericNamespaced, Listener, ListenerNonblockingMode, ListenerOptions, Stream,
-    prelude::*,
+    ConnectOptions, Listener, ListenerNonblockingMode, ListenerOptions, Stream, prelude::*,
 };
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -942,7 +943,7 @@ impl LocalEndpoint {
                 std::fs::remove_file(&path).map_err(IpcError::Io)?;
             }
             let name = path.to_fs_name::<GenericFilePath>().map_err(IpcError::Io)?;
-            return ListenerOptions::new()
+            ListenerOptions::new()
                 .name(name)
                 .nonblocking(ListenerNonblockingMode::Accept)
                 .reclaim_name(false)
@@ -980,12 +981,12 @@ impl LocalEndpoint {
 
     #[cfg(unix)]
     fn remove_socket_if_owned(&self) {
-        if let Ok(path) = self.unix_socket_path() {
-            if let Ok(metadata) = std::fs::symlink_metadata(&path) {
-                use std::os::unix::fs::FileTypeExt;
-                if metadata.file_type().is_socket() {
-                    let _ = std::fs::remove_file(path);
-                }
+        if let Ok(path) = self.unix_socket_path()
+            && let Ok(metadata) = std::fs::symlink_metadata(&path)
+        {
+            use std::os::unix::fs::FileTypeExt;
+            if metadata.file_type().is_socket() {
+                let _ = std::fs::remove_file(path);
             }
         }
     }
