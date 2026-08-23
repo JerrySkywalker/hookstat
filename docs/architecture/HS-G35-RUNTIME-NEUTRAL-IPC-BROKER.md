@@ -90,7 +90,11 @@ HSWL | WAL-version=1 | reserved=0 | binary-frame-length | SHA-256-prefix checksu
 
 The WAL has a 64 MiB hard cap. Group durability is a maximum of 64 records,
 64 KiB, or 50 ms, plus an explicit clean-shutdown flush. A producer ACK follows
-enqueue/append, not `sync_data()`; there is deliberately no per-record fsync.
+a successful complete WAL append to the operating system file buffer. The
+worker publishes that ACK before it evaluates or begins a due `sync_data()`;
+group durability is consequently never on the producer ACK critical path.
+The ACK does not claim power-loss durability, and there is deliberately no
+per-record fsync.
 
 This creates a bounded final power-loss window of **possible observational
 evidence loss**. It never means a Hook succeeded, and a missing COMPLETE stays

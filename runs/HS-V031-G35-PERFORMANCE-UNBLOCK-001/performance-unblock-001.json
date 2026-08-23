@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "run_id": "HS-V031-G35-PERFORMANCE-UNBLOCK-001",
+  "kind": "sanitized_windows_named_pipe_broker_performance_recovery",
+  "transport": "windows_named_pipe",
+  "network_listener": false,
+  "private_content_captured": false,
+  "machine_identity_captured": false,
+  "build_profile": "release_debuginfo_disabled",
+  "frozen_g28_cooperative_budget": {
+    "p95_ms_max": 1.0,
+    "p99_ms_max": 2.0,
+    "changed": false
+  },
+  "retained_pre_recovery_receipt": {
+    "path": "runs/HS-V031-G35-RUNTIME-NEUTRAL-IPC-BROKER-001/performance.json",
+    "sha256": "febd300b47a8241b2128e99b179eca02abdeba49fc96bac9e064f7e1c4be9d52",
+    "retained_loaded_16_client_result": {
+      "p50_ms": 0.193,
+      "p95_ms": 2.141,
+      "p99_ms": 8.314,
+      "classification": "exceeds_frozen_budget_not_acceptance_evidence"
+    }
+  },
+  "ack_durability_investigation": {
+    "exact_start_head": "897752b72b53959d4cf630a017a469c4778d62f1",
+    "defect_confirmed": true,
+    "old_order": ["wal_append", "flush_if_due", "possible_sync_data", "Accepted"],
+    "corrected_order": ["wal_append_complete_to_os_file_buffer", "Accepted", "flush_if_due", "possible_sync_data"],
+    "ack_claims_power_loss_durability": false,
+    "deterministic_slow_flush_test": "pass"
+  },
+  "wait_strategy_experiments": [
+    {
+      "strategy": "current_windows_nonblocking_spin_then_yield",
+      "status": "retained",
+      "release_production_deadline_ms": 5,
+      "single_client": { "p50_ms": 0.043, "p95_ms": 0.108, "p99_ms": 0.449 },
+      "client16_persistent": { "p50_ms": 0.206, "p95_ms": 0.741, "p99_ms": 1.352 },
+      "interpretation": "passes one non-qualifying observation; no proof yet of repeatable quiescent-host compliance"
+    },
+    {
+      "strategy": "windows_spin_then_deadline_capped_100us_sleep",
+      "status": "rejected_and_removed",
+      "single_client": { "p50_ms": 1.079, "p95_ms": 1.589, "p99_ms": 1.9 },
+      "client16_persistent": { "p50_ms": 1.053, "p95_ms": 1.699, "p99_ms": 2.169 },
+      "interpretation": "fails frozen cooperative budget; not retained in production"
+    },
+    {
+      "strategy": "blocking_named_pipe_stream",
+      "status": "not_adopted",
+      "interpretation": "the selected synchronous Windows Named Pipe transport exposes no receive or send timeout, so blocking would not preserve bounded producer/resource safety"
+    }
+  ],
+  "loaded_host_observations": [
+    {
+      "kind": "single_client_persistent_release",
+      "samples": 1000,
+      "p50_ms": 0.041,
+      "p95_ms": 0.107,
+      "p99_ms": 0.395,
+      "host_cpu_before_percent": [16.68, 22.4, 25.69],
+      "host_cpu_after_percent": [19.48, 33.31, 27.96],
+      "classification": "post_run_host_not_quiescent_not_acceptance_evidence"
+    },
+    {
+      "kind": "single_client_persistent_release",
+      "samples": 1000,
+      "p50_ms": 0.05,
+      "p95_ms": 0.126,
+      "p99_ms": 0.455,
+      "host_cpu_before_percent": 33.7,
+      "host_cpu_after_percent": 72.83,
+      "classification": "externally_loaded_not_acceptance_evidence"
+    },
+    {
+      "kind": "sanitized_host_quiescence_probe",
+      "cpu_percent_samples": [29.49, 33.95, 29.54],
+      "mean_percent": 30.99,
+      "max_percent": 33.95,
+      "classification": "not_quiescent"
+    },
+    {
+      "kind": "sanitized_host_quiescence_probe",
+      "cpu_percent_samples": [40.54, 36.68, 35.58],
+      "mean_percent": 37.6,
+      "max_percent": 40.54,
+      "classification": "not_quiescent"
+    }
+  ],
+  "required_quiescent_repeat_runs": {
+    "single_client_completed": 0,
+    "client16_completed": 0,
+    "required_each": 5,
+    "status": "blocked_host_not_quiescent"
+  },
+  "acceptance": "blocked_pending_5x_single_and_5x_16_client_quiescent_release_runs",
+  "notes": [
+    "All timings are synthetic bounded lifecycle metadata only; no Owner Codex configuration or private Hook content was read or changed.",
+    "Loaded-host observations and rejected wait-strategy measurements are retained; neither changes the G28 budget."
+  ]
+}

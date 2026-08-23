@@ -62,6 +62,27 @@ fn started_client(host: &BrokerHost) -> IpcClient {
     IpcClient::connect(host.endpoint(), Duration::from_millis(100)).unwrap()
 }
 
+fn production_performance_config(root: &std::path::Path) -> BrokerConfig {
+    let mut config = BrokerConfig::for_state_root(root);
+    config.idle_timeout = Duration::from_secs(3);
+    // The frozen G28 budget is release-governing. Debug harnesses retain a
+    // bounded staging allowance under debugger and test-runner overhead; the
+    // optimized release path below exercises the production 5 ms deadline.
+    if cfg!(debug_assertions) {
+        config.ack_timeout = Duration::from_millis(100);
+    }
+    config
+}
+
+fn started_production_client(host: &BrokerHost) -> IpcClient {
+    let timeout = if cfg!(debug_assertions) {
+        Duration::from_millis(100)
+    } else {
+        Duration::from_millis(5)
+    };
+    IpcClient::connect(host.endpoint(), timeout).unwrap()
+}
+
 fn e2e_serial_guard() -> MutexGuard<'static, ()> {
     static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
     GUARD
@@ -300,8 +321,8 @@ fn concurrency_matrix_accepts_16_clients_10k_frames_and_100_clients_100k_frames(
 fn broker_ack_latency_smoke_reports_sanitized_percentiles() {
     let _guard = e2e_serial_guard();
     let temp = tempfile::tempdir().unwrap();
-    let host = BrokerHost::start(config(temp.path())).unwrap();
-    let mut client = started_client(&host);
+    let host = BrokerHost::start(production_performance_config(temp.path())).unwrap();
+    let mut client = started_production_client(&host);
     let mut samples = Vec::with_capacity(1_000);
     for sequence in 0..1_000 {
         let before = Instant::now();
@@ -340,14 +361,14 @@ fn broker_ack_latency_smoke_reports_sanitized_percentiles() {
 fn concurrent_producer_latency_smoke_is_sanitized_and_bounded() {
     let _guard = e2e_serial_guard();
     let temp = tempfile::tempdir().unwrap();
-    let host = BrokerHost::start(config(temp.path())).unwrap();
+    let host = BrokerHost::start(production_performance_config(temp.path())).unwrap();
     let samples = Arc::new(Mutex::new(Vec::with_capacity(1_600)));
     thread::scope(|scope| {
         let host_ref = &host;
         for client_id in 0..16 {
             let samples = Arc::clone(&samples);
             scope.spawn(move || {
-                let mut client = started_client(host_ref);
+                let mut client = started_production_client(host_ref);
                 for sequence in 0..100 {
                     let before = Instant::now();
                     assert_eq!(
