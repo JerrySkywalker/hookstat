@@ -950,7 +950,7 @@ impl LocalEndpoint {
                 .max_spin_time(Duration::ZERO)
                 .mode(0o600)
                 .create_sync()
-                .map_err(IpcError::Io);
+                .map_err(IpcError::Io)
         }
         #[cfg(windows)]
         {
