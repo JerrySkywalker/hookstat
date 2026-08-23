@@ -428,10 +428,19 @@ fn read_exact_bounded(
             Ok(0) => {
                 #[cfg(unix)]
                 {
-                    return Err(IpcError::Io(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "Unix IPC peer closed",
-                    )));
+                    if unix_peer_closed(input)? {
+                        return Err(IpcError::Io(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "Unix IPC peer closed",
+                        )));
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(IpcError::Io(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "bounded IPC read",
+                        )));
+                    }
+                    thread::sleep(Duration::from_micros(100));
                 }
                 #[cfg(windows)]
                 {
@@ -472,6 +481,22 @@ fn read_exact_bounded(
         }
     }
     Ok(())
+}
+
+/// A zero-byte nonblocking local-socket read can occur during an accept/write
+/// handoff. On Unix, only a non-consuming peek can distinguish that condition
+/// from a peer that actually closed its side of the socket.
+#[cfg(unix)]
+fn unix_peer_closed(input: &Stream) -> Result<bool, IpcError> {
+    let mut probe = [0_u8; 1];
+    match input {
+        Stream::UdSocket(stream) => match stream.inner().peek(&mut probe) {
+            Ok(0) => Ok(true),
+            Ok(_) => Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(false),
+            Err(error) => Err(IpcError::Io(error)),
+        },
+    }
 }
 
 fn write_all_bounded(
