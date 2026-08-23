@@ -5,8 +5,11 @@ use hookstat_hook::{
     write_key_for_test,
 };
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+static PROCESS_TREE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn capsule(plan: ExecutionPlan, budget: Duration) -> HandlerCapsule {
     HandlerCapsule {
@@ -33,17 +36,53 @@ fn seal(root: &Path, capsule: HandlerCapsule) -> std::path::PathBuf {
     root.join("fixture.hshc")
 }
 
-fn invoke(root: &Path, capsule: &Path) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_hookstat-hook"))
+fn shim_command(root: &Path, capsule: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hookstat-hook"));
+    command
         .env("HOOKSTAT_IPC_NO_BROKER_START", "1")
         .args(["--capsule"])
         .arg(capsule)
         .args(["--capsule-root"])
         .arg(root)
         .args(["--state-root"])
-        .arg(root.join("ipc-state"))
-        .output()
-        .unwrap()
+        .arg(root.join("ipc-state"));
+    command
+}
+
+fn invoke(root: &Path, capsule: &Path) -> std::process::Output {
+    shim_command(root, capsule).output().unwrap()
+}
+
+fn descendant_plan(delay_seconds: u8) -> ExecutionPlan {
+    ExecutionPlan::Direct {
+        executable: "powershell.exe".into(),
+        arguments: vec![
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-Command".into(),
+            format!(
+                concat!(
+                    "Start-Process -FilePath powershell.exe -ArgumentList @(",
+                    "'-NoProfile','-NonInteractive','-Command',",
+                    "'Set-Content -LiteralPath $env:HS_G36_STARTED -Value started; ",
+                    "Start-Sleep -Seconds {delay_seconds}; Set-Content -LiteralPath $env:HS_G36_LEAK -Value leaked'); ",
+                    "Start-Sleep -Seconds 10"
+                ),
+                delay_seconds = delay_seconds,
+            ),
+        ],
+    }
+}
+
+fn wait_for(path: &Path, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if path.exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    path.exists()
 }
 
 #[test]
@@ -94,4 +133,53 @@ fn original_timeout_is_exact_and_outer_envelope_does_not_extend_business_runtime
     let output = invoke(temp.path(), &fixture);
     assert_eq!(output.status.code(), Some(124));
     assert!(started.elapsed() < Duration::from_millis(500));
+}
+
+#[test]
+fn timeout_keeps_descendants_contained_after_shim_exit() {
+    let _guard = PROCESS_TREE_TEST_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let started = temp.path().join("descendant-started.txt");
+    let leaked = temp.path().join("descendant-leaked.txt");
+    let fixture = seal(
+        temp.path(),
+        capsule(descendant_plan(8), Duration::from_secs(6)),
+    );
+    let output = shim_command(temp.path(), &fixture)
+        .env("HS_G36_STARTED", &started)
+        .env("HS_G36_LEAK", &leaked)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(124));
+    assert!(wait_for(&started, Duration::from_secs(1)));
+    std::thread::sleep(Duration::from_millis(8_500));
+    assert!(!leaked.exists());
+}
+
+#[test]
+fn externally_killed_shim_keeps_descendants_contained() {
+    let _guard = PROCESS_TREE_TEST_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let started = temp.path().join("forced-started.txt");
+    let leaked = temp.path().join("forced-leaked.txt");
+    let fixture = seal(
+        temp.path(),
+        capsule(descendant_plan(8), Duration::from_secs(10)),
+    );
+    let mut shim = shim_command(temp.path(), &fixture)
+        .env("HS_G36_STARTED", &started)
+        .env("HS_G36_LEAK", &leaked)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let descendant_started = wait_for(&started, Duration::from_secs(10));
+    // This is the exact disposable shim process spawned above, not an Owner
+    // process. Its Job Object must close and terminate its own descendants.
+    shim.kill().unwrap();
+    shim.wait().unwrap();
+    assert!(descendant_started);
+    std::thread::sleep(Duration::from_millis(1_250));
+    assert!(!leaked.exists());
 }

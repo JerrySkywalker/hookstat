@@ -61,6 +61,15 @@ runtime. A timed-out handler is terminated and produces `TimedOut` evidence if
 finalization is possible; forced external shim termination can retain only
 truthful start/incomplete coverage.
 
+The supported legacy Codex configuration represents a handler timeout as an
+optional numeric `timeout` field. Its existing adapter preserves that field
+opaque while changing legacy proxy commands; it neither parses nor changes it.
+G36 does not alter Codex configuration or install an outer declaration, so the
+only currently enforced business deadline is the capsule's exact
+`OriginalHandlerBudget`. A future owner-gated activation must prove its actual
+runtime timeout granularity and reserve any rounded outer allowance solely for
+the bounded instrumentation envelope.
+
 On Windows, `hookstat-hook` enters a kill-on-close Job Object before it spawns
 the original handler. Normal root-child exit clears the kill limit, preserving
 the established v0.3 descendant behavior; timeout or external shim death keeps

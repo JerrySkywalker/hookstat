@@ -593,8 +593,27 @@ fn contained_regular_file(root: &Path, candidate: &Path) -> Result<PathBuf, Caps
     let candidate = if candidate.is_absolute() {
         candidate.to_path_buf()
     } else {
+        let mut components = candidate.components();
+        if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+            || components.next().is_some()
+        {
+            return Err(CapsuleError::Path);
+        }
         root.join(candidate)
     };
+    // Capsules are deliberately a flat private control-plane directory.  By
+    // accepting only an immediate child, no intermediate symlink/junction or
+    // `..` component can redirect a capsule lookup before its final metadata
+    // is inspected.
+    let parent = candidate.parent().ok_or(CapsuleError::Path)?;
+    let parent_metadata = fs::symlink_metadata(parent).map_err(|_| CapsuleError::Path)?;
+    if parent_metadata.file_type().is_symlink()
+        || !parent_metadata.is_dir()
+        || metadata_is_unsafe(&parent_metadata)
+        || fs::canonicalize(parent).map_err(|_| CapsuleError::Path)? != root
+    {
+        return Err(CapsuleError::Path);
+    }
     let metadata = fs::symlink_metadata(&candidate).map_err(|_| CapsuleError::Path)?;
     if metadata.file_type().is_symlink() || !metadata.is_file() || metadata_is_unsafe(&metadata) {
         return Err(CapsuleError::Path);
@@ -774,6 +793,54 @@ mod tests {
             "hk_synthetic"
         );
         assert!(store.load(temp.path().join("elsewhere.bin")).is_err());
+    }
+
+    #[test]
+    fn sealed_capsule_file_rejects_tamper() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("capsules");
+        fs::create_dir(&root).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let store = CapsuleStore::open(&root).unwrap();
+        let key = [5_u8; CAPSULE_MAC_BYTES];
+        write_key_for_test(&root, &key).unwrap();
+        store
+            .write_for_test(Path::new("fixture.bin"), &capsule(), &key)
+            .unwrap();
+        let path = root.join("fixture.bin");
+        let mut bytes = fs::read(&path).unwrap();
+        let final_byte = bytes.len() - 1;
+        bytes[final_byte] ^= 1;
+        fs::write(&path, bytes).unwrap();
+        assert!(matches!(
+            store.load("fixture.bin"),
+            Err(CapsuleError::Tampered)
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn capsule_root_rejects_windows_reparse_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("capsules");
+        fs::create_dir(&root).unwrap();
+        let store = CapsuleStore::open(&root).unwrap();
+        let target = temp.path().join("outside.bin");
+        fs::write(&target, b"synthetic").unwrap();
+        let link = root.join("redirected.bin");
+        // Developer Mode or equivalent rights are needed to create a test
+        // symlink on some Windows machines. The production check is always
+        // active; skip only the fixture creation when Windows denies it.
+        if std::os::windows::fs::symlink_file(&target, &link).is_ok() {
+            assert!(matches!(
+                store.load("redirected.bin"),
+                Err(CapsuleError::Path)
+            ));
+        }
     }
     #[test]
     fn outer_envelope_never_changes_original_budget() {
