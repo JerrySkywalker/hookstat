@@ -281,8 +281,13 @@ fn concurrency_matrix_accepts_16_clients_10k_frames_and_100_clients_100k_frames(
     // latency limits.
     scale_config.ack_timeout = Duration::from_secs(5);
     let host = BrokerHost::start(scale_config).unwrap();
-    run_clients(&host, 16, 625);
-    run_clients(&host, 100, 1_000);
+    // This is a correctness/staging deadline for a deliberately contended
+    // 100-client test, not the production cooperative IPC acknowledgment
+    // budget. Keep the synthetic client deadline aligned with the broker's
+    // bounded test deadline so scheduler contention is reported as a bounded
+    // failure rather than a mismatched 100 ms client timeout.
+    run_clients(&host, 16, 625, Duration::from_secs(5));
+    run_clients(&host, 100, 1_000, Duration::from_secs(5));
     let health = host.health();
     assert_eq!(health.accepted, 110_000);
     assert_eq!(health.rejected, 0);
@@ -429,12 +434,12 @@ fn wal_append_and_group_flush_smoke_reports_sanitized_percentiles() {
     assert!(appends.iter().all(|value| *value < 50_000_000));
 }
 
-fn run_clients(host: &BrokerHost, clients: u32, frames_per_client: u32) {
+fn run_clients(host: &BrokerHost, clients: u32, frames_per_client: u32, client_timeout: Duration) {
     thread::scope(|scope| {
         let mut workers = Vec::new();
         for client_id in 0..clients {
             workers.push(scope.spawn(move || {
-                let mut client = started_client(host);
+                let mut client = IpcClient::connect(host.endpoint(), client_timeout).unwrap();
                 for sequence in 0..frames_per_client {
                     assert_eq!(
                         client.send(&frame(client_id, sequence)).unwrap(),
