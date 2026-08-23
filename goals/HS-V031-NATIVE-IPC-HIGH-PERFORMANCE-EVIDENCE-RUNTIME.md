@@ -469,6 +469,32 @@ The implementer may not autonomously:
 - require a global/network daemon;
 - publish crates.io, create the public v0.3.1 tag, or create the public GitHub Release.
 
+## Bounded stacked-development exception
+
+A predecessor Goal with complete/stable implementation may permit implementation of **one and only one** successor Goal before predecessor acceptance/merge when its remaining blockers are external acceptance conditions rather than unresolved implementation defects.
+
+Required predecessor state:
+
+```text
+PREDECESSOR_IMPLEMENTATION_COMPLETE=true
+PREDECESSOR_KNOWN_CODE_BLOCKERS=0
+PREDECESSOR_CI=PASS
+PREDECESSOR_ARCHITECTURE_STABLE=true
+MAX_STACK_DEPTH=1
+```
+
+Admitted blocker classes are limited to Owner/environment qualification, real-hardware/host qualification, external-service availability, independent review, or another Owner-only evidence/approval gate.
+
+This exception MUST NOT be used when the predecessor has an unresolved correctness defect, architecture uncertainty, persistence/data-corruption risk, privacy/security defect, unstable protocol/API/format contract, or unresolved evidence/failure semantics.
+
+The successor must branch from the exact predecessor implementation head and target the predecessor branch as a stacked PR. It may be implemented, tested, reviewed, and kept CI-green, but it MUST NOT merge to `main` until the predecessor is accepted and merged. After predecessor merge, the successor must be rebased/retargeted to accepted `main` and exact-head CI must be repeated before successor merge.
+
+Acceptance work on the predecessor may proceed in parallel. If the predecessor remains unmerged after the one successor Goal is implemented, downstream development stops; stacking may not continue to a second successor.
+
+This exception changes scheduling only. It does not weaken Goal acceptance criteria, performance budgets, review requirements, evidence truthfulness, or release gates.
+
+For the current G35/G36 sequence, G36 stacked implementation is permitted only while G35 has no known implementation/correctness blocker and its remaining blockers are external performance qualification and/or independent review. G37 remains blocked until both G35 and G36 are accepted into `main`.
+
 ## Mandatory version stop gates
 
 1. **After G28:** stop if the selected IPC transport cannot satisfy a credible low-latency Windows budget.

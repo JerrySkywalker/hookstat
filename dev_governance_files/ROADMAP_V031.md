@@ -42,7 +42,46 @@ PUBLIC v0.3.1
 
 `HS-G30X` through `HS-G33X` remain reserved future-runtime tracks and are not v0.3.1 dependencies.
 
-Default execution is sequential. A long autonomous train may continue only after the predecessor acceptance conditions are actually satisfied and merged. `HS-G38R` is a mandatory release boundary; public crates.io/tag/GitHub Release publication remains an explicit Owner gate.
+Default execution is sequential. A long autonomous train may continue only after the predecessor acceptance conditions are actually satisfied and merged, except for the bounded stacked-development exception below. `HS-G38R` is a mandatory release boundary; public crates.io/tag/GitHub Release publication remains an explicit Owner gate.
+
+## Bounded stacked-development exception
+
+A predecessor Goal whose **implementation is complete** may permit implementation of exactly one successor Goal before predecessor acceptance/merge when the only remaining blockers are external to the implementation itself.
+
+The exception is admitted only when all of the following are true:
+
+```text
+PREDECESSOR_IMPLEMENTATION_COMPLETE=true
+PREDECESSOR_KNOWN_CODE_BLOCKERS=0
+PREDECESSOR_CI=PASS
+PREDECESSOR_ARCHITECTURE_STABLE=true
+MAX_STACK_DEPTH=1
+```
+
+Admitted blocker classes are limited to:
+
+```text
+OWNER_ENVIRONMENT
+REAL_HARDWARE_OR_HOST_QUALIFICATION
+EXTERNAL_SERVICE_AVAILABILITY
+INDEPENDENT_REVIEW
+OWNER_ONLY_EVIDENCE_OR_APPROVAL
+```
+
+The exception is **not** available when the predecessor has an unresolved correctness bug, architecture uncertainty, persistence/data-corruption risk, privacy/security defect, unstable API/format contract, or unresolved evidence/failure semantics.
+
+A stacked successor must:
+
+- branch from the exact predecessor implementation head;
+- open a stacked PR against the predecessor branch rather than `main`;
+- remain unmerged to `main` until the predecessor is accepted and merged;
+- preserve the predecessor's pending acceptance evidence rather than reclassifying it;
+- be rebased/retargeted to accepted `main` and re-run exact-head CI before its own merge;
+- stop after that one successor Goal if the predecessor still has not merged.
+
+Acceptance work for the predecessor may proceed in parallel with successor implementation. This exception changes execution scheduling only; it does not weaken any Goal acceptance criterion, frozen performance budget, review requirement, or release gate.
+
+For the current G35/G36 sequence, G36 stacked implementation is permitted only while G35 has no known implementation/correctness blocker and its remaining gates are external acceptance evidence/review. G37 remains blocked until both G35 and G36 are accepted into `main`.
 
 ## Goal index
 
@@ -187,7 +226,7 @@ Train F: G38
 Train G: G38R -> Owner publication gate
 ```
 
-Partitions are estimates. Goal acceptance and truthful state remain authoritative.
+Partitions are estimates. Goal acceptance and truthful state remain authoritative. A stacked train created by the bounded exception remains capped at one successor Goal and does not advance the downstream train schedule.
 
 ## Mandatory stop gates
 
