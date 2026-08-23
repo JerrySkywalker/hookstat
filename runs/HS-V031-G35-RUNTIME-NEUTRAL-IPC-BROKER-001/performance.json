@@ -50,17 +50,29 @@
       "p95_ms": 0.499,
       "p99_ms": 0.616,
       "includes": ["sync_data_for_group"]
+    },
+    {
+      "name": "producer_to_broker_ack_concurrent_16_clients_release_contention_observation",
+      "samples": 1600,
+      "p50_ms": 0.193,
+      "p95_ms": 2.141,
+      "p99_ms": 8.314,
+      "result": "exceeds_frozen_budget_not_acceptance_evidence",
+      "includes": ["named_pipe", "protocol_validation", "bounded_enqueue", "wal_append", "broker_ack"]
     }
   ],
   "frozen_g28_cooperative_budget": {
     "p95_ms_max": 1.0,
     "p99_ms_max": 2.0,
-    "single_client": "pass",
-    "concurrent_16_client_smoke": "pass"
+    "single_client_release_repeat": "pass_p95_0.081_p99_0.402",
+    "earlier_concurrent_16_client_smoke": "pass_p95_0.579_p99_0.839",
+    "latest_concurrent_16_client_release_observation": "blocked_p95_2.141_p99_8.314",
+    "acceptance": "blocked_pending_quiescent_repeatability"
   },
   "notes": [
     "This is a sanitized synthetic broker measurement, not an Owner live Hook measurement.",
     "No hostname, private path, raw command, payload, or processor model was recorded.",
-    "The end-to-end acknowledgement includes the broker enqueue and append path; direct WAL append and group flush are also measured above."
+    "The end-to-end acknowledgement includes the broker enqueue and append path; direct WAL append and group flush are also measured above.",
+    "The latest concurrent release observation was taken while unrelated local processor load was high. It is retained as a visible outlier and does not change the frozen G28 budget."
   ]
 }

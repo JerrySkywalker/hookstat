@@ -22,3 +22,8 @@ required before merge.
 Independent review is still required before merge. The review should inspect the
 exact PR head, including Windows Named Pipe and Linux Unix Domain Socket CI.
 No Owner live Codex configuration was read or mutated for this run.
+
+Performance acceptance is also blocked: a later 16-client optimized Windows
+sample under unrelated host load measured p95 2.141 ms and p99 8.314 ms,
+outside the frozen G28 budget. The sanitized evidence retains both that outlier
+and the earlier passing release measurement; it does not relax the budget.
