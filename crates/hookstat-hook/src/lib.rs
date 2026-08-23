@@ -1,0 +1,361 @@
+//! Private handler capsule validation and transparent shim execution.
+//!
+//! Capsule command material is a private control-plane payload. This crate
+//! never writes it to IPC, diagnostics, standard output/error, a WAL, or a
+//! HookStat ledger.
+
+use hmac::{Hmac, Mac};
+use hookstat_ipc_client::{
+    Completion, CooperativeProducer, ExitClassification, LifecycleFrame, ObservationDisposition,
+    TerminalOutcome,
+};
+use sha2::Sha256;
+use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+type HmacSha256 = Hmac<Sha256>;
+
+const CAPSULE_MAGIC: [u8; 4] = *b"HSHC";
+const CAPSULE_SCHEMA_VERSION: u8 = 1;
+const CAPSULE_MAC_BYTES: usize = 32;
+const MAX_CAPSULE_BYTES: usize = 16 * 1024;
+const MAX_PRIVATE_COMMAND_BYTES: usize = 8 * 1024;
+const MAX_ARGUMENTS: usize = 32;
+
+/// Original handler time remains independent of any outer declaration. The
+/// shim enforces this exact budget itself.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OriginalHandlerBudget(pub Duration);
+
+/// An outer runtime may grant this much time only for bounded instrumentation.
+/// The value is capsule metadata; it never increases the handler budget.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InstrumentationEnvelope(pub Duration);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExecutionPlan {
+    /// The plan was preclassified by trusted instrumentation as executable and
+    /// argv. The shim never reparses a shell command to construct this plan.
+    Direct { executable: String, arguments: Vec<String> },
+    /// Exact platform shell fallback for command semantics that cannot be
+    /// safely represented as a direct executable/argv plan.
+    Shell { command: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HandlerCapsule {
+    pub handler_key: String,
+    pub revision: String,
+    pub definition_fingerprint: String,
+    pub runtime: String,
+    pub runtime_instance: String,
+    pub event: String,
+    pub source_scope: String,
+    pub original_budget: OriginalHandlerBudget,
+    pub instrumentation_envelope: InstrumentationEnvelope,
+    pub execution: ExecutionPlan,
+}
+
+impl HandlerCapsule {
+    pub fn validate(&self) -> Result<(), CapsuleError> {
+        for value in [
+            &self.handler_key,
+            &self.revision,
+            &self.definition_fingerprint,
+            &self.runtime,
+            &self.runtime_instance,
+            &self.event,
+            &self.source_scope,
+        ] {
+            validate_reference(value)?;
+        }
+        // G28's frozen cold shim p95 is 50 ms. This ceiling is not a business
+        // timeout increase; it is the maximum metadata envelope that a later
+        // runtime declaration may reserve for instrumentation alone.
+        if self.original_budget.0.is_zero() || self.instrumentation_envelope.0 > Duration::from_millis(50) {
+            return Err(CapsuleError::Invalid("budget"));
+        }
+        match &self.execution {
+            ExecutionPlan::Direct { executable, arguments } => {
+                validate_private_text(executable)?;
+                if arguments.len() > MAX_ARGUMENTS { return Err(CapsuleError::Invalid("argument_count")); }
+                for value in arguments { validate_private_text(value)?; }
+            }
+            ExecutionPlan::Shell { command } => validate_private_text(command)?,
+        }
+        Ok(())
+    }
+
+    pub fn lifecycle(&self, invocation: String, occurred_at_unix_ms: i64) -> Result<LifecycleFrame, CapsuleError> {
+        self.validate()?;
+        Ok(LifecycleFrame {
+            runtime: self.runtime.clone(),
+            runtime_instance: self.runtime_instance.clone(),
+            invocation,
+            handler: self.handler_key.clone(),
+            event: self.event.clone(),
+            source_scope: self.source_scope.clone(),
+            revision: Some(self.revision.clone()),
+            occurred_at_unix_ms,
+        })
+    }
+
+    /// Only an instrumentation/control-plane caller that holds the private
+    /// key may emit this sealed payload. No capsule body is sent to IPC.
+    pub fn seal(&self, key: &[u8; CAPSULE_MAC_BYTES]) -> Result<Vec<u8>, CapsuleError> {
+        self.validate()?;
+        let mut body = Vec::with_capacity(512);
+        body.extend_from_slice(&CAPSULE_MAGIC);
+        body.push(CAPSULE_SCHEMA_VERSION);
+        for value in [
+            &self.handler_key,
+            &self.revision,
+            &self.definition_fingerprint,
+            &self.runtime,
+            &self.runtime_instance,
+            &self.event,
+            &self.source_scope,
+        ] { put_text(&mut body, value)?; }
+        body.extend_from_slice(&(self.original_budget.0.as_millis() as u64).to_le_bytes());
+        body.extend_from_slice(&(self.instrumentation_envelope.0.as_millis() as u64).to_le_bytes());
+        match &self.execution {
+            ExecutionPlan::Direct { executable, arguments } => {
+                body.push(1);
+                put_text(&mut body, executable)?;
+                body.push(u8::try_from(arguments.len()).map_err(|_| CapsuleError::Invalid("argument_count"))?);
+                for argument in arguments { put_text(&mut body, argument)?; }
+            }
+            ExecutionPlan::Shell { command } => { body.push(2); put_text(&mut body, command)?; }
+        }
+        if body.len() + CAPSULE_MAC_BYTES > MAX_CAPSULE_BYTES { return Err(CapsuleError::Invalid("capsule_size")); }
+        let mut mac = HmacSha256::new_from_slice(key).map_err(|_| CapsuleError::Invalid("capsule_key"))?;
+        mac.update(&body);
+        body.extend_from_slice(&mac.finalize().into_bytes());
+        Ok(body)
+    }
+
+    fn unseal(input: &[u8], key: &[u8; CAPSULE_MAC_BYTES]) -> Result<Self, CapsuleError> {
+        if input.len() <= CAPSULE_MAC_BYTES || input.len() > MAX_CAPSULE_BYTES { return Err(CapsuleError::Invalid("capsule_size")); }
+        let (body, tag) = input.split_at(input.len() - CAPSULE_MAC_BYTES);
+        let mut mac = HmacSha256::new_from_slice(key).map_err(|_| CapsuleError::Invalid("capsule_key"))?;
+        mac.update(body);
+        mac.verify_slice(tag).map_err(|_| CapsuleError::Tampered)?;
+        let mut cursor = CapsuleCursor::new(body);
+        if cursor.bytes(4)? != CAPSULE_MAGIC || cursor.u8()? != CAPSULE_SCHEMA_VERSION { return Err(CapsuleError::Invalid("schema")); }
+        let handler_key = cursor.text()?;
+        let revision = cursor.text()?;
+        let definition_fingerprint = cursor.text()?;
+        let runtime = cursor.text()?;
+        let runtime_instance = cursor.text()?;
+        let event = cursor.text()?;
+        let source_scope = cursor.text()?;
+        let original_budget = OriginalHandlerBudget(Duration::from_millis(cursor.u64()?));
+        let instrumentation_envelope = InstrumentationEnvelope(Duration::from_millis(cursor.u64()?));
+        let execution = match cursor.u8()? {
+            1 => {
+                let executable = cursor.text()?;
+                let count = cursor.u8()? as usize;
+                if count > MAX_ARGUMENTS { return Err(CapsuleError::Invalid("argument_count")); }
+                let mut arguments = Vec::with_capacity(count);
+                for _ in 0..count { arguments.push(cursor.text()?); }
+                ExecutionPlan::Direct { executable, arguments }
+            }
+            2 => ExecutionPlan::Shell { command: cursor.text()? },
+            _ => return Err(CapsuleError::Invalid("execution_plan")),
+        };
+        if !cursor.is_empty() { return Err(CapsuleError::Invalid("trailing_bytes")); }
+        let capsule = Self { handler_key, revision, definition_fingerprint, runtime, runtime_instance, event, source_scope, original_budget, instrumentation_envelope, execution };
+        capsule.validate()?;
+        Ok(capsule)
+    }
+}
+
+/// Private capsule store: root, file, and key are all checked before bytes
+/// are read. The HMAC stops a capsule edit from becoming executable dispatch.
+pub struct CapsuleStore { root: PathBuf }
+impl CapsuleStore {
+    pub fn open(root: impl AsRef<Path>) -> Result<Self, CapsuleError> {
+        let root = secure_directory(root.as_ref())?;
+        Ok(Self { root })
+    }
+    pub fn root(&self) -> &Path { &self.root }
+    pub fn load(&self, path: impl AsRef<Path>) -> Result<HandlerCapsule, CapsuleError> {
+        let file = contained_regular_file(&self.root, path.as_ref())?;
+        let key = read_key(&contained_regular_file(&self.root, Path::new("capsule.key"))?)?;
+        HandlerCapsule::unseal(&fs::read(file).map_err(|_| CapsuleError::Io)?, &key)
+    }
+    pub fn write_for_test(&self, relative: &Path, capsule: &HandlerCapsule, key: &[u8; CAPSULE_MAC_BYTES]) -> Result<(), CapsuleError> {
+        let path = self.root.join(relative);
+        if path.parent() != Some(self.root.as_path()) { return Err(CapsuleError::Path); }
+        fs::write(path, capsule.seal(key)?).map_err(|_| CapsuleError::Io)
+    }
+}
+
+pub fn write_key_for_test(root: &Path, key: &[u8; CAPSULE_MAC_BYTES]) -> Result<(), CapsuleError> {
+    let path = root.join("capsule.key");
+    fs::write(&path, key).map_err(|_| CapsuleError::Io)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|_| CapsuleError::Io)?;
+    }
+    Ok(())
+}
+
+/// Result returned to the CLI without revealing private command material.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShimOutcome { pub exit_code: i32, pub started: ObservationDisposition, pub completed: ObservationDisposition, pub timed_out: bool, pub direct_process: bool }
+
+pub fn run_capsule(capsule: &HandlerCapsule, state_root: &Path) -> Result<ShimOutcome, ShimError> {
+    capsule.validate().map_err(ShimError::Capsule)?;
+    let producer = CooperativeProducer::for_state_root(state_root).map_err(ShimError::Ipc)?;
+    let started_at = now_unix_ms();
+    let invocation = invocation_key(started_at);
+    let lifecycle = capsule.lifecycle(invocation, started_at).map_err(ShimError::Capsule)?;
+    let started = emit_or_request_on_demand_broker(&producer, IpcFrameKind::Start(lifecycle.clone()), state_root);
+    let mut containment = ProcessContainment::establish()?;
+    let mut command = command_for(&capsule.execution);
+    command.stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit());
+    let mut child = command.spawn().map_err(|_| ShimError::Spawn)?;
+    let (status, timed_out) = wait_with_original_budget(&mut child, capsule.original_budget.0)?;
+    if !timed_out { containment.release_after_normal_root_exit()?; }
+    let completed_at = now_unix_ms();
+    let (exit_code, terminal_status, exit_classification, exit_value) = completion_from_status(status.as_ref(), timed_out);
+    let completed = emit_or_request_on_demand_broker(&producer, IpcFrameKind::Complete(lifecycle, Completion { terminal_status, exit_classification, exit_value, duration_ms: completed_at.saturating_sub(started_at) as u64 }), state_root);
+    Ok(ShimOutcome { exit_code, started, completed, timed_out, direct_process: matches!(capsule.execution, ExecutionPlan::Direct { .. }) })
+}
+
+enum IpcFrameKind { Start(LifecycleFrame), Complete(LifecycleFrame, Completion) }
+
+/// The shim never waits for a broker process to become ready. An absent broker
+/// is an observation gap, not a Hook failure or a reason to consume the
+/// original business timeout. It requests the private idle-expiring broker in
+/// the background for a subsequent lifecycle event or invocation.
+fn emit_or_request_on_demand_broker(producer: &CooperativeProducer, frame: IpcFrameKind, state_root: &Path) -> ObservationDisposition {
+    let result = match frame {
+        IpcFrameKind::Start(lifecycle) => producer.emit_start(lifecycle),
+        IpcFrameKind::Complete(lifecycle, completion) => producer.emit_complete(lifecycle, completion),
+    };
+    if result == ObservationDisposition::Unavailable { let _ = request_broker_start(state_root); }
+    result
+}
+
+fn request_broker_start(state_root: &Path) -> Result<(), ShimError> {
+    let executable = std::env::current_exe().map_err(|_| ShimError::Spawn)?;
+    let Some(parent) = executable.parent() else { return Err(ShimError::Spawn); };
+    #[cfg(windows)]
+    let broker = parent.join("hookstat-ipc-broker.exe");
+    #[cfg(not(windows))]
+    let broker = parent.join("hookstat-ipc-broker");
+    if !broker.is_file() { return Err(ShimError::Spawn); }
+    Command::new(broker).arg("--state-root").arg(state_root).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(|_| ()).map_err(|_| ShimError::Spawn)
+}
+
+fn command_for(plan: &ExecutionPlan) -> Command {
+    match plan {
+        ExecutionPlan::Direct { executable, arguments } => { let mut value = Command::new(executable); value.args(arguments); value }
+        ExecutionPlan::Shell { command } => platform_shell(command),
+    }
+}
+
+#[cfg(windows)]
+fn platform_shell(command_line: &str) -> Command { let mut value = Command::new(std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into())); value.arg("/C").arg(command_line); value }
+#[cfg(not(windows))]
+fn platform_shell(command_line: &str) -> Command { let mut value = Command::new(std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into())); value.args(["-lc", command_line]); value }
+
+fn wait_with_original_budget(child: &mut std::process::Child, budget: Duration) -> Result<(Option<ExitStatus>, bool), ShimError> {
+    let deadline = Instant::now() + budget;
+    loop {
+        if let Some(status) = child.try_wait().map_err(|_| ShimError::Wait)? { return Ok((Some(status), false)); }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok((None, true));
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn completion_from_status(status: Option<&ExitStatus>, timed_out: bool) -> (i32, TerminalOutcome, ExitClassification, Option<i32>) {
+    if timed_out { return (124, TerminalOutcome::TimedOut, ExitClassification::RuntimeControlled, Some(124)); }
+    match status.and_then(ExitStatus::code) {
+        Some(0) => (0, TerminalOutcome::Completed, ExitClassification::ExitCode, Some(0)),
+        Some(code) => (code, TerminalOutcome::Failed, ExitClassification::ExitCode, Some(code)),
+        None => (1, TerminalOutcome::ProtocolFailure, ExitClassification::RuntimeControlled, Some(1)),
+    }
+}
+
+#[cfg(windows)]
+struct ProcessContainment { job: win32job::Job }
+#[cfg(windows)]
+impl ProcessContainment {
+    fn establish() -> Result<Self, ShimError> { let mut limits = win32job::ExtendedLimitInfo::new(); limits.limit_kill_on_job_close(); let job = win32job::Job::create_with_limit_info(&limits).map_err(|_| ShimError::Containment)?; job.assign_current_process().map_err(|_| ShimError::Containment)?; Ok(Self { job }) }
+    fn release_after_normal_root_exit(&mut self) -> Result<(), ShimError> { let mut limits = self.job.query_extended_limit_info().map_err(|_| ShimError::Containment)?; limits.clear_limits(); self.job.set_extended_limit_info(&limits).map_err(|_| ShimError::Containment) }
+}
+#[cfg(not(windows))]
+struct ProcessContainment;
+#[cfg(not(windows))]
+impl ProcessContainment { fn establish() -> Result<Self, ShimError> { Ok(Self) } fn release_after_normal_root_exit(&mut self) -> Result<(), ShimError> { Ok(()) } }
+
+#[derive(Debug)]
+pub enum CapsuleError { Io, Path, Tampered, Invalid(&'static str) }
+impl fmt::Display for CapsuleError { fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result { output.write_str(match self { Self::Io => "private capsule I/O failed", Self::Path => "private capsule path was rejected", Self::Tampered => "private capsule integrity validation failed", Self::Invalid(_) => "private capsule was invalid" }) } }
+impl std::error::Error for CapsuleError {}
+
+#[derive(Debug)]
+pub enum ShimError { Capsule(CapsuleError), Ipc(hookstat_ipc_client::IpcError), Spawn, Wait, Containment }
+impl fmt::Display for ShimError { fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result { output.write_str(match self { Self::Capsule(_) => "hookstat-hook could not load its private capsule", Self::Ipc(_) => "hookstat-hook could not initialize bounded local IPC", Self::Spawn => "hookstat-hook could not start the original handler", Self::Wait => "hookstat-hook could not wait for the original handler", Self::Containment => "hookstat-hook could not establish required process containment" }) } }
+impl std::error::Error for ShimError {}
+
+fn secure_directory(root: &Path) -> Result<PathBuf, CapsuleError> {
+    let metadata = fs::symlink_metadata(root).map_err(|_| CapsuleError::Path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() || metadata_is_unsafe(&metadata) { return Err(CapsuleError::Path); }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 { return Err(CapsuleError::Path); }
+    }
+    fs::canonicalize(root).map_err(|_| CapsuleError::Path)
+}
+fn contained_regular_file(root: &Path, candidate: &Path) -> Result<PathBuf, CapsuleError> {
+    let candidate = if candidate.is_absolute() { candidate.to_path_buf() } else { root.join(candidate) };
+    let metadata = fs::symlink_metadata(&candidate).map_err(|_| CapsuleError::Path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata_is_unsafe(&metadata) { return Err(CapsuleError::Path); }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 { return Err(CapsuleError::Path); }
+    }
+    let canonical = fs::canonicalize(candidate).map_err(|_| CapsuleError::Path)?;
+    if canonical.parent() != Some(root) { return Err(CapsuleError::Path); }
+    Ok(canonical)
+}
+fn metadata_is_unsafe(metadata: &fs::Metadata) -> bool {
+    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; if metadata.permissions().mode() & 0o022 != 0 { return true; } }
+    #[cfg(windows)] { use std::os::windows::fs::MetadataExt; const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400; if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 { return true; } }
+    false
+}
+fn read_key(path: &Path) -> Result<[u8; CAPSULE_MAC_BYTES], CapsuleError> { fs::read(path).map_err(|_| CapsuleError::Io)?.try_into().map_err(|_| CapsuleError::Invalid("capsule_key")) }
+fn validate_reference(value: &str) -> Result<(), CapsuleError> { if value.is_empty() || value.len() > 128 || value.chars().any(|value| !matches!(value, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '.' | ':')) { return Err(CapsuleError::Invalid("reference")); } Ok(()) }
+fn validate_private_text(value: &str) -> Result<(), CapsuleError> { if value.is_empty() || value.len() > MAX_PRIVATE_COMMAND_BYTES || value.contains('\0') { return Err(CapsuleError::Invalid("private_text")); } Ok(()) }
+fn put_text(output: &mut Vec<u8>, value: &str) -> Result<(), CapsuleError> { validate_private_text(value)?; let length = u16::try_from(value.len()).map_err(|_| CapsuleError::Invalid("private_text"))?; output.extend_from_slice(&length.to_le_bytes()); output.extend_from_slice(value.as_bytes()); Ok(()) }
+struct CapsuleCursor<'a> { input: &'a [u8], offset: usize }
+impl<'a> CapsuleCursor<'a> { fn new(input: &'a [u8]) -> Self { Self { input, offset: 0 } } fn is_empty(&self) -> bool { self.offset == self.input.len() } fn bytes(&mut self, length: usize) -> Result<&'a [u8], CapsuleError> { let end = self.offset.checked_add(length).ok_or(CapsuleError::Invalid("truncated"))?; let value = self.input.get(self.offset..end).ok_or(CapsuleError::Invalid("truncated"))?; self.offset = end; Ok(value) } fn u8(&mut self) -> Result<u8, CapsuleError> { Ok(self.bytes(1)?[0]) } fn u64(&mut self) -> Result<u64, CapsuleError> { Ok(u64::from_le_bytes(self.bytes(8)?.try_into().map_err(|_| CapsuleError::Invalid("truncated"))?)) } fn text(&mut self) -> Result<String, CapsuleError> { let len = u16::from_le_bytes(self.bytes(2)?.try_into().map_err(|_| CapsuleError::Invalid("truncated"))?) as usize; if len == 0 || len > MAX_PRIVATE_COMMAND_BYTES { return Err(CapsuleError::Invalid("private_text")); } String::from_utf8(self.bytes(len)?.to_vec()).map_err(|_| CapsuleError::Invalid("private_text")) } }
+fn now_unix_ms() -> i64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|value| value.as_millis() as i64).unwrap_or(0) }
+fn invocation_key(now: i64) -> String { format!("i{:016x}{:08x}", now as u64, std::process::id()) }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn capsule() -> HandlerCapsule { HandlerCapsule { handler_key: "hk_synthetic".into(), revision: "rev_1".into(), definition_fingerprint: "sha256:synthetic".into(), runtime: "synthetic_runtime".into(), runtime_instance: "instance_1".into(), event: "PreToolUse".into(), source_scope: "controlled".into(), original_budget: OriginalHandlerBudget(Duration::from_millis(25)), instrumentation_envelope: InstrumentationEnvelope(Duration::from_millis(20)), execution: ExecutionPlan::Direct { executable: "synthetic.exe".into(), arguments: vec!["arg".into()] } } }
+    #[test]
+    fn sealed_capsule_rejects_tamper_and_keeps_command_out_of_protocol_types() { let key = [7_u8; CAPSULE_MAC_BYTES]; let mut bytes = capsule().seal(&key).unwrap(); bytes[8] ^= 1; assert!(matches!(HandlerCapsule::unseal(&bytes, &key), Err(CapsuleError::Tampered))); assert!(capsule().lifecycle("invocation".into(), 1).is_ok()); }
+    #[test]
+    fn capsule_root_rejects_redirection_and_outside_file() { let temp = tempfile::tempdir().unwrap(); let root = temp.path().join("capsules"); fs::create_dir(&root).unwrap(); #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap(); } let store = CapsuleStore::open(&root).unwrap(); let key = [9_u8; CAPSULE_MAC_BYTES]; write_key_for_test(&root, &key).unwrap(); store.write_for_test(Path::new("fixture.bin"), &capsule(), &key).unwrap(); #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; fs::set_permissions(root.join("fixture.bin"), fs::Permissions::from_mode(0o600)).unwrap(); } assert_eq!(store.load("fixture.bin").unwrap().handler_key, "hk_synthetic"); assert!(store.load(temp.path().join("elsewhere.bin")).is_err()); }
+    #[test]
+    fn outer_envelope_never_changes_original_budget() { let data = capsule(); assert_eq!(data.original_budget.0, Duration::from_millis(25)); assert_eq!(data.instrumentation_envelope.0, Duration::from_millis(20)); }
+}

@@ -10,6 +10,10 @@ readme = "README.md"
 keywords = ["hooks", "reliability", "agents", "codex", "tui"]
 categories = ["command-line-utilities", "development-tools"]
 
+[workspace]
+members = ["crates/hookstat-ipc-client", "crates/hookstat-hook"]
+resolver = "2"
+
 [features]
 # Developer-only G28 measurement laboratory. This feature is never enabled by
 # HookStat's ordinary binary or by its hook execution path.
@@ -30,6 +34,7 @@ unicode-width = "0.2"
 chrono = "0.4"
 sys-locale = "0.3"
 interprocess = "2.4.3"
+hookstat-ipc-client = { path = "crates/hookstat-ipc-client" }
 
 [dev-dependencies]
 tempfile = "3"

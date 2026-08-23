@@ -8,7 +8,8 @@ use hookstat::evidence::{
 };
 use hookstat::ipc::{
     BrokerAcknowledgement, BrokerConfig, BrokerHost, BrokerStartup, Completion, ExitClassification,
-    GroupDurabilityPolicy, IpcClient, IpcFrame, LifecycleFrame, LocalEndpoint, Wal,
+    GroupDurabilityPolicy, IpcClient, IpcFrame, LifecycleFrame, LocalEndpoint, TerminalOutcome,
+    Wal,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -35,7 +36,7 @@ fn completion(client: u32, sequence: u32) -> IpcFrame {
     IpcFrame::Complete {
         lifecycle,
         completion: Completion {
-            terminal_status: TerminalStatus::Completed,
+            terminal_status: TerminalOutcome::Completed,
             exit_classification: ExitClassification::ExitCode,
             exit_value: Some(0),
             duration_ms: 7,

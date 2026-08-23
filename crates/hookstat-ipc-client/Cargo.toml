@@ -1,0 +1,24 @@
+[package]
+name = "hookstat-ipc-client"
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.97.1"
+description = "Private bounded local IPC protocol and producer client for HookStat"
+license = "MIT"
+publish = false
+
+[dependencies]
+interprocess = "2.4.3"
+sha2 = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+widestring = "1.2.1"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29.0", features = ["socket"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
