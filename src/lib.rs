@@ -12,6 +12,7 @@ pub mod domain;
 pub mod evidence;
 pub mod identity;
 pub mod interface_preferences;
+pub mod ipc;
 pub mod ledger;
 pub mod native;
 pub mod observability;
