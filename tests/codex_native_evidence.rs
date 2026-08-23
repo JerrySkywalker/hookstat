@@ -78,7 +78,9 @@ fn normalized(
     hookstat::runtime::codex::CodexNativeIntegration,
     Vec<hookstat::evidence::CanonicalEvidence>,
 ) {
-    let mut integration = CodexNativeIntegration::with_hooks_list(&hooks_list()).unwrap();
+    let mut integration =
+        CodexNativeIntegration::with_hooks_list(&CodexProtocolVersion::tested(), &hooks_list())
+            .unwrap();
     for value in values {
         integration.reader.ingest_json(value).unwrap();
     }
@@ -126,6 +128,13 @@ fn capability_matrix_is_deterministic_and_version_aware() {
     );
     assert_eq!(incompatible.admission, NativeAdmissionState::Unavailable);
     assert_ne!(CODEX_TESTED_CLI_VERSION, "0.150.0");
+    assert!(matches!(
+        CodexNativeIntegration::with_hooks_list(
+            &CodexProtocolVersion::new("0.150.0", "different-source-commit"),
+            &hooks_list(),
+        ),
+        Err(CodexNativeError::IncompatibleProtocol)
+    ));
 }
 
 #[test]
@@ -208,7 +217,9 @@ fn terminal_statuses_and_duration_preserve_known_semantics() {
 
 #[test]
 fn nonterminal_or_async_completion_is_not_misrepresented_as_success() {
-    let mut integration = CodexNativeIntegration::with_hooks_list(&hooks_list()).unwrap();
+    let mut integration =
+        CodexNativeIntegration::with_hooks_list(&CodexProtocolVersion::tested(), &hooks_list())
+            .unwrap();
     integration
         .reader
         .ingest_json(notification(

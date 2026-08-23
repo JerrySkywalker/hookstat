@@ -48,7 +48,7 @@ supports the exact tested version only; it does not claim forward compatibility.
 | Replay/delivery | Not proven | The protocol gives no replay/delivery guarantee. |
 | Event-surface completeness | Not proven | The tested lifecycle surface is synchronous-hook-only. |
 | Privacy boundary | Proven | Wire private fields never enter canonical evidence or persistence. |
-| Version compatibility | Proven | Exact `0.149.0` source/schema pin only. |
+| Version compatibility | Proven | Exact `0.149.0` source/schema pin only; integration rejects incompatible versions. |
 
 `Qualified` therefore does not mean `Admitted`: the G29 admission model remains
 truthful while stable handler identity is unproven.

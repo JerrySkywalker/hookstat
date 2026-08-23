@@ -467,7 +467,7 @@ impl NativeNormalizer for CodexNativeNormalizer {
 /// The small integration object composes only the four Native responsibilities.
 /// It deliberately contains no ordinary-session attach, launcher, proxy, or
 /// process-management implementation.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct CodexNativeIntegration {
     pub probe: CodexNativeCapabilityProbe,
     pub reader: CodexNativeReader,
@@ -475,7 +475,20 @@ pub struct CodexNativeIntegration {
 }
 
 impl CodexNativeIntegration {
-    pub fn with_hooks_list(response: &Value) -> Result<Self, CodexNativeError> {
+    /// Creates an integration only for a protocol baseline whose capability
+    /// facts have been qualified. This prevents a caller from treating an
+    /// unpinned future Codex version as silently compatible.
+    pub fn with_hooks_list(
+        version: &CodexProtocolVersion,
+        response: &Value,
+    ) -> Result<Self, CodexNativeError> {
+        if CodexNativeCapabilityProbe
+            .probe(version)
+            .version_compatibility
+            != CapabilityAssessment::Proven
+        {
+            return Err(CodexNativeError::IncompatibleProtocol);
+        }
         let identities = CodexNativeIdentityResolver::from_hooks_list(response)?;
         Ok(Self {
             probe: CodexNativeCapabilityProbe,
@@ -496,6 +509,7 @@ pub enum CodexNativeError {
     InvalidDuration,
     InvalidTimestamp,
     MissingTurnCorrelation,
+    IncompatibleProtocol,
     UnsupportedEvent,
     UnsupportedSource,
     UnsupportedScope,
@@ -521,6 +535,9 @@ impl fmt::Display for CodexNativeError {
             Self::InvalidTimestamp => "Codex Native Hook notification had invalid timestamp",
             Self::MissingTurnCorrelation => {
                 "Codex Native Hook notification omitted turn correlation"
+            }
+            Self::IncompatibleProtocol => {
+                "Codex Native protocol version is not qualified for this integration"
             }
             Self::UnsupportedEvent => {
                 "Codex Native Hook event is not supported by this qualified version"

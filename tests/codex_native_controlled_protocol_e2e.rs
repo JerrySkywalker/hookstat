@@ -9,7 +9,7 @@ use hookstat::evidence::{
     CorrelationOutcome, EvidenceCorrelator, InvocationCoverage, SourceCoverage,
 };
 use hookstat::native::{NativeEvidenceReader, NativeNormalizer};
-use hookstat::runtime::codex::{CodexNativeCursor, CodexNativeIntegration};
+use hookstat::runtime::codex::{CodexNativeCursor, CodexNativeIntegration, CodexProtocolVersion};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -301,7 +301,9 @@ fn controlled_app_server_proves_native_l1_without_hookstat_proxying() {
         }
     }
 
-    let mut integration = CodexNativeIntegration::with_hooks_list(&hooks_list).unwrap();
+    let mut integration =
+        CodexNativeIntegration::with_hooks_list(&CodexProtocolVersion::tested(), &hooks_list)
+            .unwrap();
     for value in lifecycle {
         integration.reader.ingest_json(value).unwrap();
     }
@@ -367,7 +369,9 @@ fn completed_canonical(
     hooks_list: Value,
     lifecycle: Vec<Value>,
 ) -> Vec<hookstat::evidence::CanonicalEvidence> {
-    let mut integration = CodexNativeIntegration::with_hooks_list(&hooks_list).unwrap();
+    let mut integration =
+        CodexNativeIntegration::with_hooks_list(&CodexProtocolVersion::tested(), &hooks_list)
+            .unwrap();
     for value in lifecycle {
         integration.reader.ingest_json(value).unwrap();
     }
