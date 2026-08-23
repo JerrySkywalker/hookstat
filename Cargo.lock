@@ -562,6 +562,7 @@ dependencies = [
  "chrono-tz",
  "crossterm",
  "interprocess",
+ "nix",
  "ratatui",
  "rusqlite",
  "serde",

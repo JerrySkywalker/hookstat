@@ -484,17 +484,27 @@ fn read_exact_bounded(
 }
 
 /// A zero-byte nonblocking local-socket read can occur during an accept/write
-/// handoff. On Unix, only a non-consuming peek can distinguish that condition
-/// from a peer that actually closed its side of the socket.
+/// handoff. On Unix, only a non-consuming `recv(MSG_PEEK)` can distinguish
+/// that condition from a peer that actually closed its side of the socket.
 #[cfg(unix)]
 fn unix_peer_closed(input: &Stream) -> Result<bool, IpcError> {
+    use nix::{
+        errno::Errno,
+        sys::socket::{MsgFlags, recv},
+    };
+    use std::os::fd::AsRawFd;
+
     let mut probe = [0_u8; 1];
     match input {
-        Stream::UdSocket(stream) => match stream.inner().peek(&mut probe) {
+        Stream::UdSocket(stream) => match recv(
+            stream.inner().as_raw_fd(),
+            &mut probe,
+            MsgFlags::MSG_PEEK | MsgFlags::MSG_DONTWAIT,
+        ) {
             Ok(0) => Ok(true),
             Ok(_) => Ok(false),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(false),
-            Err(error) => Err(IpcError::Io(error)),
+            Err(Errno::EAGAIN) => Ok(false),
+            Err(error) => Err(IpcError::Io(io::Error::from_raw_os_error(error as i32))),
         },
     }
 }
@@ -1441,6 +1451,7 @@ fn connection_loop(
             Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::TimedOut => {
                 thread::sleep(Duration::from_millis(1));
             }
+            Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof => break,
             Ok(_) | Err(_) => {
                 health.malformed.fetch_add(1, Ordering::Relaxed);
                 let _ = write_frame_bounded(
