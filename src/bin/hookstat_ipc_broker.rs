@@ -11,9 +11,15 @@ use std::time::Duration;
 
 fn main() -> ExitCode {
     let mut values = std::env::args().skip(1);
-    if values.next().as_deref() != Some("--state-root") { return ExitCode::from(2); }
-    let Some(root) = values.next() else { return ExitCode::from(2); };
-    if values.next().is_some() { return ExitCode::from(2); }
+    if values.next().as_deref() != Some("--state-root") {
+        return ExitCode::from(2);
+    }
+    let Some(root) = values.next() else {
+        return ExitCode::from(2);
+    };
+    if values.next().is_some() {
+        return ExitCode::from(2);
+    }
     match BrokerHost::start(BrokerConfig::for_state_root(PathBuf::from(root))) {
         Ok(mut host) => {
             let _ = host.wait_for_idle(Duration::from_secs(65));

@@ -390,7 +390,10 @@ fn read_exact_bounded(
                 buffer = rest;
             }
             Err(error)
-                if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) =>
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
             {
                 if Instant::now() >= deadline {
                     return Err(timed_out("bounded IPC read"));
@@ -434,10 +437,18 @@ fn write_all_bounded(
     let mut spins = 0_u32;
     while !buffer.is_empty() {
         match stream.write(buffer) {
-            Ok(0) => return Err(IpcError::Io(io::Error::new(io::ErrorKind::WriteZero, "bounded IPC write"))),
+            Ok(0) => {
+                return Err(IpcError::Io(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "bounded IPC write",
+                )));
+            }
             Ok(written) => buffer = &buffer[written..],
             Err(error)
-                if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) =>
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
             {
                 if Instant::now() >= deadline {
                     return Err(timed_out("bounded IPC write"));
@@ -482,18 +493,30 @@ impl LocalEndpoint {
                 .as_encoded_bytes(),
         );
         let digest = hasher.finalize();
-        let endpoint_id = digest[..16].iter().map(|byte| format!("{byte:02x}")).collect();
-        let endpoint = Self { state_root, endpoint_id };
+        let endpoint_id = digest[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let endpoint = Self {
+            state_root,
+            endpoint_id,
+        };
         endpoint.transport_dir()?;
         Ok(endpoint)
     }
 
-    pub fn state_root(&self) -> &std::path::Path { &self.state_root }
-    pub fn endpoint_id(&self) -> &str { &self.endpoint_id }
+    pub fn state_root(&self) -> &std::path::Path {
+        &self.state_root
+    }
+    pub fn endpoint_id(&self) -> &str {
+        &self.endpoint_id
+    }
 
     #[cfg(unix)]
     pub fn unix_socket_path(&self) -> Result<std::path::PathBuf, IpcError> {
-        let path = self.transport_dir()?.join(format!("g35-{}.sock", self.endpoint_id));
+        let path = self
+            .transport_dir()?
+            .join(format!("g35-{}.sock", self.endpoint_id));
         if path.as_os_str().as_encoded_bytes().len() > 96 {
             return Err(IpcError::Invalid("unix_socket_path_length"));
         }
@@ -501,13 +524,18 @@ impl LocalEndpoint {
     }
 
     #[cfg(windows)]
-    pub fn named_pipe_name(&self) -> String { format!("hookstat-g35-{}", self.endpoint_id) }
+    pub fn named_pipe_name(&self) -> String {
+        format!("hookstat-g35-{}", self.endpoint_id)
+    }
 
     pub fn transport_dir(&self) -> Result<std::path::PathBuf, IpcError> {
         let dir = self.state_root.join("ipc");
         if dir.exists() {
             let metadata = std::fs::symlink_metadata(&dir).map_err(IpcError::Io)?;
-            if metadata.file_type().is_symlink() || !metadata.is_dir() || state_metadata_is_unsafe(&metadata) {
+            if metadata.file_type().is_symlink()
+                || !metadata.is_dir()
+                || state_metadata_is_unsafe(&metadata)
+            {
                 return Err(IpcError::UnsafeStateObject);
             }
         } else {
@@ -524,11 +552,20 @@ impl LocalEndpoint {
         #[cfg(unix)]
         let name = {
             use interprocess::local_socket::{GenericFilePath, ToFsName};
-            self.unix_socket_path()?.to_fs_name::<GenericFilePath>().map_err(IpcError::Io)?
+            self.unix_socket_path()?
+                .to_fs_name::<GenericFilePath>()
+                .map_err(IpcError::Io)?
         };
         #[cfg(windows)]
-        let name = self.named_pipe_name().to_ns_name::<GenericNamespaced>().map_err(IpcError::Io)?;
-        let stream = ConnectOptions::new().name(name).wait_mode(ConnectWaitMode::Timeout(timeout)).connect_sync().map_err(IpcError::Io)?;
+        let name = self
+            .named_pipe_name()
+            .to_ns_name::<GenericNamespaced>()
+            .map_err(IpcError::Io)?;
+        let stream = ConnectOptions::new()
+            .name(name)
+            .wait_mode(ConnectWaitMode::Timeout(timeout))
+            .connect_sync()
+            .map_err(IpcError::Io)?;
         stream.set_nonblocking(true).map_err(IpcError::Io)?;
         Ok(stream)
     }
@@ -550,42 +587,77 @@ impl LocalEndpoint {
                 }
                 std::fs::remove_file(&path).map_err(IpcError::Io)?;
             }
-            ListenerOptions::new().name(path.to_fs_name::<GenericFilePath>().map_err(IpcError::Io)?).nonblocking(ListenerNonblockingMode::Accept).reclaim_name(false).max_spin_time(Duration::ZERO).mode(0o600).create_sync().map_err(IpcError::Io)
+            ListenerOptions::new()
+                .name(path.to_fs_name::<GenericFilePath>().map_err(IpcError::Io)?)
+                .nonblocking(ListenerNonblockingMode::Accept)
+                .reclaim_name(false)
+                .max_spin_time(Duration::ZERO)
+                .mode(0o600)
+                .create_sync()
+                .map_err(IpcError::Io)
         }
         #[cfg(windows)]
         {
             use interprocess::os::windows::local_socket::ListenerOptionsExt;
-            let name = self.named_pipe_name().to_ns_name::<GenericNamespaced>().map_err(IpcError::Io)?;
-            ListenerOptions::new().name(name).nonblocking(ListenerNonblockingMode::Accept).reclaim_name(false).security_descriptor(owner_only_pipe_security_descriptor()?).create_sync().map_err(|error| if error.kind() == io::ErrorKind::AddrInUse { IpcError::EndpointInUse } else { IpcError::Io(error) })
+            let name = self
+                .named_pipe_name()
+                .to_ns_name::<GenericNamespaced>()
+                .map_err(IpcError::Io)?;
+            ListenerOptions::new()
+                .name(name)
+                .nonblocking(ListenerNonblockingMode::Accept)
+                .reclaim_name(false)
+                .security_descriptor(owner_only_pipe_security_descriptor()?)
+                .create_sync()
+                .map_err(|error| {
+                    if error.kind() == io::ErrorKind::AddrInUse {
+                        IpcError::EndpointInUse
+                    } else {
+                        IpcError::Io(error)
+                    }
+                })
         }
     }
 
     #[cfg(unix)]
     pub fn remove_socket_if_owned(&self) {
-        if let Ok(path) = self.unix_socket_path() && let Ok(metadata) = std::fs::symlink_metadata(&path) {
+        if let Ok(path) = self.unix_socket_path()
+            && let Ok(metadata) = std::fs::symlink_metadata(&path)
+        {
             use std::os::unix::fs::FileTypeExt;
-            if metadata.file_type().is_socket() { let _ = std::fs::remove_file(path); }
+            if metadata.file_type().is_socket() {
+                let _ = std::fs::remove_file(path);
+            }
         }
     }
 }
 
 #[cfg(windows)]
-fn owner_only_pipe_security_descriptor() -> Result<interprocess::os::windows::security_descriptor::SecurityDescriptor, IpcError> {
+fn owner_only_pipe_security_descriptor()
+-> Result<interprocess::os::windows::security_descriptor::SecurityDescriptor, IpcError> {
     use interprocess::os::windows::security_descriptor::SecurityDescriptor;
-    let sddl = widestring::U16CString::from_str("D:P(A;;GRGW;;;OW)").map_err(|_| IpcError::Invalid("pipe_security_descriptor"))?;
+    let sddl = widestring::U16CString::from_str("D:P(A;;GRGW;;;OW)")
+        .map_err(|_| IpcError::Invalid("pipe_security_descriptor"))?;
     SecurityDescriptor::deserialize(sddl.as_ucstr()).map_err(IpcError::Io)
 }
 
 pub fn prepare_state_root(root: &std::path::Path) -> Result<std::path::PathBuf, IpcError> {
     if root.exists() {
         let metadata = std::fs::symlink_metadata(root).map_err(IpcError::Io)?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() { return Err(IpcError::UnsafeStateObject); }
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(IpcError::UnsafeStateObject);
+        }
     } else {
         std::fs::create_dir_all(root).map_err(IpcError::Io)?;
     }
     let root = std::fs::canonicalize(root).map_err(IpcError::Io)?;
     let metadata = std::fs::symlink_metadata(&root).map_err(IpcError::Io)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() || state_metadata_is_unsafe(&metadata) { return Err(IpcError::UnsafeStateObject); }
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || state_metadata_is_unsafe(&metadata)
+    {
+        return Err(IpcError::UnsafeStateObject);
+    }
     Ok(root)
 }
 
@@ -593,27 +665,39 @@ fn state_metadata_is_unsafe(metadata: &std::fs::Metadata) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o022 != 0 { return true; }
+        if metadata.permissions().mode() & 0o022 != 0 {
+            return true;
+        }
     }
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 { return true; }
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
     }
     false
 }
 
 /// Direct connected producer retained for broker tests and callers that own
 /// a connection lifecycle.
-pub struct IpcClient { stream: Stream, timeout: Duration }
+pub struct IpcClient {
+    stream: Stream,
+    timeout: Duration,
+}
 
 impl IpcClient {
     pub fn connect(endpoint: &LocalEndpoint, timeout: Duration) -> Result<Self, IpcError> {
-        Ok(Self { stream: endpoint.connect_stream(timeout)?, timeout })
+        Ok(Self {
+            stream: endpoint.connect_stream(timeout)?,
+            timeout,
+        })
     }
     pub fn send(&mut self, frame: &IpcFrame) -> Result<BrokerAcknowledgement, IpcError> {
-        if !frame.is_lifecycle() { return Err(IpcError::Invalid("producer_frame_type")); }
+        if !frame.is_lifecycle() {
+            return Err(IpcError::Invalid("producer_frame_type"));
+        }
         write_frame_bounded(&mut self.stream, frame, self.timeout)?;
         match read_frame_bounded(&mut self.stream, self.timeout)? {
             IpcFrame::Ack(value) => Ok(value),
@@ -623,37 +707,88 @@ impl IpcClient {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProducerPolicy { pub connect_timeout: Duration, pub acknowledgement_timeout: Duration }
+pub struct ProducerPolicy {
+    pub connect_timeout: Duration,
+    pub acknowledgement_timeout: Duration,
+}
 impl Default for ProducerPolicy {
-    fn default() -> Self { Self { connect_timeout: Duration::from_millis(2), acknowledgement_timeout: Duration::from_millis(5) } }
+    fn default() -> Self {
+        Self {
+            connect_timeout: Duration::from_millis(2),
+            acknowledgement_timeout: Duration::from_millis(5),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ObservationDisposition { Accepted, DroppedOverloaded, Busy, Rejected, Unavailable }
+pub enum ObservationDisposition {
+    Accepted,
+    DroppedOverloaded,
+    Busy,
+    Rejected,
+    Unavailable,
+}
 
 /// Tiny, runtime-neutral START/COMPLETE producer. Every failure mode is an
 /// observation result: callers must not convert it into a Hook failure.
 #[derive(Clone, Debug)]
-pub struct CooperativeProducer { endpoint: LocalEndpoint, policy: ProducerPolicy }
+pub struct CooperativeProducer {
+    endpoint: LocalEndpoint,
+    policy: ProducerPolicy,
+}
 
 impl CooperativeProducer {
     pub fn new(endpoint: LocalEndpoint, policy: ProducerPolicy) -> Result<Self, IpcError> {
-        if policy.connect_timeout.is_zero() || policy.acknowledgement_timeout.is_zero() { return Err(IpcError::Invalid("producer_policy")); }
+        if policy.connect_timeout.is_zero() || policy.acknowledgement_timeout.is_zero() {
+            return Err(IpcError::Invalid("producer_policy"));
+        }
         Ok(Self { endpoint, policy })
     }
-    pub fn for_state_root(root: impl AsRef<std::path::Path>) -> Result<Self, IpcError> { Self::new(LocalEndpoint::from_state_root(root)?, ProducerPolicy::default()) }
-    pub fn endpoint(&self) -> &LocalEndpoint { &self.endpoint }
-    pub fn emit_start(&self, lifecycle: LifecycleFrame) -> ObservationDisposition { self.emit(IpcFrame::Start(lifecycle)) }
-    pub fn emit_complete(&self, lifecycle: LifecycleFrame, completion: Completion) -> ObservationDisposition { self.emit(IpcFrame::Complete { lifecycle, completion }) }
+    pub fn for_state_root(root: impl AsRef<std::path::Path>) -> Result<Self, IpcError> {
+        Self::new(
+            LocalEndpoint::from_state_root(root)?,
+            ProducerPolicy::default(),
+        )
+    }
+    pub fn endpoint(&self) -> &LocalEndpoint {
+        &self.endpoint
+    }
+    pub fn emit_start(&self, lifecycle: LifecycleFrame) -> ObservationDisposition {
+        self.emit(IpcFrame::Start(lifecycle))
+    }
+    pub fn emit_complete(
+        &self,
+        lifecycle: LifecycleFrame,
+        completion: Completion,
+    ) -> ObservationDisposition {
+        self.emit(IpcFrame::Complete {
+            lifecycle,
+            completion,
+        })
+    }
     pub fn emit(&self, frame: IpcFrame) -> ObservationDisposition {
-        let timeout = self.policy.connect_timeout.min(self.policy.acknowledgement_timeout);
-        let Ok(mut client) = IpcClient::connect(&self.endpoint, timeout) else { return ObservationDisposition::Unavailable; };
-        match client.send(&frame) {
-            Ok(BrokerAcknowledgement::Accepted) => ObservationDisposition::Accepted,
-            Ok(BrokerAcknowledgement::DroppedOverloaded) => ObservationDisposition::DroppedOverloaded,
-            Ok(BrokerAcknowledgement::Busy) => ObservationDisposition::Busy,
-            Ok(BrokerAcknowledgement::Rejected) | Err(_) => ObservationDisposition::Rejected,
-        }
+        let timeout = self
+            .policy
+            .connect_timeout
+            .min(self.policy.acknowledgement_timeout);
+        let Ok(mut client) = IpcClient::connect(&self.endpoint, timeout) else {
+            return ObservationDisposition::Unavailable;
+        };
+        client
+            .send(&frame)
+            .map_or(ObservationDisposition::Rejected, observation_from_ack)
+    }
+}
+
+/// Maps every broker response to an explicit observation disposition. None of
+/// these values is an execution failure for an observed Hook.
+#[must_use]
+pub const fn observation_from_ack(value: BrokerAcknowledgement) -> ObservationDisposition {
+    match value {
+        BrokerAcknowledgement::Accepted => ObservationDisposition::Accepted,
+        BrokerAcknowledgement::DroppedOverloaded => ObservationDisposition::DroppedOverloaded,
+        BrokerAcknowledgement::Busy => ObservationDisposition::Busy,
+        BrokerAcknowledgement::Rejected => ObservationDisposition::Rejected,
     }
 }
 
@@ -661,91 +796,281 @@ impl CooperativeProducer {
 /// injected, product-owned responsibility; this client never starts a network
 /// service or a global daemon by itself.
 #[derive(Clone, Debug)]
-pub struct BrokerStartup { endpoint: LocalEndpoint, timeout: Duration, stale_lease_after: Duration }
+pub struct BrokerStartup {
+    endpoint: LocalEndpoint,
+    timeout: Duration,
+    stale_lease_after: Duration,
+}
 
 impl BrokerStartup {
     pub fn new(endpoint: LocalEndpoint, timeout: Duration) -> Result<Self, IpcError> {
-        if timeout.is_zero() { return Err(IpcError::Invalid("startup_timeout")); }
-        Ok(Self { endpoint, timeout, stale_lease_after: timeout })
+        if timeout.is_zero() {
+            return Err(IpcError::Invalid("startup_timeout"));
+        }
+        Ok(Self {
+            endpoint,
+            timeout,
+            stale_lease_after: timeout,
+        })
     }
-    pub fn connect_or_start(&self, mut start: impl FnMut() -> Result<(), IpcError>) -> Result<IpcClient, IpcError> {
+    pub fn connect_or_start(
+        &self,
+        mut start: impl FnMut() -> Result<(), IpcError>,
+    ) -> Result<IpcClient, IpcError> {
         let deadline = Instant::now() + self.timeout;
         loop {
-            if let Ok(client) = IpcClient::connect(&self.endpoint, Duration::from_millis(2)) { return Ok(client); }
-            if let Some(_lease) = StartupLease::try_acquire(&self.endpoint, self.stale_lease_after)? {
+            if let Ok(client) = IpcClient::connect(&self.endpoint, Duration::from_millis(2)) {
+                return Ok(client);
+            }
+            if let Some(_lease) = StartupLease::try_acquire(&self.endpoint, self.stale_lease_after)?
+            {
                 start()?;
                 loop {
-                    if let Ok(client) = IpcClient::connect(&self.endpoint, Duration::from_millis(2)) {
+                    if let Ok(client) = IpcClient::connect(&self.endpoint, Duration::from_millis(2))
+                    {
                         thread::sleep(Duration::from_millis(25));
                         return Ok(client);
                     }
-                    if Instant::now() >= deadline { return Err(IpcError::StartupTimedOut); }
+                    if Instant::now() >= deadline {
+                        return Err(IpcError::StartupTimedOut);
+                    }
                     thread::sleep(Duration::from_millis(2));
                 }
             }
-            if Instant::now() >= deadline { return Err(IpcError::StartupTimedOut); }
+            if Instant::now() >= deadline {
+                return Err(IpcError::StartupTimedOut);
+            }
             thread::sleep(Duration::from_millis(2));
         }
     }
 }
 
-struct StartupLease { path: std::path::PathBuf }
+struct StartupLease {
+    path: std::path::PathBuf,
+}
 impl StartupLease {
-    fn try_acquire(endpoint: &LocalEndpoint, stale_after: Duration) -> Result<Option<Self>, IpcError> {
+    fn try_acquire(
+        endpoint: &LocalEndpoint,
+        stale_after: Duration,
+    ) -> Result<Option<Self>, IpcError> {
         let path = endpoint.transport_dir()?.join("broker-start-v1.lock");
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
             Ok(_) => Ok(Some(Self { path })),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 let metadata = std::fs::symlink_metadata(&path).map_err(IpcError::Io)?;
-                if metadata.file_type().is_symlink() || !metadata.is_file() { return Err(IpcError::UnsafeStateObject); }
-                if metadata.modified().ok().and_then(|value| value.elapsed().ok()).is_some_and(|elapsed| elapsed >= stale_after) { std::fs::remove_file(&path).map_err(IpcError::Io)?; }
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return Err(IpcError::UnsafeStateObject);
+                }
+                if metadata
+                    .modified()
+                    .ok()
+                    .and_then(|value| value.elapsed().ok())
+                    .is_some_and(|elapsed| elapsed >= stale_after)
+                {
+                    std::fs::remove_file(&path).map_err(IpcError::Io)?;
+                }
                 Ok(None)
             }
             Err(error) => Err(IpcError::Io(error)),
         }
     }
 }
-impl Drop for StartupLease { fn drop(&mut self) { let _ = std::fs::remove_file(&self.path); } }
+impl Drop for StartupLease {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
 
 #[derive(Debug)]
 pub enum IpcError {
-    Io(io::Error), BadMagic, UnsupportedVersion, Oversized, Truncated, Invalid(&'static str), UnsafeStateObject, EndpointInUse, StartupTimedOut, WalTooLarge, WalCorrupt(&'static str),
+    Io(io::Error),
+    BadMagic,
+    UnsupportedVersion,
+    Oversized,
+    Truncated,
+    Invalid(&'static str),
+    UnsafeStateObject,
+    EndpointInUse,
+    StartupTimedOut,
+    WalTooLarge,
+    WalCorrupt(&'static str),
 }
 impl fmt::Display for IpcError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::Io(_) => "local IPC I/O failed", Self::BadMagic => "IPC frame magic was invalid", Self::UnsupportedVersion => "IPC protocol version is not supported", Self::Oversized => "IPC frame exceeded a bounded limit", Self::Truncated => "IPC frame was truncated", Self::Invalid(_) => "IPC frame structure was invalid", Self::UnsafeStateObject => "IPC state root contained an unsafe object", Self::EndpointInUse => "IPC endpoint is already owned by a healthy broker", Self::StartupTimedOut => "IPC broker startup did not become ready within its bounded timeout", Self::WalTooLarge => "IPC WAL exceeded its bounded size", Self::WalCorrupt(_) => "IPC WAL contained a malformed record",
+            Self::Io(_) => "local IPC I/O failed",
+            Self::BadMagic => "IPC frame magic was invalid",
+            Self::UnsupportedVersion => "IPC protocol version is not supported",
+            Self::Oversized => "IPC frame exceeded a bounded limit",
+            Self::Truncated => "IPC frame was truncated",
+            Self::Invalid(_) => "IPC frame structure was invalid",
+            Self::UnsafeStateObject => "IPC state root contained an unsafe object",
+            Self::EndpointInUse => "IPC endpoint is already owned by a healthy broker",
+            Self::StartupTimedOut => {
+                "IPC broker startup did not become ready within its bounded timeout"
+            }
+            Self::WalTooLarge => "IPC WAL exceeded its bounded size",
+            Self::WalCorrupt(_) => "IPC WAL contained a malformed record",
         })
     }
 }
 impl std::error::Error for IpcError {}
 
-pub fn checksum(value: &[u8]) -> u32 { let digest = Sha256::digest(value); u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]]) }
+pub fn checksum(value: &[u8]) -> u32 {
+    let digest = Sha256::digest(value);
+    u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]])
+}
 fn validate_reference(field: &'static str, value: &str) -> Result<(), IpcError> {
-    if value.is_empty() || value.len() > MAX_IPC_REFERENCE_BYTES || value.chars().any(|value| !matches!(value, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '.' | ':')) { return Err(IpcError::Invalid(field)); }
+    if value.is_empty()
+        || value.len() > MAX_IPC_REFERENCE_BYTES
+        || value.chars().any(
+            |value| !matches!(value, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '.' | ':'),
+        )
+    {
+        return Err(IpcError::Invalid(field));
+    }
     Ok(())
 }
-fn encode_reference(output: &mut Vec<u8>, value: &str) -> Result<(), IpcError> { validate_reference("reference", value)?; output.push(u8::try_from(value.len()).map_err(|_| IpcError::Oversized)?); output.extend_from_slice(value.as_bytes()); Ok(()) }
-struct Cursor<'a> { input: &'a [u8], offset: usize }
+fn encode_reference(output: &mut Vec<u8>, value: &str) -> Result<(), IpcError> {
+    validate_reference("reference", value)?;
+    output.push(u8::try_from(value.len()).map_err(|_| IpcError::Oversized)?);
+    output.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+struct Cursor<'a> {
+    input: &'a [u8],
+    offset: usize,
+}
 impl<'a> Cursor<'a> {
-    fn new(input: &'a [u8]) -> Self { Self { input, offset: 0 } }
-    fn is_empty(&self) -> bool { self.offset == self.input.len() }
-    fn bytes(&mut self, length: usize) -> Result<&'a [u8], IpcError> { let end = self.offset.checked_add(length).ok_or(IpcError::Truncated)?; let value = self.input.get(self.offset..end).ok_or(IpcError::Truncated)?; self.offset = end; Ok(value) }
-    fn u8(&mut self) -> Result<u8, IpcError> { Ok(self.bytes(1)?[0]) }
-    fn i32(&mut self) -> Result<i32, IpcError> { Ok(i32::from_le_bytes(self.bytes(4)?.try_into().map_err(|_| IpcError::Truncated)?)) }
-    fn i64(&mut self) -> Result<i64, IpcError> { Ok(i64::from_le_bytes(self.bytes(8)?.try_into().map_err(|_| IpcError::Truncated)?)) }
-    fn u64(&mut self) -> Result<u64, IpcError> { Ok(u64::from_le_bytes(self.bytes(8)?.try_into().map_err(|_| IpcError::Truncated)?)) }
-    fn reference(&mut self, field: &'static str) -> Result<String, IpcError> { let length = self.u8()? as usize; if length == 0 || length > MAX_IPC_REFERENCE_BYTES { return Err(IpcError::Invalid(field)); } let value = std::str::from_utf8(self.bytes(length)?).map_err(|_| IpcError::Invalid(field))?.to_owned(); validate_reference(field, &value)?; Ok(value) }
-    fn optional_reference(&mut self, field: &'static str) -> Result<Option<String>, IpcError> { let length = self.u8()? as usize; if length == 0 { return Ok(None); } if length > MAX_IPC_REFERENCE_BYTES { return Err(IpcError::Invalid(field)); } let value = std::str::from_utf8(self.bytes(length)?).map_err(|_| IpcError::Invalid(field))?.to_owned(); validate_reference(field, &value)?; Ok(Some(value)) }
+    fn new(input: &'a [u8]) -> Self {
+        Self { input, offset: 0 }
+    }
+    fn is_empty(&self) -> bool {
+        self.offset == self.input.len()
+    }
+    fn bytes(&mut self, length: usize) -> Result<&'a [u8], IpcError> {
+        let end = self.offset.checked_add(length).ok_or(IpcError::Truncated)?;
+        let value = self
+            .input
+            .get(self.offset..end)
+            .ok_or(IpcError::Truncated)?;
+        self.offset = end;
+        Ok(value)
+    }
+    fn u8(&mut self) -> Result<u8, IpcError> {
+        Ok(self.bytes(1)?[0])
+    }
+    fn i32(&mut self) -> Result<i32, IpcError> {
+        Ok(i32::from_le_bytes(
+            self.bytes(4)?.try_into().map_err(|_| IpcError::Truncated)?,
+        ))
+    }
+    fn i64(&mut self) -> Result<i64, IpcError> {
+        Ok(i64::from_le_bytes(
+            self.bytes(8)?.try_into().map_err(|_| IpcError::Truncated)?,
+        ))
+    }
+    fn u64(&mut self) -> Result<u64, IpcError> {
+        Ok(u64::from_le_bytes(
+            self.bytes(8)?.try_into().map_err(|_| IpcError::Truncated)?,
+        ))
+    }
+    fn reference(&mut self, field: &'static str) -> Result<String, IpcError> {
+        let length = self.u8()? as usize;
+        if length == 0 || length > MAX_IPC_REFERENCE_BYTES {
+            return Err(IpcError::Invalid(field));
+        }
+        let value = std::str::from_utf8(self.bytes(length)?)
+            .map_err(|_| IpcError::Invalid(field))?
+            .to_owned();
+        validate_reference(field, &value)?;
+        Ok(value)
+    }
+    fn optional_reference(&mut self, field: &'static str) -> Result<Option<String>, IpcError> {
+        let length = self.u8()? as usize;
+        if length == 0 {
+            return Ok(None);
+        }
+        if length > MAX_IPC_REFERENCE_BYTES {
+            return Err(IpcError::Invalid(field));
+        }
+        let value = std::str::from_utf8(self.bytes(length)?)
+            .map_err(|_| IpcError::Invalid(field))?
+            .to_owned();
+        validate_reference(field, &value)?;
+        Ok(Some(value))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn lifecycle() -> LifecycleFrame { LifecycleFrame { runtime: "synthetic_runtime".into(), runtime_instance: "instance_a".into(), invocation: "invocation_a".into(), handler: "handler_a".into(), event: "event_a".into(), source_scope: "scope_a".into(), revision: Some("revision_a".into()), occurred_at_unix_ms: 1_000 } }
-    fn complete() -> IpcFrame { IpcFrame::Complete { lifecycle: lifecycle(), completion: Completion { terminal_status: TerminalOutcome::Failed, exit_classification: ExitClassification::ExitCode, exit_value: Some(7), duration_ms: 12 } } }
+    fn lifecycle() -> LifecycleFrame {
+        LifecycleFrame {
+            runtime: "synthetic_runtime".into(),
+            runtime_instance: "instance_a".into(),
+            invocation: "invocation_a".into(),
+            handler: "handler_a".into(),
+            event: "event_a".into(),
+            source_scope: "scope_a".into(),
+            revision: Some("revision_a".into()),
+            occurred_at_unix_ms: 1_000,
+        }
+    }
+    fn complete() -> IpcFrame {
+        IpcFrame::Complete {
+            lifecycle: lifecycle(),
+            completion: Completion {
+                terminal_status: TerminalOutcome::Failed,
+                exit_classification: ExitClassification::ExitCode,
+                exit_value: Some(7),
+                duration_ms: 12,
+            },
+        }
+    }
     #[test]
-    fn frame_round_trip_is_bounded_binary_and_versioned() { let frame = complete(); let encoded = frame.encode().unwrap(); assert!(encoded.starts_with(&IPC_MAGIC)); assert_eq!(encoded[4], IPC_PROTOCOL_VERSION); assert_eq!(IpcFrame::decode(&encoded).unwrap(), frame); }
+    fn frame_round_trip_is_bounded_binary_and_versioned() {
+        let frame = complete();
+        let encoded = frame.encode().unwrap();
+        assert!(encoded.starts_with(&IPC_MAGIC));
+        assert_eq!(encoded[4], IPC_PROTOCOL_VERSION);
+        assert_eq!(IpcFrame::decode(&encoded).unwrap(), frame);
+    }
     #[test]
-    fn malformed_and_private_values_are_rejected_or_absent() { let encoded = complete().encode().unwrap(); assert!(!encoded.windows(b"raw-command-value".len()).any(|value| value == b"raw-command-value")); let mut invalid = lifecycle(); invalid.runtime = "x".repeat(MAX_IPC_REFERENCE_BYTES + 1); assert!(invalid.validate().is_err()); let mut bad = encoded; bad[4] += 1; assert!(matches!(IpcFrame::decode(&bad), Err(IpcError::UnsupportedVersion))); }
+    fn malformed_and_private_values_are_rejected_or_absent() {
+        let encoded = complete().encode().unwrap();
+        assert!(
+            !encoded
+                .windows(b"raw-command-value".len())
+                .any(|value| value == b"raw-command-value")
+        );
+        let mut invalid = lifecycle();
+        invalid.runtime = "x".repeat(MAX_IPC_REFERENCE_BYTES + 1);
+        assert!(invalid.validate().is_err());
+        let mut bad = encoded;
+        bad[4] += 1;
+        assert!(matches!(
+            IpcFrame::decode(&bad),
+            Err(IpcError::UnsupportedVersion)
+        ));
+    }
+    #[test]
+    fn overload_and_busy_are_explicit_fail_open_observation_outcomes() {
+        assert_eq!(
+            observation_from_ack(BrokerAcknowledgement::DroppedOverloaded),
+            ObservationDisposition::DroppedOverloaded
+        );
+        assert_eq!(
+            observation_from_ack(BrokerAcknowledgement::Busy),
+            ObservationDisposition::Busy
+        );
+        assert_eq!(
+            observation_from_ack(BrokerAcknowledgement::Rejected),
+            ObservationDisposition::Rejected
+        );
+    }
 }

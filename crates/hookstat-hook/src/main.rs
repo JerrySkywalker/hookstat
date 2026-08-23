@@ -12,13 +12,38 @@ fn main() -> ExitCode {
             "--capsule" => &mut capsule,
             "--capsule-root" => &mut capsule_root,
             "--state-root" => &mut state_root,
-            "-h" | "--help" => { println!("usage: hookstat-hook --capsule <private-file> --capsule-root <private-dir> --state-root <hookstat-state>"); return ExitCode::SUCCESS; }
-            _ => { eprintln!("hookstat-hook: invalid arguments"); return ExitCode::from(2); }
+            "-h" | "--help" => {
+                println!(
+                    "usage: hookstat-hook --capsule <private-file> --capsule-root <private-dir> --state-root <hookstat-state>"
+                );
+                return ExitCode::SUCCESS;
+            }
+            _ => {
+                eprintln!("hookstat-hook: invalid arguments");
+                return ExitCode::from(2);
+            }
         };
-        let Some(value) = values.next() else { eprintln!("hookstat-hook: invalid arguments"); return ExitCode::from(2); };
+        let Some(value) = values.next() else {
+            eprintln!("hookstat-hook: invalid arguments");
+            return ExitCode::from(2);
+        };
         *target = Some(PathBuf::from(value));
     }
-    let (Some(capsule), Some(capsule_root), Some(state_root)) = (capsule, capsule_root, state_root) else { eprintln!("hookstat-hook: --capsule, --capsule-root, and --state-root are required"); return ExitCode::from(2); };
-    let result = CapsuleStore::open(capsule_root).and_then(|store| store.load(capsule)).and_then(|capsule| run_capsule(&capsule, &state_root).map_err(|_| hookstat_hook::CapsuleError::Io));
-    match result { Ok(outcome) => ExitCode::from(outcome.exit_code as u8), Err(_) => { eprintln!("hookstat-hook: private control-plane or execution setup failed"); ExitCode::from(1) } }
+    let (Some(capsule), Some(capsule_root), Some(state_root)) = (capsule, capsule_root, state_root)
+    else {
+        eprintln!("hookstat-hook: --capsule, --capsule-root, and --state-root are required");
+        return ExitCode::from(2);
+    };
+    let result = CapsuleStore::open(capsule_root)
+        .and_then(|store| store.load(capsule))
+        .and_then(|capsule| {
+            run_capsule(&capsule, &state_root).map_err(|_| hookstat_hook::CapsuleError::Io)
+        });
+    match result {
+        Ok(outcome) => ExitCode::from(outcome.exit_code as u8),
+        Err(_) => {
+            eprintln!("hookstat-hook: private control-plane or execution setup failed");
+            ExitCode::from(1)
+        }
+    }
 }

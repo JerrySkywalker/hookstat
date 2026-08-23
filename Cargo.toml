@@ -91,6 +91,12 @@ required-features = ["performance-harness"]
 test = false
 bench = false
 
+[[bin]]
+name = "hookstat-ipc-broker"
+path = "src/bin/hookstat_ipc_broker.rs"
+test = false
+bench = false
+
 [lints.rust]
 unsafe_code = "forbid"
 
