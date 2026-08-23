@@ -13,6 +13,7 @@ pub mod evidence;
 pub mod identity;
 pub mod interface_preferences;
 pub mod ledger;
+pub mod native;
 pub mod observability;
 #[cfg(feature = "performance-harness")]
 pub mod performance;
@@ -20,6 +21,7 @@ pub mod proxy;
 pub mod receipt;
 pub mod render;
 pub mod report;
+pub mod runtime;
 pub mod tui;
 pub mod workbench;
 
