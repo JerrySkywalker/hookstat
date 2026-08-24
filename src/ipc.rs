@@ -1072,6 +1072,16 @@ pub struct IpcClient {
     timeout: Duration,
 }
 
+/// Internal phase information for the developer-only performance qualifier.
+/// It never crosses the public IPC client boundary or records an OS error.
+#[cfg(feature = "performance-harness")]
+#[derive(Debug)]
+pub(crate) enum QualificationSendFailure {
+    Write(IpcError),
+    Read(IpcError),
+    UnexpectedAcknowledgement,
+}
+
 impl IpcClient {
     pub fn connect(endpoint: &LocalEndpoint, timeout: Duration) -> Result<Self, IpcError> {
         Ok(Self {
@@ -1088,6 +1098,26 @@ impl IpcClient {
         match read_frame_bounded(&mut self.stream, self.timeout)? {
             IpcFrame::Ack(value) => Ok(value),
             _ => Err(IpcError::Invalid("acknowledgement")),
+        }
+    }
+
+    #[cfg(feature = "performance-harness")]
+    pub(crate) fn send_for_qualification(
+        &mut self,
+        frame: &IpcFrame,
+    ) -> Result<BrokerAcknowledgement, QualificationSendFailure> {
+        if !frame.is_lifecycle() {
+            return Err(QualificationSendFailure::Write(IpcError::Invalid(
+                "producer_frame_type",
+            )));
+        }
+        write_frame_bounded(&mut self.stream, frame, self.timeout)
+            .map_err(QualificationSendFailure::Write)?;
+        match read_frame_bounded(&mut self.stream, self.timeout)
+            .map_err(QualificationSendFailure::Read)?
+        {
+            IpcFrame::Ack(value) => Ok(value),
+            _ => Err(QualificationSendFailure::UnexpectedAcknowledgement),
         }
     }
 }

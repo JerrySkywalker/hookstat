@@ -60,5 +60,16 @@ admitted run above the immutable 1 ms p95 or 2 ms p99 limit produces
 `FAIL_FROZEN_G28_BUDGET`; insufficient admitted runs produce
 `BLOCKED_NO_QUALIFYING_WINDOW`.
 
+### Measurement-error diagnostics
+
+Receipt schema v2 retains a bounded `measurement_error_class` only when a
+control or candidate could not be measured. Its allowed values are
+`broker_startup_failure`, `connect_timeout`, `write_send_timeout`,
+`read_ack_timeout`, `unexpected_acknowledgement`, `worker_failure`,
+`state_root_failure`, and `other_bounded_io_failure`. The field never contains
+the underlying OS error text, paths, host/user data, process data, commands,
+or Hook content. A measurement error remains a rejected control, not an
+admitted latency result or a budget relaxation.
+
 The existing loaded-host p95=2.141 ms / p99=8.314 ms observation remains
 historical non-acceptance evidence and is neither deleted nor reclassified.

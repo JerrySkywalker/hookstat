@@ -7,6 +7,7 @@
 
 use crate::ipc::{
     BrokerAcknowledgement, BrokerConfig, BrokerHost, IpcClient, IpcError, IpcFrame, LifecycleFrame,
+    QualificationSendFailure,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -17,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const RECEIPT_SCHEMA_VERSION: u8 = 1;
+const RECEIPT_SCHEMA_VERSION: u8 = 2;
 const REQUIRED_QUALIFYING_RUNS: u8 = 5;
 const FROZEN_P95_MS: f64 = 1.0;
 const FROZEN_P99_MS: f64 = 2.0;
@@ -65,6 +66,7 @@ pub struct ControlObservation {
     pub latency: Option<LatencyStatistics>,
     pub admitted: bool,
     pub disposition: String,
+    pub measurement_error_class: Option<MeasurementErrorClass>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -74,6 +76,22 @@ pub struct BenchmarkObservation {
     pub latency: Option<LatencyStatistics>,
     pub frozen_budget_passed: bool,
     pub disposition: String,
+    pub measurement_error_class: Option<MeasurementErrorClass>,
+}
+
+/// Bounded developer-only measurement diagnostics. These values intentionally
+/// exclude OS error text, paths, process data, and other private content.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementErrorClass {
+    BrokerStartupFailure,
+    ConnectTimeout,
+    WriteSendTimeout,
+    ReadAckTimeout,
+    UnexpectedAcknowledgement,
+    WorkerFailure,
+    StateRootFailure,
+    OtherBoundedIoFailure,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -256,13 +274,14 @@ fn qualify_series(
 
         let latency = match measure_broker_ack(clients, samples_per_client) {
             Ok(value) => value,
-            Err(_) => {
+            Err(error) => {
                 receipt.rejected_runs.push(BenchmarkObservation {
                     series: series.into(),
                     attempt,
                     latency: None,
                     frozen_budget_passed: false,
                     disposition: "rejected_measurement_error".into(),
+                    measurement_error_class: Some(error),
                 });
                 wait_before_retry(attempt, config);
                 continue;
@@ -282,6 +301,7 @@ fn qualify_series(
             } else {
                 "rejected_post_control_degraded".into()
             },
+            measurement_error_class: None,
         };
         if !after_admitted {
             // The paired series is aborted rather than restarted in a changed
@@ -344,15 +364,17 @@ fn measure_control(
                 } else {
                     "rejected_control_noise".into()
                 },
+                measurement_error_class: None,
             }
         }
-        Err(_) => ControlObservation {
+        Err(error) => ControlObservation {
             series: series.into(),
             attempt,
             position: position.into(),
             latency: None,
             admitted: false,
             disposition: "rejected_measurement_error".into(),
+            measurement_error_class: Some(error),
         },
     }
 }
@@ -366,26 +388,30 @@ fn wait_before_retry(attempt: u16, config: &QualificationConfig) {
 fn measure_broker_ack(
     clients: usize,
     samples_per_client: usize,
-) -> Result<LatencyStatistics, QualificationError> {
-    let root = DisposableStateRoot::create()?;
-    let host = BrokerHost::start(BrokerConfig::for_state_root(root.path()))?;
+) -> Result<LatencyStatistics, MeasurementErrorClass> {
+    let root =
+        DisposableStateRoot::create().map_err(|_| MeasurementErrorClass::StateRootFailure)?;
+    let host = BrokerHost::start(BrokerConfig::for_state_root(root.path()))
+        .map_err(|error| classify_broker_startup_error(&error))?;
     let samples = Arc::new(Mutex::new(Vec::with_capacity(clients * samples_per_client)));
     let result = thread::scope(|scope| {
         let mut workers = Vec::with_capacity(clients);
         for client in 0..clients {
             let samples = Arc::clone(&samples);
             let endpoint = host.endpoint().clone();
-            workers.push(scope.spawn(move || -> Result<(), QualificationError> {
-                let mut connection = IpcClient::connect(&endpoint, Duration::from_millis(5))?;
+            workers.push(scope.spawn(move || -> Result<(), MeasurementErrorClass> {
+                let mut connection = IpcClient::connect(&endpoint, Duration::from_millis(5))
+                    .map_err(|error| classify_connect_error(&error))?;
                 for sequence in 0..samples_per_client {
                     let before = Instant::now();
-                    if connection.send(&frame(client, sequence))? != BrokerAcknowledgement::Accepted
-                    {
-                        return Err(QualificationError::Invalid("broker_acknowledgement"));
+                    match connection.send_for_qualification(&frame(client, sequence)) {
+                        Ok(BrokerAcknowledgement::Accepted) => {}
+                        Ok(_) => return Err(MeasurementErrorClass::UnexpectedAcknowledgement),
+                        Err(error) => return Err(classify_send_failure(error)),
                     }
                     samples
                         .lock()
-                        .map_err(|_| QualificationError::Invalid("samples_lock"))?
+                        .map_err(|_| MeasurementErrorClass::WorkerFailure)?
                         .push(u64::try_from(before.elapsed().as_nanos()).unwrap_or(u64::MAX));
                 }
                 Ok(())
@@ -394,17 +420,63 @@ fn measure_broker_ack(
         for worker in workers {
             worker
                 .join()
-                .map_err(|_| QualificationError::Invalid("measurement_worker"))??;
+                .map_err(|_| MeasurementErrorClass::WorkerFailure)??;
         }
-        Ok::<(), QualificationError>(())
+        Ok::<(), MeasurementErrorClass>(())
     });
     host.stop();
     result?;
     let samples = Arc::try_unwrap(samples)
-        .map_err(|_| QualificationError::Invalid("samples_ownership"))?
+        .map_err(|_| MeasurementErrorClass::WorkerFailure)?
         .into_inner()
-        .map_err(|_| QualificationError::Invalid("samples_lock"))?;
-    latency_statistics(samples)
+        .map_err(|_| MeasurementErrorClass::WorkerFailure)?;
+    latency_statistics(samples).map_err(|_| MeasurementErrorClass::WorkerFailure)
+}
+
+fn classify_broker_startup_error(error: &IpcError) -> MeasurementErrorClass {
+    match error {
+        IpcError::UnsafeStateObject | IpcError::WalTooLarge | IpcError::WalCorrupt(_) => {
+            MeasurementErrorClass::StateRootFailure
+        }
+        IpcError::Io(value)
+            if matches!(
+                value.kind(),
+                std::io::ErrorKind::PermissionDenied
+                    | std::io::ErrorKind::NotFound
+                    | std::io::ErrorKind::AlreadyExists
+                    | std::io::ErrorKind::InvalidInput
+            ) =>
+        {
+            MeasurementErrorClass::StateRootFailure
+        }
+        _ => MeasurementErrorClass::BrokerStartupFailure,
+    }
+}
+
+fn classify_connect_error(error: &IpcError) -> MeasurementErrorClass {
+    classify_timeout(error, MeasurementErrorClass::ConnectTimeout)
+}
+
+fn classify_send_failure(error: QualificationSendFailure) -> MeasurementErrorClass {
+    match error {
+        QualificationSendFailure::Write(error) => {
+            classify_timeout(&error, MeasurementErrorClass::WriteSendTimeout)
+        }
+        QualificationSendFailure::Read(error) => {
+            classify_timeout(&error, MeasurementErrorClass::ReadAckTimeout)
+        }
+        QualificationSendFailure::UnexpectedAcknowledgement => {
+            MeasurementErrorClass::UnexpectedAcknowledgement
+        }
+    }
+}
+
+fn classify_timeout(error: &IpcError, timeout: MeasurementErrorClass) -> MeasurementErrorClass {
+    match error {
+        IpcError::Io(value) if value.kind() == std::io::ErrorKind::TimedOut => timeout,
+        IpcError::StartupTimedOut => timeout,
+        _ => MeasurementErrorClass::OtherBoundedIoFailure,
+    }
 }
 
 fn frame(client: usize, sequence: usize) -> IpcFrame {
@@ -546,5 +618,57 @@ mod tests {
         assert!(frozen_budget_passes(&stats(1.0, 2.0)));
         assert!(!frozen_budget_passes(&stats(1.001, 2.0)));
         assert!(!frozen_budget_passes(&stats(1.0, 2.001)));
+    }
+
+    #[test]
+    fn measurement_error_classes_are_phase_specific_and_bounded() {
+        let timeout = IpcError::Io(std::io::Error::from(std::io::ErrorKind::TimedOut));
+        assert_eq!(
+            classify_connect_error(&timeout),
+            MeasurementErrorClass::ConnectTimeout
+        );
+        assert_eq!(
+            classify_send_failure(QualificationSendFailure::Write(IpcError::Io(
+                std::io::Error::from(std::io::ErrorKind::TimedOut),
+            ))),
+            MeasurementErrorClass::WriteSendTimeout
+        );
+        assert_eq!(
+            classify_send_failure(QualificationSendFailure::Read(IpcError::Io(
+                std::io::Error::from(std::io::ErrorKind::TimedOut),
+            ))),
+            MeasurementErrorClass::ReadAckTimeout
+        );
+        assert_eq!(
+            classify_send_failure(QualificationSendFailure::UnexpectedAcknowledgement),
+            MeasurementErrorClass::UnexpectedAcknowledgement
+        );
+        assert_eq!(
+            classify_broker_startup_error(&IpcError::UnsafeStateObject),
+            MeasurementErrorClass::StateRootFailure
+        );
+        assert_eq!(
+            classify_connect_error(&IpcError::Io(std::io::Error::from(
+                std::io::ErrorKind::ConnectionRefused,
+            ))),
+            MeasurementErrorClass::OtherBoundedIoFailure
+        );
+    }
+
+    #[test]
+    fn measurement_error_receipt_field_is_sanitized_and_optional() {
+        let observation = ControlObservation {
+            series: "single_client_persistent_release".into(),
+            attempt: 1,
+            position: "before".into(),
+            latency: None,
+            admitted: false,
+            disposition: "rejected_measurement_error".into(),
+            measurement_error_class: Some(MeasurementErrorClass::ReadAckTimeout),
+        };
+        let serialized = serde_json::to_string(&observation).unwrap();
+        assert!(serialized.contains("\"measurement_error_class\":\"read_ack_timeout\""));
+        assert!(!serialized.contains("path"));
+        assert!(!serialized.contains("username"));
     }
 }
