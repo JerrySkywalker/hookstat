@@ -1263,6 +1263,9 @@ pub(crate) struct QualificationBrokerStageSample {
     pub acknowledgement_channel_allocation_ns: u64,
     pub queue_submission_ns: u64,
     pub queue_wait_ns: u64,
+    pub queue_depth_at_dequeue: u64,
+    pub queue_wait_group_sync_overlap_ns: u64,
+    pub worker_dequeue_handoff_ns: u64,
     pub wal_append_ns: u64,
     pub worker_acknowledgement_handoff_ns: u64,
     pub broker_ack_write_ns: u64,
@@ -1271,6 +1274,7 @@ pub(crate) struct QualificationBrokerStageSample {
 #[cfg(feature = "performance-harness")]
 struct QualificationStageCollector {
     samples: Mutex<Vec<QualificationBrokerStageSample>>,
+    group_sync_durations_ns: Mutex<Vec<u64>>,
 }
 
 #[cfg(feature = "performance-harness")]
@@ -1278,6 +1282,7 @@ impl QualificationStageCollector {
     fn new() -> Self {
         Self {
             samples: Mutex::new(Vec::new()),
+            group_sync_durations_ns: Mutex::new(Vec::new()),
         }
     }
 
@@ -1293,6 +1298,19 @@ impl QualificationStageCollector {
             .map(|samples| samples.clone())
             .unwrap_or_default()
     }
+
+    fn record_group_sync(&self, duration_ns: u64) {
+        if let Ok(mut durations) = self.group_sync_durations_ns.lock() {
+            durations.push(duration_ns);
+        }
+    }
+
+    fn group_sync_durations(&self) -> Vec<u64> {
+        self.group_sync_durations_ns
+            .lock()
+            .map(|durations| durations.clone())
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(feature = "performance-harness")]
@@ -1302,6 +1320,9 @@ struct QualificationRequestTiming {
     acknowledgement_channel_allocation_ns: AtomicU64,
     queue_submission_ns: AtomicU64,
     queue_wait_ns: AtomicU64,
+    queue_depth_at_dequeue: AtomicU64,
+    queue_wait_group_sync_overlap_ns: AtomicU64,
+    worker_dequeue_handoff_ns: AtomicU64,
     wal_append_ns: AtomicU64,
     worker_acknowledgement_handoff_ns: AtomicU64,
     broker_ack_write_ns: AtomicU64,
@@ -1316,6 +1337,9 @@ impl QualificationRequestTiming {
             acknowledgement_channel_allocation_ns: AtomicU64::new(0),
             queue_submission_ns: AtomicU64::new(0),
             queue_wait_ns: AtomicU64::new(0),
+            queue_depth_at_dequeue: AtomicU64::new(0),
+            queue_wait_group_sync_overlap_ns: AtomicU64::new(0),
+            worker_dequeue_handoff_ns: AtomicU64::new(0),
             wal_append_ns: AtomicU64::new(0),
             worker_acknowledgement_handoff_ns: AtomicU64::new(0),
             broker_ack_write_ns: AtomicU64::new(0),
@@ -1335,6 +1359,11 @@ impl QualificationRequestTiming {
                 .load(Ordering::Acquire),
             queue_submission_ns: self.queue_submission_ns.load(Ordering::Acquire),
             queue_wait_ns: self.queue_wait_ns.load(Ordering::Acquire),
+            queue_depth_at_dequeue: self.queue_depth_at_dequeue.load(Ordering::Acquire),
+            queue_wait_group_sync_overlap_ns: self
+                .queue_wait_group_sync_overlap_ns
+                .load(Ordering::Acquire),
+            worker_dequeue_handoff_ns: self.worker_dequeue_handoff_ns.load(Ordering::Acquire),
             wal_append_ns: self.wal_append_ns.load(Ordering::Acquire),
             worker_acknowledgement_handoff_ns: self
                 .worker_acknowledgement_handoff_ns
@@ -1657,6 +1686,14 @@ impl BrokerHost {
             .unwrap_or_default()
     }
 
+    #[cfg(feature = "performance-harness")]
+    pub(crate) fn qualification_group_sync_durations(&self) -> Vec<u64> {
+        self.qualification_stage_collector
+            .as_ref()
+            .map(|collector| collector.group_sync_durations())
+            .unwrap_or_default()
+    }
+
     pub fn stop(mut self) {
         self.stopping.store(true, Ordering::Release);
         for handle in self.handles.drain(..) {
@@ -1703,15 +1740,45 @@ fn wal_worker_loop(
     stopping: Arc<AtomicBool>,
 ) {
     let mut durability_failed = false;
+    #[cfg(feature = "performance-harness")]
+    let mut last_group_sync_interval = None;
     loop {
+        #[cfg(feature = "performance-harness")]
+        let worker_available_at = Instant::now();
         match receiver.recv_timeout(Duration::from_millis(2)) {
             Ok(queued) => {
-                core.queue_depth.fetch_sub(1, Ordering::Relaxed);
+                #[cfg(feature = "performance-harness")]
+                let dequeued_at = Instant::now();
+                let _depth_at_dequeue = core.queue_depth.fetch_sub(1, Ordering::Relaxed);
                 #[cfg(feature = "performance-harness")]
                 if let Some(timing) = &queued.timing {
                     QualificationRequestTiming::store(
                         &timing.queue_wait_ns,
-                        elapsed_nanos(queued.enqueued_at),
+                        elapsed_nanos_between(queued.enqueued_at, dequeued_at),
+                    );
+                    QualificationRequestTiming::store(
+                        &timing.queue_depth_at_dequeue,
+                        u64::try_from(_depth_at_dequeue).unwrap_or(u64::MAX),
+                    );
+                    QualificationRequestTiming::store(
+                        &timing.worker_dequeue_handoff_ns,
+                        elapsed_nanos_between(
+                            worker_available_at.max(queued.enqueued_at),
+                            dequeued_at,
+                        ),
+                    );
+                    QualificationRequestTiming::store(
+                        &timing.queue_wait_group_sync_overlap_ns,
+                        last_group_sync_interval
+                            .map(|(started, completed)| {
+                                interval_overlap_nanos(
+                                    queued.enqueued_at,
+                                    dequeued_at,
+                                    started,
+                                    completed,
+                                )
+                            })
+                            .unwrap_or_default(),
                     );
                 }
                 if durability_failed {
@@ -1749,7 +1816,13 @@ fn wal_worker_loop(
                                 elapsed_nanos(handoff_started),
                             );
                         }
-                        match wal.flush_if_due() {
+                        match worker_flush_if_due(
+                            wal,
+                            #[cfg(feature = "performance-harness")]
+                            core.qualification_stage_collector.as_deref(),
+                            #[cfg(feature = "performance-harness")]
+                            &mut last_group_sync_interval,
+                        ) {
                             Ok(flush) if flush.grouped_records > 0 => {
                                 health.group_flushes.fetch_add(1, Ordering::Relaxed);
                             }
@@ -1771,7 +1844,13 @@ fn wal_worker_loop(
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                match wal.flush_if_due() {
+                match worker_flush_if_due(
+                    wal,
+                    #[cfg(feature = "performance-harness")]
+                    core.qualification_stage_collector.as_deref(),
+                    #[cfg(feature = "performance-harness")]
+                    &mut last_group_sync_interval,
+                ) {
                     Ok(flush) if flush.grouped_records > 0 => {
                         health.group_flushes.fetch_add(1, Ordering::Relaxed);
                     }
@@ -1796,6 +1875,45 @@ fn wal_worker_loop(
             }
         }
     }
+}
+
+fn worker_flush_if_due(
+    wal: &mut Wal,
+    #[cfg(feature = "performance-harness")] collector: Option<&QualificationStageCollector>,
+    #[cfg(feature = "performance-harness")] last_group_sync_interval: &mut Option<(
+        Instant,
+        Instant,
+    )>,
+) -> Result<WalFlush, IpcError> {
+    #[cfg(feature = "performance-harness")]
+    let started = Instant::now();
+    let result = wal.flush_if_due();
+    #[cfg(feature = "performance-harness")]
+    if matches!(&result, Ok(flush) if flush.grouped_records > 0) || result.is_err() {
+        let completed = Instant::now();
+        if let Some(collector) = collector {
+            collector.record_group_sync(elapsed_nanos_between(started, completed));
+        }
+        *last_group_sync_interval = Some((started, completed));
+    }
+    result
+}
+
+#[cfg(feature = "performance-harness")]
+fn elapsed_nanos_between(started: Instant, completed: Instant) -> u64 {
+    u64::try_from(completed.saturating_duration_since(started).as_nanos()).unwrap_or(u64::MAX)
+}
+
+#[cfg(feature = "performance-harness")]
+fn interval_overlap_nanos(
+    first_started: Instant,
+    first_completed: Instant,
+    second_started: Instant,
+    second_completed: Instant,
+) -> u64 {
+    let overlap_started = first_started.max(second_started);
+    let overlap_completed = first_completed.min(second_completed);
+    elapsed_nanos_between(overlap_started, overlap_completed)
 }
 
 fn accept_loop(
@@ -2436,6 +2554,30 @@ mod tests {
             IpcFrame::Start(invalid).encode(),
             Err(IpcError::Invalid("runtime"))
         ));
+    }
+
+    #[cfg(feature = "performance-harness")]
+    #[test]
+    fn group_sync_queue_wait_overlap_is_exact_and_never_negative() {
+        let origin = Instant::now();
+        assert_eq!(
+            interval_overlap_nanos(
+                origin,
+                origin + Duration::from_millis(10),
+                origin + Duration::from_millis(4),
+                origin + Duration::from_millis(7),
+            ),
+            3_000_000
+        );
+        assert_eq!(
+            interval_overlap_nanos(
+                origin,
+                origin + Duration::from_millis(3),
+                origin + Duration::from_millis(4),
+                origin + Duration::from_millis(7),
+            ),
+            0
+        );
     }
 
     #[test]

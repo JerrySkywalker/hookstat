@@ -204,6 +204,13 @@ pub struct StageTimingReceipt {
     pub acknowledgement_channel_allocation: Option<LatencyStatistics>,
     pub queue_submission: Option<LatencyStatistics>,
     pub queue_wait: Option<LatencyStatistics>,
+    pub queue_wait_group_sync_overlap: Option<LatencyStatistics>,
+    pub queue_wait_residual_after_group_sync: Option<LatencyStatistics>,
+    pub worker_dequeue_handoff: Option<LatencyStatistics>,
+    pub queue_depth_at_dequeue_max: Option<u64>,
+    pub group_sync_attempts: usize,
+    pub group_sync_duration: Option<LatencyStatistics>,
+    pub queue_wait_sync_correlation: Option<QueueWaitSyncCorrelation>,
     pub wal_append: Option<LatencyStatistics>,
     pub worker_acknowledgement_handoff: Option<LatencyStatistics>,
     pub broker_ack_write: Option<LatencyStatistics>,
@@ -213,10 +220,20 @@ pub struct StageTimingReceipt {
     pub raw_private_content_captured: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct QueueWaitSyncCorrelation {
+    pub samples_overlapping_group_sync: usize,
+    pub p95_tail_samples: usize,
+    pub p95_tail_samples_overlapping_group_sync: usize,
+    pub total_queue_wait_ns: u64,
+    pub total_group_sync_overlap_ns: u64,
+}
+
 type StageTimingMeasurement = (
     Vec<u64>,
     Vec<QualificationClientStageSample>,
     Vec<QualificationBrokerStageSample>,
+    Vec<u64>,
 );
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -444,7 +461,7 @@ pub fn run_stage_timing_diagnostic(
 ) -> Result<StageTimingReceipt, QualificationError> {
     validate_stage_timing_config(config)?;
     match measure_stage_timing(CLIENTS_16, config.client16_samples_per_client) {
-        Ok((round_trip, client, broker)) => Ok(StageTimingReceipt {
+        Ok((round_trip, client, broker, group_sync_durations)) => Ok(StageTimingReceipt {
             schema_version: RECEIPT_SCHEMA_VERSION,
             run_kind: "hs_g35_stage_timing_diagnostic".into(),
             acceptance_evidence: false,
@@ -469,6 +486,26 @@ pub fn run_stage_timing_diagnostic(
                 broker.iter().map(|value| value.queue_submission_ns),
             ),
             queue_wait: stage_statistics(broker.iter().map(|value| value.queue_wait_ns)),
+            queue_wait_group_sync_overlap: stage_statistics(
+                broker
+                    .iter()
+                    .map(|value| value.queue_wait_group_sync_overlap_ns),
+            ),
+            queue_wait_residual_after_group_sync: stage_statistics(broker.iter().map(|value| {
+                value
+                    .queue_wait_ns
+                    .saturating_sub(value.queue_wait_group_sync_overlap_ns)
+            })),
+            worker_dequeue_handoff: stage_statistics(
+                broker.iter().map(|value| value.worker_dequeue_handoff_ns),
+            ),
+            queue_depth_at_dequeue_max: broker
+                .iter()
+                .map(|value| value.queue_depth_at_dequeue)
+                .max(),
+            group_sync_attempts: group_sync_durations.len(),
+            group_sync_duration: stage_statistics(group_sync_durations),
+            queue_wait_sync_correlation: queue_wait_sync_correlation(&broker),
             wal_append: stage_statistics(broker.iter().map(|value| value.wal_append_ns)),
             worker_acknowledgement_handoff: stage_statistics(
                 broker
@@ -498,6 +535,13 @@ pub fn run_stage_timing_diagnostic(
             acknowledgement_channel_allocation: None,
             queue_submission: None,
             queue_wait: None,
+            queue_wait_group_sync_overlap: None,
+            queue_wait_residual_after_group_sync: None,
+            worker_dequeue_handoff: None,
+            queue_depth_at_dequeue_max: None,
+            group_sync_attempts: 0,
+            group_sync_duration: None,
+            queue_wait_sync_correlation: None,
             wal_append: None,
             worker_acknowledgement_handoff: None,
             broker_ack_write: None,
@@ -558,7 +602,8 @@ fn measure_stage_timing(
         if broker.len() != clients * samples_per_client {
             return Err(MeasurementErrorClass::WorkerFailure);
         }
-        Ok((round_trip, client, broker))
+        let group_sync_durations = host.qualification_group_sync_durations();
+        Ok((round_trip, client, broker, group_sync_durations))
     });
     host.stop();
     result
@@ -566,6 +611,41 @@ fn measure_stage_timing(
 
 fn stage_statistics(values: impl IntoIterator<Item = u64>) -> Option<LatencyStatistics> {
     latency_statistics(values.into_iter().collect()).ok()
+}
+
+fn queue_wait_sync_correlation(
+    samples: &[QualificationBrokerStageSample],
+) -> Option<QueueWaitSyncCorrelation> {
+    if samples.is_empty() {
+        return None;
+    }
+    let mut queue_waits = samples
+        .iter()
+        .map(|sample| sample.queue_wait_ns)
+        .collect::<Vec<_>>();
+    queue_waits.sort_unstable();
+    let p95_threshold = queue_waits[(queue_waits.len() * 95).div_ceil(100) - 1];
+    Some(QueueWaitSyncCorrelation {
+        samples_overlapping_group_sync: samples
+            .iter()
+            .filter(|sample| sample.queue_wait_group_sync_overlap_ns > 0)
+            .count(),
+        p95_tail_samples: samples
+            .iter()
+            .filter(|sample| sample.queue_wait_ns >= p95_threshold)
+            .count(),
+        p95_tail_samples_overlapping_group_sync: samples
+            .iter()
+            .filter(|sample| {
+                sample.queue_wait_ns >= p95_threshold && sample.queue_wait_group_sync_overlap_ns > 0
+            })
+            .count(),
+        total_queue_wait_ns: samples.iter().map(|sample| sample.queue_wait_ns).sum(),
+        total_group_sync_overlap_ns: samples
+            .iter()
+            .map(|sample| sample.queue_wait_group_sync_overlap_ns)
+            .sum(),
+    })
 }
 
 struct SeriesResult {
@@ -1155,5 +1235,20 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn queue_wait_sync_correlation_counts_only_measured_overlap() {
+        let mut samples = vec![QualificationBrokerStageSample::default(); 20];
+        for (index, sample) in samples.iter_mut().enumerate() {
+            sample.queue_wait_ns = u64::try_from(index + 1).unwrap() * 100;
+        }
+        samples[18].queue_wait_group_sync_overlap_ns = 1_000;
+        samples[19].queue_wait_group_sync_overlap_ns = 1_100;
+        let correlation = queue_wait_sync_correlation(&samples).unwrap();
+        assert_eq!(correlation.samples_overlapping_group_sync, 2);
+        assert_eq!(correlation.p95_tail_samples, 2);
+        assert_eq!(correlation.p95_tail_samples_overlapping_group_sync, 2);
+        assert_eq!(correlation.total_group_sync_overlap_ns, 2_100);
     }
 }
