@@ -37,6 +37,10 @@ pub const MAX_WAL_BYTES: u64 = 64 * 1024 * 1024;
 
 const FRAME_HEADER_BYTES: usize = 10;
 const WAL_HEADER_BYTES: usize = 12;
+// Only the client ACK read uses this bounded eager phase. Broker connection
+// reads retain the original yield cadence so 16 idle readers do not compete
+// with the clients that must receive an ACK before producing the next frame.
+const WINDOWS_EAGER_READ_SPINS: u32 = 64;
 
 /// A bounded runtime-neutral lifecycle envelope. Every string is an opaque
 /// identifier, not a path, command, payload, or stream.
@@ -393,10 +397,14 @@ fn elapsed_nanos(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
-fn read_frame_bounded(input: &mut Stream, timeout: Duration) -> Result<IpcFrame, IpcError> {
+fn read_frame_bounded(
+    input: &mut Stream,
+    timeout: Duration,
+    windows_eager_empty_polls: u32,
+) -> Result<IpcFrame, IpcError> {
     let deadline = Instant::now() + timeout;
     let mut header = [0_u8; FRAME_HEADER_BYTES];
-    read_exact_bounded(input, &mut header, deadline)?;
+    read_exact_bounded(input, &mut header, deadline, windows_eager_empty_polls)?;
     let length = u16::from_le_bytes([header[8], header[9]]) as usize;
     if length > MAX_IPC_FRAME_BYTES - FRAME_HEADER_BYTES {
         return Err(IpcError::Oversized);
@@ -404,7 +412,7 @@ fn read_frame_bounded(input: &mut Stream, timeout: Duration) -> Result<IpcFrame,
     let mut encoded = Vec::with_capacity(FRAME_HEADER_BYTES + length);
     encoded.extend_from_slice(&header);
     let mut payload = vec![0_u8; length];
-    read_exact_bounded(input, &mut payload, deadline)?;
+    read_exact_bounded(input, &mut payload, deadline, windows_eager_empty_polls)?;
     encoded.extend_from_slice(&payload);
     IpcFrame::decode(&encoded)
 }
@@ -422,9 +430,10 @@ fn read_exact_bounded(
     input: &mut Stream,
     mut buffer: &mut [u8],
     deadline: Instant,
+    _windows_eager_empty_polls: u32,
 ) -> Result<(), IpcError> {
     #[cfg(windows)]
-    let mut spins = 0_u32;
+    let mut empty_polls = 0_u32;
     while !buffer.is_empty() {
         match input.read(buffer) {
             // A nonblocking Windows Named Pipe reports a zero-byte read while
@@ -455,16 +464,22 @@ fn read_exact_bounded(
                             "bounded IPC read",
                         )));
                     }
-                    spins += 1;
-                    if spins < 8 {
-                        std::hint::spin_loop();
-                    } else {
-                        spins = 0;
+                    empty_polls = empty_polls.saturating_add(1);
+                    if windows_should_yield_after_empty_read(
+                        empty_polls,
+                        _windows_eager_empty_polls,
+                    ) {
                         thread::yield_now();
+                    } else {
+                        std::hint::spin_loop();
                     }
                 }
             }
             Ok(read) => {
+                #[cfg(windows)]
+                {
+                    empty_polls = 0;
+                }
                 let (_, rest) = buffer.split_at_mut(read);
                 buffer = rest;
             }
@@ -486,6 +501,11 @@ fn read_exact_bounded(
         }
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn windows_should_yield_after_empty_read(empty_polls: u32, eager_empty_polls: u32) -> bool {
+    empty_polls > eager_empty_polls && (empty_polls - eager_empty_polls).is_multiple_of(8)
 }
 
 /// A zero-byte nonblocking local-socket read can occur during an accept/write
@@ -1160,7 +1180,7 @@ impl IpcClient {
             return Err(IpcError::Invalid("producer_frame_type"));
         }
         write_frame_bounded(&mut self.stream, frame, self.timeout)?;
-        match read_frame_bounded(&mut self.stream, self.timeout)? {
+        match read_frame_bounded(&mut self.stream, self.timeout, WINDOWS_EAGER_READ_SPINS)? {
             IpcFrame::Ack(value) => Ok(value),
             _ => Err(IpcError::Invalid("acknowledgement")),
         }
@@ -1178,7 +1198,7 @@ impl IpcClient {
         }
         write_frame_bounded(&mut self.stream, frame, self.timeout)
             .map_err(QualificationSendFailure::Write)?;
-        match read_frame_bounded(&mut self.stream, self.timeout)
+        match read_frame_bounded(&mut self.stream, self.timeout, WINDOWS_EAGER_READ_SPINS)
             .map_err(QualificationSendFailure::Read)?
         {
             IpcFrame::Ack(value) => Ok(value),
@@ -1202,12 +1222,13 @@ impl IpcClient {
             .map_err(QualificationSendFailure::Write)?;
         let client_write_ns = elapsed_nanos(write_started);
         let read_started = Instant::now();
-        let acknowledgement = match read_frame_bounded(&mut self.stream, self.timeout)
-            .map_err(QualificationSendFailure::Read)?
-        {
-            IpcFrame::Ack(value) => value,
-            _ => return Err(QualificationSendFailure::UnexpectedAcknowledgement),
-        };
+        let acknowledgement =
+            match read_frame_bounded(&mut self.stream, self.timeout, WINDOWS_EAGER_READ_SPINS)
+                .map_err(QualificationSendFailure::Read)?
+            {
+                IpcFrame::Ack(value) => value,
+                _ => return Err(QualificationSendFailure::UnexpectedAcknowledgement),
+            };
         Ok((
             acknowledgement,
             QualificationClientStageSample {
@@ -2248,7 +2269,7 @@ fn connection_loop(
     while !stopping.load(Ordering::Acquire) {
         #[cfg(feature = "performance-harness")]
         let read_started = stage_collector.as_ref().map(|_| Instant::now());
-        match read_frame_bounded(&mut stream, Duration::from_millis(10)) {
+        match read_frame_bounded(&mut stream, Duration::from_millis(10), 0) {
             Ok(frame) if frame.is_lifecycle() => {
                 #[cfg(feature = "performance-harness")]
                 let timing = stage_collector
@@ -2612,6 +2633,17 @@ mod tests {
             entered_receiver,
             release_sender,
         )
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_client_ack_read_has_a_bounded_eager_phase() {
+        assert!(!windows_should_yield_after_empty_read(1, 64));
+        assert!(!windows_should_yield_after_empty_read(64, 64));
+        assert!(!windows_should_yield_after_empty_read(71, 64));
+        assert!(windows_should_yield_after_empty_read(72, 64));
+        assert!(windows_should_yield_after_empty_read(80, 64));
+        assert!(windows_should_yield_after_empty_read(8, 0));
     }
 
     #[test]
