@@ -6,8 +6,9 @@
 //! prompts, payloads, power settings, process priority, or affinity.
 
 use crate::ipc::{
-    BrokerAcknowledgement, BrokerConfig, BrokerHost, IpcClient, IpcError, IpcFrame, LifecycleFrame,
-    QualificationBrokerStageSample, QualificationClientStageSample, QualificationSendFailure,
+    BrokerAcknowledgement, BrokerConfig, BrokerHost, GroupDurabilityPolicy, IpcClient, IpcError,
+    IpcFrame, LifecycleFrame, QualificationBrokerStageSample, QualificationClientStageSample,
+    QualificationSendFailure,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -176,12 +177,16 @@ pub struct CollectorComparisonObservation {
 #[derive(Clone, Debug)]
 pub struct StageTimingConfig {
     pub client16_samples_per_client: usize,
+    /// Feature-only causal probe. `false` keeps the frozen production policy
+    /// out of the measured window without changing broker production defaults.
+    pub group_sync_during_measurement: bool,
 }
 
 impl Default for StageTimingConfig {
     fn default() -> Self {
         Self {
             client16_samples_per_client: 100,
+            group_sync_during_measurement: true,
         }
     }
 }
@@ -197,6 +202,7 @@ pub struct StageTimingReceipt {
     pub client_start_barrier: bool,
     pub clients: usize,
     pub samples_per_client: usize,
+    pub group_sync_during_measurement: bool,
     pub round_trip: Option<LatencyStatistics>,
     pub client_write: Option<LatencyStatistics>,
     pub broker_read_decode: Option<LatencyStatistics>,
@@ -465,7 +471,11 @@ pub fn run_stage_timing_diagnostic(
     config: &StageTimingConfig,
 ) -> Result<StageTimingReceipt, QualificationError> {
     validate_stage_timing_config(config)?;
-    match measure_stage_timing(CLIENTS_16, config.client16_samples_per_client) {
+    match measure_stage_timing(
+        CLIENTS_16,
+        config.client16_samples_per_client,
+        config.group_sync_during_measurement,
+    ) {
         Ok((round_trip, client, broker, group_sync_durations, health)) => Ok(StageTimingReceipt {
             schema_version: RECEIPT_SCHEMA_VERSION,
             run_kind: "hs_g35_stage_timing_diagnostic".into(),
@@ -474,6 +484,7 @@ pub fn run_stage_timing_diagnostic(
             client_start_barrier: true,
             clients: CLIENTS_16,
             samples_per_client: config.client16_samples_per_client,
+            group_sync_during_measurement: config.group_sync_during_measurement,
             round_trip: stage_statistics(round_trip),
             client_write: stage_statistics(client.iter().map(|value| value.client_write_ns)),
             broker_read_decode: stage_statistics(
@@ -537,6 +548,7 @@ pub fn run_stage_timing_diagnostic(
             client_start_barrier: true,
             clients: CLIENTS_16,
             samples_per_client: config.client16_samples_per_client,
+            group_sync_during_measurement: config.group_sync_during_measurement,
             round_trip: None,
             client_write: None,
             broker_read_decode: None,
@@ -569,13 +581,20 @@ pub fn run_stage_timing_diagnostic(
 fn measure_stage_timing(
     clients: usize,
     samples_per_client: usize,
+    group_sync_during_measurement: bool,
 ) -> Result<StageTimingMeasurement, MeasurementErrorClass> {
     let root =
         DisposableStateRoot::create().map_err(|_| MeasurementErrorClass::StateRootFailure)?;
-    let host = BrokerHost::start_with_qualification_stage_timing(BrokerConfig::for_state_root(
-        root.path(),
-    ))
-    .map_err(|error| classify_broker_startup_error(&error))?;
+    let mut broker_config = BrokerConfig::for_state_root(root.path());
+    if !group_sync_during_measurement {
+        broker_config.group_durability = GroupDurabilityPolicy {
+            max_records: u32::MAX,
+            max_bytes: u64::MAX,
+            max_interval: Duration::from_secs(60),
+        };
+    }
+    let host = BrokerHost::start_with_qualification_stage_timing(broker_config)
+        .map_err(|error| classify_broker_startup_error(&error))?;
     let result = connect_persistent_clients(&host, clients).and_then(|connections| {
         let barrier = Arc::new(Barrier::new(connections.len()));
         let (round_trip, client) = thread::scope(|scope| {
@@ -1246,6 +1265,7 @@ mod tests {
         assert!(
             validate_stage_timing_config(&StageTimingConfig {
                 client16_samples_per_client: 99,
+                group_sync_during_measurement: true,
             })
             .is_err()
         );

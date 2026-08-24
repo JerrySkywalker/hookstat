@@ -577,6 +577,11 @@ pub struct GroupDurabilityPolicy {
     pub max_interval: std::time::Duration,
 }
 
+// A record/byte-triggered request may briefly gather later generations before
+// the single physical sync. The deadline is always capped by the 50 ms policy
+// interval; time-triggered and shutdown requests are never delayed.
+const DURABILITY_COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_millis(2);
+
 impl Default for GroupDurabilityPolicy {
     fn default() -> Self {
         Self {
@@ -597,6 +602,7 @@ pub struct WalFlush {
 struct DurabilityRequest {
     through_generation: u64,
     group: WalFlush,
+    coalesce_until: std::time::Instant,
 }
 
 impl Wal {
@@ -694,10 +700,12 @@ impl Wal {
         if self.pending_records == 0 {
             return None;
         }
-        let due = force
-            || self.pending_records >= self.policy.max_records
-            || self.pending_bytes >= self.policy.max_bytes
-            || self.last_group_flush.elapsed() >= self.policy.max_interval;
+        let now = std::time::Instant::now();
+        let record_or_byte_due = self.pending_records >= self.policy.max_records
+            || self.pending_bytes >= self.policy.max_bytes;
+        let interval_deadline = self.last_group_flush + self.policy.max_interval;
+        let interval_due = now >= interval_deadline;
+        let due = force || record_or_byte_due || interval_due;
         if !due {
             return None;
         }
@@ -707,19 +715,41 @@ impl Wal {
                 grouped_records: self.pending_records,
                 grouped_bytes: self.pending_bytes,
             },
+            coalesce_until: if force || interval_due {
+                now
+            } else {
+                (now + DURABILITY_COALESCE_WINDOW).min(interval_deadline)
+            },
         };
         self.pending_records = 0;
         self.pending_bytes = 0;
-        self.last_group_flush = std::time::Instant::now();
+        self.last_group_flush = now;
         Some(request)
     }
 
     fn durability_handle(&self) -> Result<std::fs::File, IpcError> {
-        // `try_clone` shares the validated underlying file handle. The clone
-        // is sync-only; the WAL owner remains the sole writer, so neither the
-        // shared Windows file position nor Unix open-file offset is mutated by
-        // the durability worker.
-        self.file.try_clone().map_err(IpcError::Io)
+        // Use a distinct open-file handle so Windows does not serialize the
+        // append owner behind operations on a duplicated handle. The worker is
+        // sync-only; append permission is required by FlushFileBuffers.
+        let path_metadata = std::fs::symlink_metadata(&self.path).map_err(IpcError::Io)?;
+        if path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
+            return Err(IpcError::UnsafeStateObject);
+        }
+        let durability_handle = std::fs::OpenOptions::new()
+            .append(true)
+            .read(true)
+            .open(&self.path)
+            .map_err(IpcError::Io)?;
+        let writer_identity =
+            same_file::Handle::from_file(self.file.try_clone().map_err(IpcError::Io)?)
+                .map_err(IpcError::Io)?;
+        let durability_identity =
+            same_file::Handle::from_file(durability_handle.try_clone().map_err(IpcError::Io)?)
+                .map_err(IpcError::Io)?;
+        if writer_identity != durability_identity {
+            return Err(IpcError::UnsafeStateObject);
+        }
+        Ok(durability_handle)
     }
 
     fn append_generation(&self) -> u64 {
@@ -1292,6 +1322,7 @@ enum DurabilityRequestStatus {
 struct DurabilityState {
     requested_generation: u64,
     completed_generation: u64,
+    coalesce_until: Option<Instant>,
     shutting_down: bool,
     failed: bool,
 }
@@ -1305,7 +1336,7 @@ struct DurabilityCoordinator {
 }
 
 impl DurabilityCoordinator {
-    fn request(&self, through_generation: u64) -> DurabilityRequestStatus {
+    fn request(&self, through_generation: u64, coalesce_until: Instant) -> DurabilityRequestStatus {
         let mut state = self
             .state
             .lock()
@@ -1319,6 +1350,11 @@ impl DurabilityCoordinator {
             DurabilityRequestStatus::Scheduled
         };
         state.requested_generation = state.requested_generation.max(through_generation);
+        state.coalesce_until = Some(
+            state
+                .coalesce_until
+                .map_or(coalesce_until, |existing| existing.min(coalesce_until)),
+        );
         self.wake.notify_one();
         status
     }
@@ -1329,6 +1365,7 @@ impl DurabilityCoordinator {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.requested_generation = state.requested_generation.max(through_generation);
+        state.coalesce_until = None;
         state.shutting_down = true;
         self.wake.notify_one();
         while !state.failed && state.completed_generation < through_generation {
@@ -1350,6 +1387,18 @@ impl DurabilityCoordinator {
                 return None;
             }
             if state.requested_generation > state.completed_generation {
+                if let Some(deadline) = state.coalesce_until {
+                    let now = Instant::now();
+                    if now < deadline && !state.shutting_down {
+                        let (next_state, _) = self
+                            .wake
+                            .wait_timeout(state, deadline.duration_since(now))
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        state = next_state;
+                        continue;
+                    }
+                }
+                state.coalesce_until = None;
                 return Some(state.requested_generation);
             }
             if state.shutting_down {
@@ -2062,7 +2111,9 @@ fn schedule_wal_durability(
         return;
     };
     health.durability_requests.fetch_add(1, Ordering::Relaxed);
-    if durability.request(request.through_generation) == DurabilityRequestStatus::Coalesced {
+    if durability.request(request.through_generation, request.coalesce_until)
+        == DurabilityRequestStatus::Coalesced
+    {
         health
             .durability_requests_coalesced
             .fetch_add(1, Ordering::Relaxed);
@@ -2769,7 +2820,7 @@ mod tests {
     }
 
     #[test]
-    fn cloned_durability_handle_syncs_the_same_appended_wal() {
+    fn independently_opened_durability_handle_syncs_the_same_appended_wal() {
         let temp = tempfile::tempdir().unwrap();
         let mut wal = Wal::open(temp.path(), GroupDurabilityPolicy::default()).unwrap();
         let durability_handle = wal.durability_handle().unwrap();
@@ -2820,28 +2871,67 @@ mod tests {
                 .is_err()
         );
         release_sender.send(TestSyncOutcome::Succeed).unwrap();
-        entered_receiver
-            .recv_timeout(Duration::from_millis(500))
-            .unwrap();
-        assert!(
-            stopped_receiver
-                .recv_timeout(Duration::from_millis(20))
-                .is_err()
-        );
-        release_sender.send(TestSyncOutcome::Succeed).unwrap();
-        let health = stopped_receiver
-            .recv_timeout(Duration::from_millis(500))
-            .unwrap();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let health = loop {
+            if let Ok(health) = stopped_receiver.try_recv() {
+                break health;
+            }
+            if entered_receiver.try_recv().is_ok() {
+                assert!(stopped_receiver.try_recv().is_err());
+                release_sender.send(TestSyncOutcome::Succeed).unwrap();
+                break stopped_receiver
+                    .recv_timeout(Duration::from_millis(500))
+                    .unwrap();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "shutdown or final sync timed out"
+            );
+            thread::sleep(Duration::from_millis(1));
+        };
         stopper.join().unwrap();
-        assert_eq!(sync.completed.load(Ordering::Acquire), 2);
+        assert!((1..=2).contains(&sync.completed.load(Ordering::Acquire)));
         assert_eq!(health.durability_requests, 10);
         assert_eq!(health.durability_requests_coalesced, 9);
-        assert_eq!(health.group_flushes, 2);
+        assert!((1..=2).contains(&health.group_flushes));
         assert_eq!(health.durability_failures, 0);
 
         let mut wal = Wal::open(temp.path(), GroupDurabilityPolicy::default()).unwrap();
         let recovery = wal.recover_and_replay().unwrap();
         assert_eq!(recovery.frames.len(), 10);
+    }
+
+    #[test]
+    fn record_coalescing_is_bounded_and_time_due_requests_are_immediate() {
+        let record_temp = tempfile::tempdir().unwrap();
+        let mut record_wal = Wal::open(
+            record_temp.path(),
+            GroupDurabilityPolicy {
+                max_records: 1,
+                max_bytes: u64::MAX,
+                max_interval: Duration::from_millis(50),
+            },
+        )
+        .unwrap();
+        record_wal.append(&IpcFrame::Start(lifecycle())).unwrap();
+        let request = record_wal.take_durability_request(false).unwrap();
+        assert!(request.coalesce_until >= record_wal.last_group_flush);
+        assert!(request.coalesce_until <= record_wal.last_group_flush + DURABILITY_COALESCE_WINDOW);
+
+        let timed_temp = tempfile::tempdir().unwrap();
+        let mut timed_wal = Wal::open(
+            timed_temp.path(),
+            GroupDurabilityPolicy {
+                max_records: u32::MAX,
+                max_bytes: u64::MAX,
+                max_interval: Duration::from_millis(1),
+            },
+        )
+        .unwrap();
+        timed_wal.append(&IpcFrame::Start(lifecycle())).unwrap();
+        thread::sleep(Duration::from_millis(2));
+        let request = timed_wal.take_durability_request(false).unwrap();
+        assert_eq!(request.coalesce_until, timed_wal.last_group_flush);
     }
 
     #[test]

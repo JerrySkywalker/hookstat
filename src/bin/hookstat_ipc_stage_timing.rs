@@ -8,6 +8,11 @@ fn main() {
     let mut index = 0;
     while index < arguments.len() {
         let flag = &arguments[index];
+        if flag == "--defer-group-sync" {
+            config.group_sync_during_measurement = false;
+            index += 1;
+            continue;
+        }
         let value = arguments.get(index + 1).map(String::as_str);
         match (flag.as_str(), value) {
             ("--output", Some(value)) => output = Some(PathBuf::from(value)),
@@ -16,7 +21,7 @@ fn main() {
             }
             _ => {
                 eprintln!(
-                    "usage: hookstat-ipc-stage-timing --output <sanitized-json> [--client16-samples <100..10000>]"
+                    "usage: hookstat-ipc-stage-timing --output <sanitized-json> [--client16-samples <100..10000>] [--defer-group-sync]"
                 );
                 std::process::exit(2);
             }

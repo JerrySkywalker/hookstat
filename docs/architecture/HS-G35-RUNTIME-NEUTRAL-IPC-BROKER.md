@@ -102,24 +102,23 @@ Durability scheduling uses constant-size shared state rather than one message
 per record. A request advances a monotonically increasing append generation.
 If sync is already active, later due generations coalesce to the newest target;
 the single durability worker serially completes the active target and then the
-newest requested target. There is no overlapping `sync_data()`, unbounded
+newest requested target. Record/byte-triggered requests have a fixed 2 ms
+coalescing window capped by the existing 50 ms interval deadline; interval and
+shutdown requests are immediate. There is no overlapping `sync_data()`, unbounded
 message queue, or per-record thread creation. The append worker's 2 ms bounded
 receive poll continues to evaluate the 50 ms trigger, so one low-traffic record
 cannot wait indefinitely for a later frame.
 
-The durability worker uses `File::try_clone()` on the already validated WAL
-handle. Rust specifies that the clone shares the same underlying file handle;
-on Windows the underlying duplicated handle refers to the same object and
-`FlushFileBuffers` writes all buffered information for that file, while on
-Unix a duplicated descriptor refers to the same open-file description and
-`fsync` operates on the file indicated by that descriptor. The implementation
-uses the clone only for `sync_data()` and retains one writer, avoiding shared
-offset mutation. Exact Windows and Linux tests exercise clone-sync plus WAL
-recovery. See the primary platform contracts for
-[`File::try_clone`](https://doc.rust-lang.org/std/fs/struct.File.html#method.try_clone),
-[`DuplicateHandle`](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle),
+The durability worker reopens the already validated WAL with append permission
+(required by Windows `FlushFileBuffers`) and verifies that both handles identify
+the same file using the cross-platform `same-file` handle identity API. On
+Windows that identity contains volume serial plus file index; on Unix it uses
+device plus inode. This provides a distinct open-file handle while the ordered WAL owner
+remains the only writer. The durability handle never writes or seeks, so it
+cannot reorder or interleave records. Exact Windows and Linux tests exercise
+independent-handle sync plus WAL recovery. See the primary platform contracts
+for [`same-file`](https://github.com/BurntSushi/same-file),
 [`FlushFileBuffers`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers),
-[`dup`](https://man7.org/linux/man-pages/man2/dup.2.html), and
 [`fsync`](https://pubs.opengroup.org/onlinepubs/009695399/functions/fsync.html).
 
 A sync failure is published through a small append/failure ordering gate. An
