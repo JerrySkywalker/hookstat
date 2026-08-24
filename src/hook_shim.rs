@@ -4,11 +4,11 @@
 //! never writes it to IPC, diagnostics, standard output/error, a WAL, or a
 //! HookStat ledger.
 
-use hmac::{Hmac, Mac};
-use hookstat_ipc_client::{
-    Completion, CooperativeProducer, ExitClassification, IpcFrame, LifecycleFrame,
+use crate::ipc_client::{
+    Completion, CooperativeProducer, ExitClassification, IpcError, IpcFrame, LifecycleFrame,
     ObservationDisposition, TerminalOutcome,
 };
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs;
@@ -653,7 +653,7 @@ impl std::error::Error for CapsuleError {}
 #[derive(Debug)]
 pub enum ShimError {
     Capsule(CapsuleError),
-    Ipc(hookstat_ipc_client::IpcError),
+    Ipc(IpcError),
     Spawn,
     Wait,
     Containment,

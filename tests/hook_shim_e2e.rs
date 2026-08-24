@@ -1,13 +1,20 @@
 #![cfg(windows)]
 
-use hookstat_hook::{
+#[allow(dead_code)]
+#[path = "../src/hook_shim.rs"]
+mod hook_shim;
+#[allow(dead_code)]
+#[path = "../src/ipc_client.rs"]
+mod ipc_client;
+
+use hook_shim::{
     CapsuleStore, ExecutionPlan, HandlerCapsule, InstrumentationEnvelope, OriginalHandlerBudget,
     capsule_file_name, run_capsule, write_key_for_test,
 };
-use hookstat_ipc_client::{
+use interprocess::local_socket::prelude::*;
+use ipc_client::{
     BrokerAcknowledgement, IpcFrame, LocalEndpoint, read_frame_bounded, write_frame_bounded,
 };
-use interprocess::local_socket::prelude::*;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, mpsc};
@@ -74,7 +81,7 @@ fn invoke(root: &Path, capsule: &Path) -> std::process::Output {
 
 fn descendant_plan(started: &Path, leaked: &Path, delay_seconds: u8) -> ExecutionPlan {
     ExecutionPlan::Direct {
-        executable: env!("CARGO_BIN_EXE_hookstat-hook-fixture").into(),
+        executable: env!("CARGO_BIN_EXE_hookstat-shim-fixture").into(),
         arguments: vec![
             "--parent".into(),
             started.to_string_lossy().into_owned(),
@@ -217,13 +224,10 @@ fn accepted_start_then_missing_complete_is_an_observation_gap_not_a_hook_failure
     let result = run_capsule(&accepted_start_capsule, &state_root).unwrap();
     server.join().unwrap();
     assert_eq!(result.exit_code, 0);
-    assert_eq!(
-        result.started,
-        hookstat_ipc_client::ObservationDisposition::Accepted
-    );
+    assert_eq!(result.started, ipc_client::ObservationDisposition::Accepted);
     assert_eq!(
         result.completed,
-        hookstat_ipc_client::ObservationDisposition::Unavailable
+        ipc_client::ObservationDisposition::Unavailable
     );
 }
 
@@ -267,7 +271,7 @@ fn delayed_broker_ack_exhausts_only_observation_budget() {
     assert_eq!(result.exit_code, 0);
     assert_eq!(
         result.started,
-        hookstat_ipc_client::ObservationDisposition::BudgetExhausted
+        ipc_client::ObservationDisposition::BudgetExhausted
     );
 }
 

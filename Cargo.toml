@@ -10,14 +10,13 @@ readme = "README.md"
 keywords = ["hooks", "reliability", "agents", "codex", "tui"]
 categories = ["command-line-utilities", "development-tools"]
 
-[workspace]
-members = ["crates/hookstat-ipc-client", "crates/hookstat-hook"]
-resolver = "2"
-
 [features]
 # Developer-only G28 measurement laboratory. This feature is never enabled by
 # HookStat's ordinary binary or by its hook execution path.
 performance-harness = []
+# Non-shipped process-tree fixture used only by the deterministic G36 shim
+# integration tests. It is intentionally absent from ordinary installation.
+test-fixtures = []
 
 [dependencies]
 rusqlite = { version = "0.38", features = ["bundled"] }
@@ -25,6 +24,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 same-file = "1.0.6"
+hmac = "0.12"
 toml = "0.9"
 ratatui = "0.30"
 crossterm = "0.29"
@@ -34,7 +34,6 @@ unicode-width = "0.2"
 chrono = "0.4"
 sys-locale = "0.3"
 interprocess = "2.4.3"
-hookstat-ipc-client = { path = "crates/hookstat-ipc-client" }
 
 [dev-dependencies]
 tempfile = "3"
@@ -96,6 +95,24 @@ name = "hookstat-ipc-broker"
 path = "src/bin/hookstat_ipc_broker.rs"
 test = false
 bench = false
+
+[[bin]]
+name = "hookstat-hook"
+path = "src/bin/hookstat_hook.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "hookstat-shim-fixture"
+path = "src/bin/hookstat_shim_fixture.rs"
+required-features = ["test-fixtures"]
+test = false
+bench = false
+
+[[test]]
+name = "hook_shim_e2e"
+path = "tests/hook_shim_e2e.rs"
+required-features = ["test-fixtures"]
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -1,4 +1,11 @@
-use hookstat_hook::{CapsuleStore, run_capsule};
+#[allow(dead_code)]
+#[path = "../hook_shim.rs"]
+mod hook_shim;
+#[allow(dead_code)]
+#[path = "../ipc_client.rs"]
+mod ipc_client;
+
+use hook_shim::{CapsuleStore, run_capsule};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -37,7 +44,7 @@ fn main() -> ExitCode {
     let result = CapsuleStore::open(capsule_root)
         .and_then(|store| store.load(capsule))
         .and_then(|capsule| {
-            run_capsule(&capsule, &state_root).map_err(|_| hookstat_hook::CapsuleError::Io)
+            run_capsule(&capsule, &state_root).map_err(|_| hook_shim::CapsuleError::Io)
         });
     match result {
         Ok(outcome) => ExitCode::from(outcome.exit_code as u8),

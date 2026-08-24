@@ -113,6 +113,18 @@ Codex/runtime -> TabBeacon CodexHookRuntime
 The local TabBeacon candidate and its path dependency were not committed,
 pushed, released, or applied to Owner configuration.
 
+## Distribution boundary
+
+v0.3.1 retains one public Cargo package: `hookstat`. Its package owns the
+ordinary CLI, `hookstat-ipc-broker`, and `hookstat-hook`, so an ordinary
+`cargo install hookstat` supplies every HookStat runtime executable without a
+second hidden install step. The shared protocol/client and shim are internal
+source modules in that package; the shim binary compiles those modules directly
+and does not initialize the product library. This preserves one binary protocol
+source while avoiding a new public IPC-client crate or a public API commitment
+to external cooperative consumers. The controlled TabBeacon proof remains a
+local, unmerged consumer proof and is not a v0.3.1 publication requirement.
+
 ## Performance status
 
 This implementation removes structural costs from the intended shim path but

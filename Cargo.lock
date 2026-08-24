@@ -577,7 +577,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "crossterm",
- "hookstat-ipc-client",
+ "hmac",
  "interprocess",
  "nix",
  "ratatui",
@@ -595,29 +595,6 @@ dependencies = [
  "unicode-width",
  "widestring",
  "win32job",
-]
-
-[[package]]
-name = "hookstat-hook"
-version = "0.3.0"
-dependencies = [
- "hmac",
- "hookstat-ipc-client",
- "interprocess",
- "sha2",
- "tempfile",
- "win32job",
-]
-
-[[package]]
-name = "hookstat-ipc-client"
-version = "0.3.0"
-dependencies = [
- "interprocess",
- "nix",
- "sha2",
- "tempfile",
- "widestring",
 ]
 
 [[package]]

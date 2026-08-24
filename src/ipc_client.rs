@@ -6,10 +6,14 @@
 //! or terminal UI into the hot path.
 
 use interprocess::ConnectWaitMode;
+#[cfg(unix)]
+use interprocess::local_socket::ConnectOptions;
 #[cfg(windows)]
 use interprocess::local_socket::GenericNamespaced;
+#[cfg(windows)]
+use interprocess::local_socket::tokio::Stream as TokioStream;
 use interprocess::local_socket::{
-    ConnectOptions, ListenerNonblockingMode, ListenerOptions, prelude::*,
+    ListenerNonblockingMode, ListenerOptions, prelude::*,
 };
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -359,6 +363,49 @@ fn write_frame_until(
     write_all_bounded(stream, &encoded, deadline)
 }
 
+#[cfg(windows)]
+async fn read_frame_bounded_tokio(
+    input: &mut TokioStream,
+    timeout: Duration,
+) -> Result<IpcFrame, IpcError> {
+    use tokio::io::AsyncReadExt;
+
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut header = [0_u8; FRAME_HEADER_BYTES];
+    tokio::time::timeout_at(deadline, input.read_exact(&mut header))
+        .await
+        .map_err(|_| timed_out("bounded IPC read"))?
+        .map_err(IpcError::Io)?;
+    let length = u16::from_le_bytes([header[8], header[9]]) as usize;
+    if length > MAX_IPC_FRAME_BYTES - FRAME_HEADER_BYTES {
+        return Err(IpcError::Oversized);
+    }
+    let mut encoded = Vec::with_capacity(FRAME_HEADER_BYTES + length);
+    encoded.extend_from_slice(&header);
+    let mut payload = vec![0_u8; length];
+    tokio::time::timeout_at(deadline, input.read_exact(&mut payload))
+        .await
+        .map_err(|_| timed_out("bounded IPC read"))?
+        .map_err(IpcError::Io)?;
+    encoded.extend_from_slice(&payload);
+    IpcFrame::decode(&encoded)
+}
+
+#[cfg(windows)]
+async fn write_frame_bounded_tokio(
+    output: &mut TokioStream,
+    frame: &IpcFrame,
+    timeout: Duration,
+) -> Result<(), IpcError> {
+    use tokio::io::AsyncWriteExt;
+
+    let encoded = frame.encode()?;
+    tokio::time::timeout(timeout, output.write_all(&encoded))
+        .await
+        .map_err(|_| timed_out("bounded IPC write"))?
+        .map_err(IpcError::Io)
+}
+
 fn read_exact_bounded(
     input: &mut Stream,
     mut buffer: &mut [u8],
@@ -559,18 +606,13 @@ impl LocalEndpoint {
         Ok(canonical)
     }
 
+    #[cfg(unix)]
     pub fn connect_stream(&self, timeout: Duration) -> Result<Stream, IpcError> {
-        #[cfg(unix)]
-        let name = {
-            use interprocess::local_socket::{GenericFilePath, ToFsName};
-            self.unix_socket_path()?
-                .to_fs_name::<GenericFilePath>()
-                .map_err(IpcError::Io)?
-        };
-        #[cfg(windows)]
+        use interprocess::local_socket::{GenericFilePath, ToFsName};
+
         let name = self
-            .named_pipe_name()
-            .to_ns_name::<GenericNamespaced>()
+            .unix_socket_path()?
+            .to_fs_name::<GenericFilePath>()
             .map_err(IpcError::Io)?;
         let stream = ConnectOptions::new()
             .name(name)
@@ -579,6 +621,23 @@ impl LocalEndpoint {
             .map_err(IpcError::Io)?;
         stream.set_nonblocking(true).map_err(IpcError::Io)?;
         Ok(stream)
+    }
+
+    #[cfg(windows)]
+    async fn connect_tokio_stream(&self, timeout: Duration) -> Result<TokioStream, IpcError> {
+        use interprocess::os::windows::named_pipe::{
+            local_socket::tokio::Stream as WindowsTokioStream, pipe_mode::Bytes,
+            tokio::DuplexPipeStream,
+        };
+
+        let path = format!(r"\\.\pipe\{}", self.named_pipe_name());
+        let stream = DuplexPipeStream::<Bytes>::connect_by_path_with_wait_mode(
+            path,
+            ConnectWaitMode::Timeout(timeout),
+        )
+        .await
+        .map_err(IpcError::Io)?;
+        Ok(TokioStream::NamedPipe(WindowsTokioStream::from(stream)))
     }
 
     pub fn bind(&self) -> Result<Listener, IpcError> {
@@ -694,8 +753,34 @@ fn state_metadata_is_unsafe(metadata: &std::fs::Metadata) -> bool {
 /// Direct connected producer retained for broker tests and callers that own
 /// a connection lifecycle.
 pub struct IpcClient {
+    #[cfg(unix)]
     stream: Stream,
+    #[cfg(windows)]
+    stream: TokioStream,
+    #[cfg(windows)]
+    runtime: tokio::runtime::Runtime,
     timeout: Duration,
+}
+
+/// Sanitized timings used only by the developer-only qualification harness.
+#[cfg(feature = "performance-harness")]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct QualificationClientStageSample {
+    pub client_write_ns: u64,
+    pub client_ack_read_ns: u64,
+}
+
+#[cfg(feature = "performance-harness")]
+#[derive(Debug)]
+pub(crate) enum QualificationSendFailure {
+    Write(IpcError),
+    Read(IpcError),
+    UnexpectedAcknowledgement,
+}
+
+#[cfg(feature = "performance-harness")]
+fn elapsed_nanos(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
 impl IpcClient {
@@ -714,10 +799,27 @@ impl IpcClient {
         if connect_timeout.is_zero() || acknowledgement_timeout.is_zero() {
             return Err(IpcError::Invalid("client_timeout"));
         }
-        Ok(Self {
-            stream: endpoint.connect_stream(connect_timeout)?,
-            timeout: acknowledgement_timeout,
-        })
+        #[cfg(unix)]
+        {
+            Ok(Self {
+                stream: endpoint.connect_stream(connect_timeout)?,
+                timeout: acknowledgement_timeout,
+            })
+        }
+        #[cfg(windows)]
+        {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .enable_time()
+                .build()
+                .map_err(IpcError::Io)?;
+            let stream = runtime.block_on(endpoint.connect_tokio_stream(connect_timeout))?;
+            Ok(Self {
+                stream,
+                runtime,
+                timeout: acknowledgement_timeout,
+            })
+        }
     }
     pub fn send(&mut self, frame: &IpcFrame) -> Result<BrokerAcknowledgement, IpcError> {
         self.send_with_timeout(frame, self.timeout)
@@ -734,11 +836,116 @@ impl IpcClient {
             return Err(timed_out("bounded IPC acknowledgement"));
         }
         let deadline = Instant::now() + timeout;
+        #[cfg(unix)]
         write_frame_until(&mut self.stream, frame, deadline)?;
+        #[cfg(windows)]
+        self.runtime.block_on(write_frame_bounded_tokio(
+            &mut self.stream,
+            frame,
+            deadline.saturating_duration_since(Instant::now()),
+        ))?;
+        #[cfg(unix)]
         match read_frame_until(&mut self.stream, deadline)? {
             IpcFrame::Ack(value) => Ok(value),
             _ => Err(IpcError::Invalid("acknowledgement")),
         }
+        #[cfg(windows)]
+        match self.runtime.block_on(read_frame_bounded_tokio(
+            &mut self.stream,
+            deadline.saturating_duration_since(Instant::now()),
+        ))? {
+            IpcFrame::Ack(value) => Ok(value),
+            _ => Err(IpcError::Invalid("acknowledgement")),
+        }
+    }
+
+    #[cfg(feature = "performance-harness")]
+    pub(crate) fn send_for_qualification(
+        &mut self,
+        frame: &IpcFrame,
+    ) -> Result<BrokerAcknowledgement, QualificationSendFailure> {
+        if !frame.is_lifecycle() {
+            return Err(QualificationSendFailure::Write(IpcError::Invalid(
+                "producer_frame_type",
+            )));
+        }
+        let deadline = Instant::now() + self.timeout;
+        #[cfg(unix)]
+        write_frame_until(&mut self.stream, frame, deadline)
+            .map_err(QualificationSendFailure::Write)?;
+        #[cfg(windows)]
+        self.runtime
+            .block_on(write_frame_bounded_tokio(
+                &mut self.stream,
+                frame,
+                deadline.saturating_duration_since(Instant::now()),
+            ))
+            .map_err(QualificationSendFailure::Write)?;
+        #[cfg(unix)]
+        let acknowledgement = read_frame_until(&mut self.stream, deadline)
+            .map_err(QualificationSendFailure::Read)?;
+        #[cfg(windows)]
+        let acknowledgement = self
+            .runtime
+            .block_on(read_frame_bounded_tokio(
+                &mut self.stream,
+                deadline.saturating_duration_since(Instant::now()),
+            ))
+            .map_err(QualificationSendFailure::Read)?;
+        match acknowledgement {
+            IpcFrame::Ack(value) => Ok(value),
+            _ => Err(QualificationSendFailure::UnexpectedAcknowledgement),
+        }
+    }
+
+    #[cfg(feature = "performance-harness")]
+    pub(crate) fn send_for_qualification_timed(
+        &mut self,
+        frame: &IpcFrame,
+    ) -> Result<(BrokerAcknowledgement, QualificationClientStageSample), QualificationSendFailure>
+    {
+        if !frame.is_lifecycle() {
+            return Err(QualificationSendFailure::Write(IpcError::Invalid(
+                "producer_frame_type",
+            )));
+        }
+        let deadline = Instant::now() + self.timeout;
+        let write_started = Instant::now();
+        #[cfg(unix)]
+        write_frame_until(&mut self.stream, frame, deadline)
+            .map_err(QualificationSendFailure::Write)?;
+        #[cfg(windows)]
+        self.runtime
+            .block_on(write_frame_bounded_tokio(
+                &mut self.stream,
+                frame,
+                deadline.saturating_duration_since(Instant::now()),
+            ))
+            .map_err(QualificationSendFailure::Write)?;
+        let client_write_ns = elapsed_nanos(write_started);
+        let read_started = Instant::now();
+        #[cfg(unix)]
+        let acknowledgement = read_frame_until(&mut self.stream, deadline)
+            .map_err(QualificationSendFailure::Read)?;
+        #[cfg(windows)]
+        let acknowledgement = self
+            .runtime
+            .block_on(read_frame_bounded_tokio(
+                &mut self.stream,
+                deadline.saturating_duration_since(Instant::now()),
+            ))
+            .map_err(QualificationSendFailure::Read)?;
+        let acknowledgement = match acknowledgement {
+            IpcFrame::Ack(value) => value,
+            _ => return Err(QualificationSendFailure::UnexpectedAcknowledgement),
+        };
+        Ok((
+            acknowledgement,
+            QualificationClientStageSample {
+                client_write_ns,
+                client_ack_read_ns: elapsed_nanos(read_started),
+            },
+        ))
     }
 }
 

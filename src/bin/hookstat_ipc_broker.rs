@@ -26,7 +26,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         // A concurrent shim may have started a healthy local broker first.
-        Err(hookstat_ipc_client::IpcError::EndpointInUse) => ExitCode::SUCCESS,
+        Err(hookstat::ipc::IpcError::EndpointInUse) => ExitCode::SUCCESS,
         Err(_) => ExitCode::from(1),
     }
 }

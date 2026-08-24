@@ -1,9 +1,9 @@
-//! Runtime-neutral, local-only IPC evidence frames and broker-side WAL.
+//! Runtime-neutral broker and WAL over the shared internal IPC v1 wire.
 //!
-//! This module deliberately ends at `CanonicalEvidence`. Runtime-specific
-//! integration and identity resolution remain outside the broker. The only
-//! supported transports are Windows Named Pipes and Unix Domain Sockets through
-//! `interprocess::local_socket`; TCP and HTTP are not part of this subsystem.
+//! The protocol, local endpoint, bounded client and startup election live in
+//! `ipc_client`, which is the sole wire implementation used by both
+//! this G35 broker and the G36 producers. This module owns only broker/WAL
+//! persistence and G29 CanonicalEvidence conversion.
 
 use crate::domain::TerminalStatus;
 use crate::evidence::{
@@ -11,616 +11,97 @@ use crate::evidence::{
     InvocationCoverage, InvocationKey, RevisionRef, RuntimeHandlerRef, RuntimeId, RuntimeInstance,
     RuntimeNeutralEvidenceCore, SourceCoverage, SourceScope,
 };
-use interprocess::ConnectWaitMode;
-#[cfg(unix)]
-use interprocess::local_socket::ConnectOptions;
-#[cfg(windows)]
-use interprocess::local_socket::GenericNamespaced;
-#[cfg(windows)]
-use interprocess::local_socket::tokio::Stream as TokioStream;
-use interprocess::local_socket::{
-    Listener, ListenerNonblockingMode, ListenerOptions, Stream, prelude::*,
+use crate::ipc_client::{
+    Listener, Stream, checksum, prepare_state_root, read_frame_bounded, write_frame_bounded,
 };
-use sha2::{Digest, Sha256};
-use std::fmt;
+use interprocess::local_socket::prelude::*;
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// The first and only G35 wire version. New readers must reject unknown
-/// versions instead of guessing field meaning.
-pub const IPC_PROTOCOL_VERSION: u8 = 1;
-pub const IPC_MAGIC: [u8; 4] = *b"HSIP";
+pub use crate::ipc_client::{
+    BrokerAcknowledgement, BrokerStartup, Completion, CooperativeProducer, ExitClassification,
+    IpcClient, IpcFrame, LifecycleFrame, LocalEndpoint, ObservationDisposition, ProducerPolicy,
+    TerminalOutcome,
+};
+pub use crate::ipc_client::{
+    IPC_MAGIC, IPC_PROTOCOL_VERSION, IpcError, MAX_IPC_FRAME_BYTES, MAX_IPC_REFERENCE_BYTES,
+};
+#[cfg(feature = "performance-harness")]
+pub(crate) use crate::ipc_client::{QualificationClientStageSample, QualificationSendFailure};
+
 pub const WAL_MAGIC: [u8; 4] = *b"HSWL";
 pub const WAL_VERSION: u8 = 1;
-pub const MAX_IPC_FRAME_BYTES: usize = 1024;
-pub const MAX_IPC_REFERENCE_BYTES: usize = 128;
 pub const MAX_WAL_BYTES: u64 = 64 * 1024 * 1024;
-
-const FRAME_HEADER_BYTES: usize = 10;
 const WAL_HEADER_BYTES: usize = 12;
-
-/// A bounded runtime-neutral lifecycle envelope. Every string is an opaque
-/// identifier, not a path, command, payload, or stream.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LifecycleFrame {
-    pub runtime: String,
-    pub runtime_instance: String,
-    pub invocation: String,
-    pub handler: String,
-    pub event: String,
-    pub source_scope: String,
-    pub revision: Option<String>,
-    pub occurred_at_unix_ms: i64,
-}
-
-impl LifecycleFrame {
-    pub fn validate(&self) -> Result<(), IpcError> {
-        for (field, value) in [
-            ("runtime", self.runtime.as_str()),
-            ("runtime_instance", self.runtime_instance.as_str()),
-            ("invocation", self.invocation.as_str()),
-            ("handler", self.handler.as_str()),
-            ("event", self.event.as_str()),
-            ("source_scope", self.source_scope.as_str()),
-        ] {
-            validate_reference(field, value)?;
-        }
-        if let Some(revision) = &self.revision {
-            validate_reference("revision", revision)?;
-        }
-        if self.occurred_at_unix_ms < 0 {
-            return Err(IpcError::Invalid("occurred_at_unix_ms"));
-        }
-        Ok(())
-    }
-
-    fn encode_into(&self, output: &mut Vec<u8>) -> Result<(), IpcError> {
-        self.validate()?;
-        for value in [
-            self.runtime.as_str(),
-            self.runtime_instance.as_str(),
-            self.invocation.as_str(),
-            self.handler.as_str(),
-            self.event.as_str(),
-            self.source_scope.as_str(),
-        ] {
-            encode_reference(output, value)?;
-        }
-        match &self.revision {
-            Some(value) => encode_reference(output, value)?,
-            None => output.push(0),
-        }
-        output.extend_from_slice(&self.occurred_at_unix_ms.to_le_bytes());
-        Ok(())
-    }
-
-    fn decode_from(input: &mut Cursor<'_>) -> Result<Self, IpcError> {
-        let value = Self {
-            runtime: input.reference("runtime")?,
-            runtime_instance: input.reference("runtime_instance")?,
-            invocation: input.reference("invocation")?,
-            handler: input.reference("handler")?,
-            event: input.reference("event")?,
-            source_scope: input.reference("source_scope")?,
-            revision: input.optional_reference("revision")?,
-            occurred_at_unix_ms: input.i64()?,
-        };
-        value.validate()?;
-        Ok(value)
-    }
-
-    /// Normalization stays runtime-neutral. IPC evidence is deliberately
-    /// `Durable` source coverage, not a claim of complete runtime coverage.
-    pub fn canonical(
-        &self,
-        lifecycle: EvidenceLifecycle,
-        completion: Option<&Completion>,
-    ) -> Result<CanonicalEvidence, IpcError> {
-        self.validate()?;
-        let (terminal_status, duration_ms, invocation_coverage) = match lifecycle {
-            EvidenceLifecycle::Started => (None, None, InvocationCoverage::Incomplete),
-            EvidenceLifecycle::Completed => {
-                let completion = completion.ok_or(IpcError::Invalid("completion"))?;
-                completion.validate()?;
-                (
-                    Some(completion.terminal_status),
-                    Some(completion.duration_ms),
-                    InvocationCoverage::Complete,
-                )
-            }
-        };
-        let evidence = CanonicalEvidence {
-            schema_version: 1,
-            runtime: RuntimeId::new(self.runtime.clone()).map_err(IpcError::Evidence)?,
-            runtime_instance: RuntimeInstance::new(self.runtime_instance.clone())
-                .map_err(IpcError::Evidence)?,
-            invocation_key: InvocationKey::new(self.invocation.clone())
-                .map_err(IpcError::Evidence)?,
-            runtime_handler_ref: RuntimeHandlerRef::new(self.handler.clone())
-                .map_err(IpcError::Evidence)?,
-            event: EventFamily::new(self.event.clone()).map_err(IpcError::Evidence)?,
-            lifecycle,
-            occurred_at_unix_ms: self.occurred_at_unix_ms,
-            terminal_status,
-            duration_ms,
-            source_scope: SourceScope::new(self.source_scope.clone())
-                .map_err(IpcError::Evidence)?,
-            revision_ref: self
-                .revision
-                .clone()
-                .map(RevisionRef::new)
-                .transpose()
-                .map_err(IpcError::Evidence)?,
-            evidence_transport: EvidenceTransport::Ipc,
-            source_coverage: SourceCoverage::Durable,
-            invocation_coverage,
-        };
-        evidence.validate().map_err(IpcError::Evidence)?;
-        Ok(evidence)
-    }
-}
-
-/// Bounded classification for a runtime-provided process outcome. The broker
-/// never executes a process and therefore cannot infer this value.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum ExitClassification {
-    NotApplicable = 0,
-    ExitCode = 1,
-    Signal = 2,
-    RuntimeControlled = 3,
-}
-
-impl ExitClassification {
-    fn decode(value: u8) -> Result<Self, IpcError> {
-        match value {
-            0 => Ok(Self::NotApplicable),
-            1 => Ok(Self::ExitCode),
-            2 => Ok(Self::Signal),
-            3 => Ok(Self::RuntimeControlled),
-            _ => Err(IpcError::Invalid("exit_classification")),
-        }
-    }
-}
-
-/// Completion-only fields. `exit_value` is optional only for classifications
-/// where no platform process result exists.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Completion {
-    pub terminal_status: TerminalStatus,
-    pub exit_classification: ExitClassification,
-    pub exit_value: Option<i32>,
-    pub duration_ms: u64,
-}
-
-impl Completion {
-    pub fn validate(&self) -> Result<(), IpcError> {
-        if matches!(
-            self.terminal_status,
-            TerminalStatus::Incomplete | TerminalStatus::Unknown
-        ) {
-            return Err(IpcError::Invalid("terminal_status"));
-        }
-        match (self.exit_classification, self.exit_value) {
-            (ExitClassification::NotApplicable, None) => Ok(()),
-            (ExitClassification::NotApplicable, Some(_)) => Err(IpcError::Invalid("exit_value")),
-            (_, Some(_)) => Ok(()),
-            (_, None) => Err(IpcError::Invalid("exit_value")),
-        }
-    }
-
-    fn encode_into(&self, output: &mut Vec<u8>) -> Result<(), IpcError> {
-        self.validate()?;
-        output.push(encode_terminal_status(self.terminal_status));
-        output.push(self.exit_classification as u8);
-        match self.exit_value {
-            Some(value) => {
-                output.push(1);
-                output.extend_from_slice(&value.to_le_bytes());
-            }
-            None => output.push(0),
-        }
-        output.extend_from_slice(&self.duration_ms.to_le_bytes());
-        Ok(())
-    }
-
-    fn decode_from(input: &mut Cursor<'_>) -> Result<Self, IpcError> {
-        let terminal_status = decode_terminal_status(input.u8()?)?;
-        let exit_classification = ExitClassification::decode(input.u8()?)?;
-        let exit_value = match input.u8()? {
-            0 => None,
-            1 => Some(input.i32()?),
-            _ => return Err(IpcError::Invalid("exit_value_presence")),
-        };
-        let completion = Self {
-            terminal_status,
-            exit_classification,
-            exit_value,
-            duration_ms: input.u64()?,
-        };
-        completion.validate()?;
-        Ok(completion)
-    }
-}
-
-/// The only producer lifecycle frames accepted by G35.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum IpcFrame {
-    Start(LifecycleFrame),
-    Complete {
-        lifecycle: LifecycleFrame,
-        completion: Completion,
-    },
-    /// Broker acknowledgement. This control frame never enters the WAL.
-    Ack(BrokerAcknowledgement),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum BrokerAcknowledgement {
-    Accepted = 1,
-    DroppedOverloaded = 2,
-    Rejected = 3,
-    Busy = 4,
-}
-
-impl BrokerAcknowledgement {
-    fn decode(value: u8) -> Result<Self, IpcError> {
-        match value {
-            1 => Ok(Self::Accepted),
-            2 => Ok(Self::DroppedOverloaded),
-            3 => Ok(Self::Rejected),
-            4 => Ok(Self::Busy),
-            _ => Err(IpcError::Invalid("acknowledgement")),
-        }
-    }
-}
-
-impl IpcFrame {
-    pub fn encode(&self) -> Result<Vec<u8>, IpcError> {
-        let mut payload = Vec::with_capacity(256);
-        let frame_type = match self {
-            Self::Start(value) => {
-                value.encode_into(&mut payload)?;
-                1_u8
-            }
-            Self::Complete {
-                lifecycle,
-                completion,
-            } => {
-                lifecycle.encode_into(&mut payload)?;
-                completion.encode_into(&mut payload)?;
-                2_u8
-            }
-            Self::Ack(value) => {
-                payload.push(*value as u8);
-                3_u8
-            }
-        };
-        if payload.len() > MAX_IPC_FRAME_BYTES - FRAME_HEADER_BYTES
-            || payload.len() > u16::MAX as usize
-        {
-            return Err(IpcError::Oversized);
-        }
-        let mut output = Vec::with_capacity(FRAME_HEADER_BYTES + payload.len());
-        output.extend_from_slice(&IPC_MAGIC);
-        output.push(IPC_PROTOCOL_VERSION);
-        output.push(frame_type);
-        output.extend_from_slice(&0_u16.to_le_bytes()); // flags are reserved and must be zero.
-        output.extend_from_slice(&(payload.len() as u16).to_le_bytes());
-        output.extend_from_slice(&payload);
-        Ok(output)
-    }
-
-    pub fn decode(input: &[u8]) -> Result<Self, IpcError> {
-        if input.len() < FRAME_HEADER_BYTES {
-            return Err(IpcError::Truncated);
-        }
-        if input.len() > MAX_IPC_FRAME_BYTES {
-            return Err(IpcError::Oversized);
-        }
-        if input[..4] != IPC_MAGIC {
-            return Err(IpcError::BadMagic);
-        }
-        if input[4] != IPC_PROTOCOL_VERSION {
-            return Err(IpcError::UnsupportedVersion);
-        }
-        let frame_type = input[5];
-        if u16::from_le_bytes([input[6], input[7]]) != 0 {
-            return Err(IpcError::Invalid("flags"));
-        }
-        let payload_len = u16::from_le_bytes([input[8], input[9]]) as usize;
-        if payload_len > MAX_IPC_FRAME_BYTES - FRAME_HEADER_BYTES
-            || input.len() != FRAME_HEADER_BYTES + payload_len
-        {
-            return Err(IpcError::Invalid("frame_length"));
-        }
-        let mut cursor = Cursor::new(&input[FRAME_HEADER_BYTES..]);
-        let frame = match frame_type {
-            1 => Self::Start(LifecycleFrame::decode_from(&mut cursor)?),
-            2 => Self::Complete {
-                lifecycle: LifecycleFrame::decode_from(&mut cursor)?,
-                completion: Completion::decode_from(&mut cursor)?,
-            },
-            3 => Self::Ack(BrokerAcknowledgement::decode(cursor.u8()?)?),
-            _ => return Err(IpcError::Invalid("frame_type")),
-        };
-        if !cursor.is_empty() {
-            return Err(IpcError::Invalid("trailing_payload"));
-        }
-        Ok(frame)
-    }
-
-    pub fn canonical(&self) -> Result<CanonicalEvidence, IpcError> {
-        match self {
-            Self::Start(value) => value.canonical(EvidenceLifecycle::Started, None),
-            Self::Complete {
-                lifecycle,
-                completion,
-            } => lifecycle.canonical(EvidenceLifecycle::Completed, Some(completion)),
-            Self::Ack(_) => Err(IpcError::Invalid("acknowledgement_is_not_evidence")),
-        }
-    }
-
-    fn is_lifecycle(&self) -> bool {
-        matches!(self, Self::Start(_) | Self::Complete { .. })
-    }
-}
-
-/// Reads exactly one bounded binary frame from a local stream. This is used by
-/// both Windows Named Pipe and Unix Domain Socket implementations.
-pub fn read_frame(mut input: impl Read) -> Result<IpcFrame, IpcError> {
-    let mut header = [0_u8; FRAME_HEADER_BYTES];
-    input.read_exact(&mut header).map_err(IpcError::Io)?;
-    let length = u16::from_le_bytes([header[8], header[9]]) as usize;
-    if length > MAX_IPC_FRAME_BYTES - FRAME_HEADER_BYTES {
-        return Err(IpcError::Oversized);
-    }
-    let mut encoded = Vec::with_capacity(FRAME_HEADER_BYTES + length);
-    encoded.extend_from_slice(&header);
-    let mut payload = vec![0_u8; length];
-    input.read_exact(&mut payload).map_err(IpcError::Io)?;
-    encoded.extend_from_slice(&payload);
-    IpcFrame::decode(&encoded)
-}
-
-pub fn write_frame(mut output: impl Write, frame: &IpcFrame) -> Result<(), IpcError> {
-    let encoded = frame.encode()?;
-    output.write_all(&encoded).map_err(IpcError::Io)
-}
 
 #[cfg(feature = "performance-harness")]
 fn elapsed_nanos(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
-fn read_frame_bounded(
-    input: &mut Stream,
-    timeout: Duration,
-    windows_eager_empty_polls: u32,
-) -> Result<IpcFrame, IpcError> {
-    let deadline = Instant::now() + timeout;
-    let mut header = [0_u8; FRAME_HEADER_BYTES];
-    read_exact_bounded(input, &mut header, deadline, windows_eager_empty_polls)?;
-    let length = u16::from_le_bytes([header[8], header[9]]) as usize;
-    if length > MAX_IPC_FRAME_BYTES - FRAME_HEADER_BYTES {
-        return Err(IpcError::Oversized);
-    }
-    let mut encoded = Vec::with_capacity(FRAME_HEADER_BYTES + length);
-    encoded.extend_from_slice(&header);
-    let mut payload = vec![0_u8; length];
-    read_exact_bounded(input, &mut payload, deadline, windows_eager_empty_polls)?;
-    encoded.extend_from_slice(&payload);
-    IpcFrame::decode(&encoded)
-}
-
-fn write_frame_bounded(
-    input: &mut Stream,
-    frame: &IpcFrame,
-    timeout: Duration,
-) -> Result<(), IpcError> {
-    let encoded = frame.encode()?;
-    write_all_bounded(input, &encoded, Instant::now() + timeout)
-}
-
-#[cfg(windows)]
-async fn read_frame_bounded_tokio(
-    input: &mut TokioStream,
-    timeout: Duration,
-) -> Result<IpcFrame, IpcError> {
-    use tokio::io::AsyncReadExt;
-
-    let deadline = tokio::time::Instant::now() + timeout;
-    let mut header = [0_u8; FRAME_HEADER_BYTES];
-    tokio::time::timeout_at(deadline, input.read_exact(&mut header))
-        .await
-        .map_err(|_| bounded_tokio_timeout("bounded IPC read"))?
-        .map_err(IpcError::Io)?;
-    let length = u16::from_le_bytes([header[8], header[9]]) as usize;
-    if length > MAX_IPC_FRAME_BYTES - FRAME_HEADER_BYTES {
-        return Err(IpcError::Oversized);
-    }
-    let mut encoded = Vec::with_capacity(FRAME_HEADER_BYTES + length);
-    encoded.extend_from_slice(&header);
-    let mut payload = vec![0_u8; length];
-    tokio::time::timeout_at(deadline, input.read_exact(&mut payload))
-        .await
-        .map_err(|_| bounded_tokio_timeout("bounded IPC read"))?
-        .map_err(IpcError::Io)?;
-    encoded.extend_from_slice(&payload);
-    IpcFrame::decode(&encoded)
-}
-
-#[cfg(windows)]
-async fn write_frame_bounded_tokio(
-    input: &mut TokioStream,
-    frame: &IpcFrame,
-    timeout: Duration,
-) -> Result<(), IpcError> {
-    use tokio::io::AsyncWriteExt;
-
-    let encoded = frame.encode()?;
-    tokio::time::timeout(timeout, input.write_all(&encoded))
-        .await
-        .map_err(|_| bounded_tokio_timeout("bounded IPC write"))?
-        .map_err(IpcError::Io)
-}
-
-#[cfg(windows)]
-fn bounded_tokio_timeout(operation: &'static str) -> IpcError {
-    IpcError::Io(io::Error::new(io::ErrorKind::TimedOut, operation))
-}
-
-fn read_exact_bounded(
-    input: &mut Stream,
-    mut buffer: &mut [u8],
-    deadline: Instant,
-    _windows_eager_empty_polls: u32,
-) -> Result<(), IpcError> {
-    #[cfg(windows)]
-    let mut empty_polls = 0_u32;
-    while !buffer.is_empty() {
-        match input.read(buffer) {
-            // A nonblocking Windows Named Pipe reports a zero-byte read while
-            // a peer has connected but has not written yet. Treat it like
-            // `WouldBlock` and keep the same bounded deadline.
-            Ok(0) => {
-                #[cfg(unix)]
-                {
-                    if unix_peer_closed(input)? {
-                        return Err(IpcError::Io(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "Unix IPC peer closed",
-                        )));
-                    }
-                    if Instant::now() >= deadline {
-                        return Err(IpcError::Io(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "bounded IPC read",
-                        )));
-                    }
-                    thread::sleep(Duration::from_micros(100));
-                }
-                #[cfg(windows)]
-                {
-                    if Instant::now() >= deadline {
-                        return Err(IpcError::Io(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "bounded IPC read",
-                        )));
-                    }
-                    empty_polls = empty_polls.saturating_add(1);
-                    if windows_should_yield_after_empty_read(
-                        empty_polls,
-                        _windows_eager_empty_polls,
-                    ) {
-                        thread::yield_now();
-                    } else {
-                        std::hint::spin_loop();
-                    }
-                }
-            }
-            Ok(read) => {
-                #[cfg(windows)]
-                {
-                    empty_polls = 0;
-                }
-                let (_, rest) = buffer.split_at_mut(read);
-                buffer = rest;
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                if Instant::now() >= deadline {
-                    return Err(IpcError::Io(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "bounded IPC read",
-                    )));
-                }
-                thread::sleep(Duration::from_micros(100));
-            }
-            Err(error) => return Err(IpcError::Io(error)),
-        }
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn windows_should_yield_after_empty_read(empty_polls: u32, eager_empty_polls: u32) -> bool {
-    empty_polls > eager_empty_polls && (empty_polls - eager_empty_polls).is_multiple_of(8)
-}
-
-/// A zero-byte nonblocking local-socket read can occur during an accept/write
-/// handoff. On Unix, only a non-consuming `recv(MSG_PEEK)` can distinguish
-/// that condition from a peer that actually closed its side of the socket.
-#[cfg(unix)]
-fn unix_peer_closed(input: &Stream) -> Result<bool, IpcError> {
-    use nix::{
-        errno::Errno,
-        sys::socket::{MsgFlags, recv},
+fn canonical(frame: &IpcFrame) -> Result<CanonicalEvidence, IpcError> {
+    let (lifecycle, lifecycle_state, completion) = match frame {
+        IpcFrame::Start(value) => (value, EvidenceLifecycle::Started, None),
+        IpcFrame::Complete {
+            lifecycle,
+            completion,
+        } => (lifecycle, EvidenceLifecycle::Completed, Some(completion)),
+        IpcFrame::Ack(_) => return Err(IpcError::Invalid("acknowledgement_is_not_evidence")),
     };
-    use std::os::fd::AsRawFd;
-
-    let mut probe = [0_u8; 1];
-    match input {
-        Stream::UdSocket(stream) => match recv(
-            stream.inner().as_raw_fd(),
-            &mut probe,
-            MsgFlags::MSG_PEEK | MsgFlags::MSG_DONTWAIT,
-        ) {
-            Ok(0) => Ok(true),
-            Ok(_) => Ok(false),
-            Err(Errno::EAGAIN) => Ok(false),
-            Err(error) => Err(IpcError::Io(io::Error::from_raw_os_error(error as i32))),
-        },
-    }
-}
-
-fn write_all_bounded(
-    input: &mut Stream,
-    mut buffer: &[u8],
-    deadline: Instant,
-) -> Result<(), IpcError> {
-    let mut spins = 0_u32;
-    while !buffer.is_empty() {
-        match input.write(buffer) {
-            Ok(0) => {
-                return Err(IpcError::Io(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "bounded IPC write",
-                )));
-            }
-            Ok(written) => buffer = &buffer[written..],
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                if Instant::now() >= deadline {
-                    return Err(IpcError::Io(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "bounded IPC write",
-                    )));
-                }
-                spins += 1;
-                if spins < 8 {
-                    std::hint::spin_loop();
-                } else {
-                    spins = 0;
-                    thread::yield_now();
-                }
-            }
-            Err(error) => return Err(IpcError::Io(error)),
+    lifecycle.validate()?;
+    let (terminal_status, duration_ms, invocation_coverage) = match (lifecycle_state, completion) {
+        (EvidenceLifecycle::Started, None) => (None, None, InvocationCoverage::Incomplete),
+        (EvidenceLifecycle::Completed, Some(completion)) => {
+            completion.validate()?;
+            (
+                Some(match completion.terminal_status {
+                    TerminalOutcome::Completed => TerminalStatus::Completed,
+                    TerminalOutcome::Failed => TerminalStatus::Failed,
+                    TerminalOutcome::Blocked => TerminalStatus::Blocked,
+                    TerminalOutcome::Stopped => TerminalStatus::Stopped,
+                    TerminalOutcome::TimedOut => TerminalStatus::TimedOut,
+                    TerminalOutcome::ProtocolFailure => TerminalStatus::ProtocolFailure,
+                }),
+                Some(completion.duration_ms),
+                InvocationCoverage::Complete,
+            )
         }
-    }
-    Ok(())
+        _ => return Err(IpcError::Invalid("completion")),
+    };
+    let evidence = CanonicalEvidence {
+        schema_version: 1,
+        runtime: RuntimeId::new(lifecycle.runtime.clone())
+            .map_err(|_| IpcError::Invalid("runtime"))?,
+        runtime_instance: RuntimeInstance::new(lifecycle.runtime_instance.clone())
+            .map_err(|_| IpcError::Invalid("runtime_instance"))?,
+        invocation_key: InvocationKey::new(lifecycle.invocation.clone())
+            .map_err(|_| IpcError::Invalid("invocation"))?,
+        runtime_handler_ref: RuntimeHandlerRef::new(lifecycle.handler.clone())
+            .map_err(|_| IpcError::Invalid("handler"))?,
+        event: EventFamily::new(lifecycle.event.clone()).map_err(|_| IpcError::Invalid("event"))?,
+        lifecycle: lifecycle_state,
+        occurred_at_unix_ms: lifecycle.occurred_at_unix_ms,
+        terminal_status,
+        duration_ms,
+        source_scope: SourceScope::new(lifecycle.source_scope.clone())
+            .map_err(|_| IpcError::Invalid("source_scope"))?,
+        revision_ref: lifecycle
+            .revision
+            .clone()
+            .map(RevisionRef::new)
+            .transpose()
+            .map_err(|_| IpcError::Invalid("revision"))?,
+        evidence_transport: EvidenceTransport::Ipc,
+        source_coverage: SourceCoverage::Durable,
+        invocation_coverage,
+    };
+    evidence
+        .validate()
+        .map_err(|_| IpcError::Invalid("canonical_evidence"))?;
+    Ok(evidence)
 }
 
 /// Append-only compact WAL with grouped `sync_data()` durability. A producer
@@ -889,488 +370,6 @@ impl Wal {
 pub struct WalRecovery {
     pub frames: Vec<IpcFrame>,
     pub truncated_tail_bytes: u64,
-}
-
-#[derive(Debug)]
-pub enum IpcError {
-    Io(io::Error),
-    Evidence(crate::evidence::EvidenceError),
-    BadMagic,
-    UnsupportedVersion,
-    Oversized,
-    Truncated,
-    Invalid(&'static str),
-    UnsafeStateObject,
-    EndpointInUse,
-    StartupTimedOut,
-    WalTooLarge,
-    WalCorrupt(&'static str),
-}
-
-impl fmt::Display for IpcError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
-            Self::Io(_) => "local IPC I/O failed",
-            Self::Evidence(_) => "IPC evidence did not satisfy the canonical boundary",
-            Self::BadMagic => "IPC frame magic was invalid",
-            Self::UnsupportedVersion => "IPC protocol version is not supported",
-            Self::Oversized => "IPC frame exceeded a bounded limit",
-            Self::Truncated => "IPC frame was truncated",
-            Self::Invalid(_) => "IPC frame structure was invalid",
-            Self::UnsafeStateObject => "IPC state root contained an unsafe object",
-            Self::EndpointInUse => "IPC endpoint is already owned by a healthy broker",
-            Self::StartupTimedOut => {
-                "IPC broker startup did not become ready within its bounded timeout"
-            }
-            Self::WalTooLarge => "IPC WAL exceeded its bounded size",
-            Self::WalCorrupt(_) => "IPC WAL contained a malformed record",
-        };
-        formatter.write_str(message)
-    }
-}
-
-impl std::error::Error for IpcError {}
-
-fn checksum(value: &[u8]) -> u32 {
-    let digest = Sha256::digest(value);
-    u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]])
-}
-
-fn validate_reference(field: &'static str, value: &str) -> Result<(), IpcError> {
-    if value.is_empty() || value.len() > MAX_IPC_REFERENCE_BYTES || value.chars().any(|character| !matches!(character, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '.' | ':')) {
-        return Err(IpcError::Invalid(field));
-    }
-    Ok(())
-}
-
-fn encode_reference(output: &mut Vec<u8>, value: &str) -> Result<(), IpcError> {
-    validate_reference("reference", value)?;
-    output.push(u8::try_from(value.len()).map_err(|_| IpcError::Oversized)?);
-    output.extend_from_slice(value.as_bytes());
-    Ok(())
-}
-
-fn encode_terminal_status(value: TerminalStatus) -> u8 {
-    match value {
-        TerminalStatus::Completed => 1,
-        TerminalStatus::Failed => 2,
-        TerminalStatus::Blocked => 3,
-        TerminalStatus::Stopped => 4,
-        TerminalStatus::TimedOut => 5,
-        TerminalStatus::ProtocolFailure => 6,
-        TerminalStatus::Incomplete | TerminalStatus::Unknown => 0,
-    }
-}
-
-fn decode_terminal_status(value: u8) -> Result<TerminalStatus, IpcError> {
-    match value {
-        1 => Ok(TerminalStatus::Completed),
-        2 => Ok(TerminalStatus::Failed),
-        3 => Ok(TerminalStatus::Blocked),
-        4 => Ok(TerminalStatus::Stopped),
-        5 => Ok(TerminalStatus::TimedOut),
-        6 => Ok(TerminalStatus::ProtocolFailure),
-        _ => Err(IpcError::Invalid("terminal_status")),
-    }
-}
-
-fn prepare_state_root(root: &std::path::Path) -> Result<std::path::PathBuf, IpcError> {
-    if root.exists() {
-        let metadata = std::fs::symlink_metadata(root).map_err(IpcError::Io)?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(IpcError::UnsafeStateObject);
-        }
-    } else {
-        std::fs::create_dir_all(root).map_err(IpcError::Io)?;
-    }
-    let root = std::fs::canonicalize(root).map_err(IpcError::Io)?;
-    let metadata = std::fs::symlink_metadata(&root).map_err(IpcError::Io)?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_dir()
-        || state_metadata_is_unsafe(&metadata)
-    {
-        return Err(IpcError::UnsafeStateObject);
-    }
-    Ok(root)
-}
-
-fn state_metadata_is_unsafe(metadata: &std::fs::Metadata) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o022 != 0 {
-            return true;
-        }
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return true;
-        }
-    }
-    false
-}
-
-/// Collision-safe local endpoint derived only from HookStat's user-local state
-/// root. A producer cannot select a filesystem path through a wire frame.
-#[derive(Clone, Debug)]
-pub struct LocalEndpoint {
-    state_root: std::path::PathBuf,
-    endpoint_id: String,
-}
-
-impl LocalEndpoint {
-    pub fn from_state_root(root: impl AsRef<std::path::Path>) -> Result<Self, IpcError> {
-        let state_root = prepare_state_root(root.as_ref())?;
-        let mut hasher = Sha256::new();
-        hasher.update(b"hookstat-g35-local-endpoint-v1\0");
-        hasher.update(state_root.as_os_str().as_encoded_bytes());
-        hasher.update(b"\0");
-        hasher.update(
-            std::env::var_os("USERNAME")
-                .or_else(|| std::env::var_os("USER"))
-                .unwrap_or_default()
-                .as_encoded_bytes(),
-        );
-        let digest = hasher.finalize();
-        let endpoint_id = digest[..16]
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        let endpoint = Self {
-            state_root,
-            endpoint_id,
-        };
-        endpoint.transport_dir()?;
-        Ok(endpoint)
-    }
-
-    pub fn state_root(&self) -> &std::path::Path {
-        &self.state_root
-    }
-
-    pub fn endpoint_id(&self) -> &str {
-        &self.endpoint_id
-    }
-
-    #[cfg(unix)]
-    pub fn unix_socket_path(&self) -> Result<std::path::PathBuf, IpcError> {
-        let path = self
-            .transport_dir()?
-            .join(format!("g35-{}.sock", self.endpoint_id));
-        if path.as_os_str().as_encoded_bytes().len() > 96 {
-            return Err(IpcError::Invalid("unix_socket_path_length"));
-        }
-        Ok(path)
-    }
-
-    #[cfg(windows)]
-    pub fn named_pipe_name(&self) -> String {
-        format!("hookstat-g35-{}", self.endpoint_id)
-    }
-
-    fn transport_dir(&self) -> Result<std::path::PathBuf, IpcError> {
-        let dir = self.state_root.join("ipc");
-        if dir.exists() {
-            let metadata = std::fs::symlink_metadata(&dir).map_err(IpcError::Io)?;
-            if metadata.file_type().is_symlink()
-                || !metadata.is_dir()
-                || state_metadata_is_unsafe(&metadata)
-            {
-                return Err(IpcError::UnsafeStateObject);
-            }
-        } else {
-            std::fs::create_dir(&dir).map_err(IpcError::Io)?;
-        }
-        let canonical = std::fs::canonicalize(&dir).map_err(IpcError::Io)?;
-        if canonical.parent() != Some(self.state_root.as_path()) {
-            return Err(IpcError::UnsafeStateObject);
-        }
-        Ok(canonical)
-    }
-
-    #[cfg(unix)]
-    fn connect_stream(&self, timeout: Duration) -> Result<Stream, IpcError> {
-        #[cfg(unix)]
-        let name = {
-            use interprocess::local_socket::{GenericFilePath, ToFsName};
-            self.unix_socket_path()?
-                .to_fs_name::<GenericFilePath>()
-                .map_err(IpcError::Io)?
-        };
-        #[cfg(windows)]
-        let name = self
-            .named_pipe_name()
-            .to_ns_name::<GenericNamespaced>()
-            .map_err(IpcError::Io)?;
-        let stream = ConnectOptions::new()
-            .name(name)
-            .wait_mode(ConnectWaitMode::Timeout(timeout))
-            .connect_sync()
-            .map_err(IpcError::Io)?;
-        stream.set_nonblocking(true).map_err(IpcError::Io)?;
-        Ok(stream)
-    }
-
-    #[cfg(windows)]
-    async fn connect_tokio_stream(&self, timeout: Duration) -> Result<TokioStream, IpcError> {
-        use interprocess::os::windows::named_pipe::{
-            local_socket::tokio::Stream as WindowsTokioStream, pipe_mode::Bytes,
-            tokio::DuplexPipeStream,
-        };
-
-        // The generic Tokio connector currently dispatches through an
-        // unbounded named-pipe wait. Cancelling an outer timeout leaves that
-        // blocking helper alive, and it can later consume a listener instance.
-        // Bound the connector itself, then restore the local-socket wrapper.
-        let path = format!(r"\\.\pipe\{}", self.named_pipe_name());
-        let stream = DuplexPipeStream::<Bytes>::connect_by_path_with_wait_mode(
-            path,
-            ConnectWaitMode::Timeout(timeout),
-        )
-        .await
-        .map_err(IpcError::Io)?;
-        Ok(TokioStream::NamedPipe(WindowsTokioStream::from(stream)))
-    }
-
-    fn bind(&self) -> Result<Listener, IpcError> {
-        #[cfg(unix)]
-        {
-            use interprocess::local_socket::{GenericFilePath, ToFsName};
-            use interprocess::os::unix::local_socket::ListenerOptionsExt;
-            use std::os::unix::fs::FileTypeExt;
-            let path = self.unix_socket_path()?;
-            if path.exists() {
-                let metadata = std::fs::symlink_metadata(&path).map_err(IpcError::Io)?;
-                if metadata.file_type().is_symlink() || !metadata.file_type().is_socket() {
-                    return Err(IpcError::UnsafeStateObject);
-                }
-                if self.connect_stream(Duration::from_millis(5)).is_ok() {
-                    return Err(IpcError::EndpointInUse);
-                }
-                std::fs::remove_file(&path).map_err(IpcError::Io)?;
-            }
-            let name = path.to_fs_name::<GenericFilePath>().map_err(IpcError::Io)?;
-            ListenerOptions::new()
-                .name(name)
-                .nonblocking(ListenerNonblockingMode::Accept)
-                .reclaim_name(false)
-                .max_spin_time(Duration::ZERO)
-                .mode(0o600)
-                .create_sync()
-                .map_err(IpcError::Io)
-        }
-        #[cfg(windows)]
-        {
-            use interprocess::os::windows::local_socket::ListenerOptionsExt;
-            // `GenericNamespaced` maps to a local Windows Named Pipe. No
-            // network address is present in this endpoint name or API. The
-            // protected owner-rights DACL grants the creating user only the
-            // read/write access needed by a local producer.
-            let name = self
-                .named_pipe_name()
-                .to_ns_name::<GenericNamespaced>()
-                .map_err(IpcError::Io)?;
-            ListenerOptions::new()
-                .name(name)
-                .nonblocking(ListenerNonblockingMode::Accept)
-                .reclaim_name(false)
-                .security_descriptor(owner_only_pipe_security_descriptor()?)
-                .create_sync()
-                .map_err(|error| {
-                    if error.kind() == io::ErrorKind::AddrInUse {
-                        IpcError::EndpointInUse
-                    } else {
-                        IpcError::Io(error)
-                    }
-                })
-        }
-    }
-
-    #[cfg(unix)]
-    fn remove_socket_if_owned(&self) {
-        if let Ok(path) = self.unix_socket_path()
-            && let Ok(metadata) = std::fs::symlink_metadata(&path)
-        {
-            use std::os::unix::fs::FileTypeExt;
-            if metadata.file_type().is_socket() {
-                let _ = std::fs::remove_file(path);
-            }
-        }
-    }
-}
-
-#[cfg(windows)]
-fn owner_only_pipe_security_descriptor()
--> Result<interprocess::os::windows::security_descriptor::SecurityDescriptor, IpcError> {
-    use interprocess::os::windows::security_descriptor::SecurityDescriptor;
-    let sddl = widestring::U16CString::from_str("D:P(A;;GRGW;;;OW)")
-        .map_err(|_| IpcError::Invalid("pipe_security_descriptor"))?;
-    SecurityDescriptor::deserialize(sddl.as_ucstr()).map_err(IpcError::Io)
-}
-
-/// A connected generic producer. G36 may supply a cooperative producer or a
-/// tiny shim, but neither is implemented here.
-pub struct IpcClient {
-    #[cfg(unix)]
-    stream: Stream,
-    #[cfg(windows)]
-    stream: TokioStream,
-    #[cfg(windows)]
-    runtime: tokio::runtime::Runtime,
-    timeout: Duration,
-}
-
-/// Internal phase information for the developer-only performance qualifier.
-/// It never crosses the public IPC client boundary or records an OS error.
-#[cfg(feature = "performance-harness")]
-#[derive(Debug)]
-pub(crate) enum QualificationSendFailure {
-    Write(IpcError),
-    Read(IpcError),
-    UnexpectedAcknowledgement,
-}
-
-/// Sanitized client-side timing for the developer-only stage diagnostic.
-/// Values are bounded numeric durations only; no IPC frame content is retained.
-#[cfg(feature = "performance-harness")]
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct QualificationClientStageSample {
-    pub client_write_ns: u64,
-    pub client_ack_read_ns: u64,
-}
-
-impl IpcClient {
-    pub fn connect(endpoint: &LocalEndpoint, timeout: Duration) -> Result<Self, IpcError> {
-        #[cfg(unix)]
-        {
-            Ok(Self {
-                stream: endpoint.connect_stream(timeout)?,
-                timeout,
-            })
-        }
-        #[cfg(windows)]
-        {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_io()
-                .enable_time()
-                .build()
-                .map_err(IpcError::Io)?;
-            let stream = runtime.block_on(endpoint.connect_tokio_stream(timeout))?;
-            Ok(Self {
-                stream,
-                runtime,
-                timeout,
-            })
-        }
-    }
-
-    pub fn send(&mut self, frame: &IpcFrame) -> Result<BrokerAcknowledgement, IpcError> {
-        if !frame.is_lifecycle() {
-            return Err(IpcError::Invalid("producer_frame_type"));
-        }
-        #[cfg(unix)]
-        write_frame_bounded(&mut self.stream, frame, self.timeout)?;
-        #[cfg(windows)]
-        self.runtime.block_on(write_frame_bounded_tokio(
-            &mut self.stream,
-            frame,
-            self.timeout,
-        ))?;
-        #[cfg(unix)]
-        let acknowledgement = read_frame_bounded(&mut self.stream, self.timeout, 0)?;
-        #[cfg(windows)]
-        let acknowledgement = self
-            .runtime
-            .block_on(read_frame_bounded_tokio(&mut self.stream, self.timeout))?;
-        match acknowledgement {
-            IpcFrame::Ack(value) => Ok(value),
-            _ => Err(IpcError::Invalid("acknowledgement")),
-        }
-    }
-
-    #[cfg(feature = "performance-harness")]
-    pub(crate) fn send_for_qualification(
-        &mut self,
-        frame: &IpcFrame,
-    ) -> Result<BrokerAcknowledgement, QualificationSendFailure> {
-        if !frame.is_lifecycle() {
-            return Err(QualificationSendFailure::Write(IpcError::Invalid(
-                "producer_frame_type",
-            )));
-        }
-        #[cfg(unix)]
-        write_frame_bounded(&mut self.stream, frame, self.timeout)
-            .map_err(QualificationSendFailure::Write)?;
-        #[cfg(windows)]
-        self.runtime
-            .block_on(write_frame_bounded_tokio(
-                &mut self.stream,
-                frame,
-                self.timeout,
-            ))
-            .map_err(QualificationSendFailure::Write)?;
-        #[cfg(unix)]
-        let acknowledgement = read_frame_bounded(&mut self.stream, self.timeout, 0)
-            .map_err(QualificationSendFailure::Read)?;
-        #[cfg(windows)]
-        let acknowledgement = self
-            .runtime
-            .block_on(read_frame_bounded_tokio(&mut self.stream, self.timeout))
-            .map_err(QualificationSendFailure::Read)?;
-        match acknowledgement {
-            IpcFrame::Ack(value) => Ok(value),
-            _ => Err(QualificationSendFailure::UnexpectedAcknowledgement),
-        }
-    }
-
-    #[cfg(feature = "performance-harness")]
-    pub(crate) fn send_for_qualification_timed(
-        &mut self,
-        frame: &IpcFrame,
-    ) -> Result<(BrokerAcknowledgement, QualificationClientStageSample), QualificationSendFailure>
-    {
-        if !frame.is_lifecycle() {
-            return Err(QualificationSendFailure::Write(IpcError::Invalid(
-                "producer_frame_type",
-            )));
-        }
-        let write_started = Instant::now();
-        #[cfg(unix)]
-        write_frame_bounded(&mut self.stream, frame, self.timeout)
-            .map_err(QualificationSendFailure::Write)?;
-        #[cfg(windows)]
-        self.runtime
-            .block_on(write_frame_bounded_tokio(
-                &mut self.stream,
-                frame,
-                self.timeout,
-            ))
-            .map_err(QualificationSendFailure::Write)?;
-        let client_write_ns = elapsed_nanos(write_started);
-        let read_started = Instant::now();
-        #[cfg(unix)]
-        let acknowledgement = read_frame_bounded(&mut self.stream, self.timeout, 0)
-            .map_err(QualificationSendFailure::Read)?;
-        #[cfg(windows)]
-        let acknowledgement = self
-            .runtime
-            .block_on(read_frame_bounded_tokio(&mut self.stream, self.timeout))
-            .map_err(QualificationSendFailure::Read)?;
-        let acknowledgement = match acknowledgement {
-            IpcFrame::Ack(value) => value,
-            _ => return Err(QualificationSendFailure::UnexpectedAcknowledgement),
-        };
-        Ok((
-            acknowledgement,
-            QualificationClientStageSample {
-                client_write_ns,
-                client_ack_read_ns: elapsed_nanos(read_started),
-            },
-        ))
-    }
 }
 
 /// Fixed broker operating policy. The 64-record / 64 KiB / 50 ms group is a
@@ -2431,7 +1430,7 @@ fn connection_loop(
     while !stopping.load(Ordering::Acquire) {
         #[cfg(feature = "performance-harness")]
         let read_started = stage_collector.as_ref().map(|_| Instant::now());
-        match read_frame_bounded(&mut stream, Duration::from_millis(10), 0) {
+        match read_frame_bounded(&mut stream, Duration::from_millis(10)) {
             Ok(frame) if frame.is_lifecycle() => {
                 #[cfg(feature = "performance-harness")]
                 let timing = stage_collector
@@ -2511,7 +1510,7 @@ impl BrokerRecovery {
     }
 
     pub fn canonical_evidence(&self) -> Result<Vec<CanonicalEvidence>, IpcError> {
-        self.frames.iter().map(IpcFrame::canonical).collect()
+        self.frames.iter().map(canonical).collect()
     }
 
     /// Replays through the accepted G29 core. It intentionally cannot resolve
@@ -2523,7 +1522,10 @@ impl BrokerRecovery {
     ) -> Result<ReplayIngest, IpcError> {
         let mut result = ReplayIngest::default();
         for evidence in self.canonical_evidence()? {
-            match core.ingest(evidence).map_err(IpcError::Evidence)? {
+            match core
+                .ingest(evidence)
+                .map_err(|_| IpcError::Invalid("canonical_evidence"))?
+            {
                 CoreIngestOutcome::Produced(_) => result.produced += 1,
                 CoreIngestOutcome::Duplicate => result.duplicates += 1,
                 CoreIngestOutcome::Shadow => result.shadowed += 1,
@@ -2540,217 +1542,6 @@ pub struct ReplayIngest {
     pub duplicates: u64,
     pub shadowed: u64,
     pub unconfigured: u64,
-}
-
-/// A bounded startup handoff. It elects one starter using a state-root-local
-/// lease and makes all other producers wait only until the configured deadline.
-#[derive(Clone, Debug)]
-pub struct BrokerStartup {
-    endpoint: LocalEndpoint,
-    timeout: Duration,
-    stale_lease_after: Duration,
-}
-
-impl BrokerStartup {
-    pub fn new(endpoint: LocalEndpoint, timeout: Duration) -> Result<Self, IpcError> {
-        if timeout.is_zero() {
-            return Err(IpcError::Invalid("startup_timeout"));
-        }
-        Ok(Self {
-            endpoint,
-            timeout,
-            stale_lease_after: timeout,
-        })
-    }
-
-    pub fn connect_or_start(
-        &self,
-        mut start: impl FnMut() -> Result<(), IpcError>,
-    ) -> Result<IpcClient, IpcError> {
-        let deadline = Instant::now() + self.timeout;
-        loop {
-            if let Ok(client) = IpcClient::connect(&self.endpoint, Duration::from_millis(2)) {
-                return Ok(client);
-            }
-            if let Some(_lease) = StartupLease::try_acquire(&self.endpoint, self.stale_lease_after)?
-            {
-                // A follower can miss a healthy Windows pipe while every
-                // current instance is busy, then acquire the lease just after
-                // the original starter releases it. Recheck while elected so
-                // a transiently busy endpoint cannot trigger a second broker.
-                // A genuinely absent pipe returns immediately; the wait is
-                // bounded only for an existing busy endpoint.
-                let recheck_timeout = self.timeout.min(Duration::from_millis(25));
-                if let Ok(client) = IpcClient::connect(&self.endpoint, recheck_timeout) {
-                    return Ok(client);
-                }
-                start()?;
-                // The elected starter retains its lease until the new endpoint
-                // is actually connectable. Without this, a just-started pipe
-                // can briefly look absent and trigger a startup storm.
-                loop {
-                    if let Ok(client) = IpcClient::connect(&self.endpoint, Duration::from_millis(2))
-                    {
-                        // A Windows Named Pipe listener creates its next
-                        // accept instance after the first connection is
-                        // observed. Keep the election lease through this
-                        // bounded stabilization interval so followers do not
-                        // mistake that transition for a missing broker.
-                        thread::sleep(Duration::from_millis(25));
-                        return Ok(client);
-                    }
-                    if Instant::now() >= deadline {
-                        return Err(IpcError::StartupTimedOut);
-                    }
-                    thread::sleep(Duration::from_millis(2));
-                }
-            }
-            if Instant::now() >= deadline {
-                return Err(IpcError::StartupTimedOut);
-            }
-            thread::sleep(Duration::from_millis(2));
-        }
-    }
-}
-
-struct StartupLease {
-    path: std::path::PathBuf,
-}
-
-impl StartupLease {
-    fn try_acquire(
-        endpoint: &LocalEndpoint,
-        stale_after: Duration,
-    ) -> Result<Option<Self>, IpcError> {
-        let path = endpoint.transport_dir()?.join("broker-start-v1.lock");
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(_) => Ok(Some(Self { path })),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::AlreadyExists | io::ErrorKind::PermissionDenied
-                ) =>
-            {
-                let metadata = match std::fs::symlink_metadata(&path) {
-                    Ok(metadata) => metadata,
-                    Err(metadata_error)
-                        if matches!(
-                            metadata_error.kind(),
-                            io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
-                        ) =>
-                    {
-                        // The current lease can disappear between create-new
-                        // and inspection. Windows can also report a live lease
-                        // as access denied. Neither state grants ownership;
-                        // the caller retries under its startup deadline.
-                        return Ok(None);
-                    }
-                    Err(metadata_error) => return Err(IpcError::Io(metadata_error)),
-                };
-                if metadata.file_type().is_symlink() || !metadata.is_file() {
-                    return Err(IpcError::UnsafeStateObject);
-                }
-                if metadata
-                    .modified()
-                    .ok()
-                    .and_then(|modified| modified.elapsed().ok())
-                    .is_some_and(|elapsed| elapsed >= stale_after)
-                {
-                    match std::fs::remove_file(&path) {
-                        Ok(()) => {}
-                        Err(remove_error)
-                            if matches!(
-                                remove_error.kind(),
-                                io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
-                            ) =>
-                        {
-                            // Cleanup lost a race or the lease is still in
-                            // transition; ownership remains ungranted.
-                        }
-                        Err(remove_error) => return Err(IpcError::Io(remove_error)),
-                    }
-                }
-                Ok(None)
-            }
-            Err(error) => Err(IpcError::Io(error)),
-        }
-    }
-}
-
-impl Drop for StartupLease {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-struct Cursor<'a> {
-    input: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> Cursor<'a> {
-    fn new(input: &'a [u8]) -> Self {
-        Self { input, offset: 0 }
-    }
-    fn is_empty(&self) -> bool {
-        self.offset == self.input.len()
-    }
-    fn bytes(&mut self, length: usize) -> Result<&'a [u8], IpcError> {
-        let end = self.offset.checked_add(length).ok_or(IpcError::Truncated)?;
-        let value = self
-            .input
-            .get(self.offset..end)
-            .ok_or(IpcError::Truncated)?;
-        self.offset = end;
-        Ok(value)
-    }
-    fn u8(&mut self) -> Result<u8, IpcError> {
-        Ok(self.bytes(1)?[0])
-    }
-    fn i32(&mut self) -> Result<i32, IpcError> {
-        Ok(i32::from_le_bytes(
-            self.bytes(4)?.try_into().map_err(|_| IpcError::Truncated)?,
-        ))
-    }
-    fn i64(&mut self) -> Result<i64, IpcError> {
-        Ok(i64::from_le_bytes(
-            self.bytes(8)?.try_into().map_err(|_| IpcError::Truncated)?,
-        ))
-    }
-    fn u64(&mut self) -> Result<u64, IpcError> {
-        Ok(u64::from_le_bytes(
-            self.bytes(8)?.try_into().map_err(|_| IpcError::Truncated)?,
-        ))
-    }
-    fn reference(&mut self, field: &'static str) -> Result<String, IpcError> {
-        let length = self.u8()? as usize;
-        if length == 0 || length > MAX_IPC_REFERENCE_BYTES {
-            return Err(IpcError::Invalid(field));
-        }
-        let value = std::str::from_utf8(self.bytes(length)?)
-            .map_err(|_| IpcError::Invalid(field))?
-            .to_owned();
-        validate_reference(field, &value)?;
-        Ok(value)
-    }
-    fn optional_reference(&mut self, field: &'static str) -> Result<Option<String>, IpcError> {
-        let length = self.u8()? as usize;
-        if length == 0 {
-            return Ok(None);
-        }
-        if length > MAX_IPC_REFERENCE_BYTES {
-            return Err(IpcError::Invalid(field));
-        }
-        let value = std::str::from_utf8(self.bytes(length)?)
-            .map_err(|_| IpcError::Invalid(field))?
-            .to_owned();
-        validate_reference(field, &value)?;
-        Ok(Some(value))
-    }
 }
 
 #[cfg(test)]
@@ -2813,7 +1604,7 @@ mod tests {
         IpcFrame::Complete {
             lifecycle: lifecycle(),
             completion: Completion {
-                terminal_status: TerminalStatus::Failed,
+                terminal_status: TerminalOutcome::Failed,
                 exit_classification: ExitClassification::ExitCode,
                 exit_value: Some(7),
                 duration_ms: 12,
@@ -2841,17 +1632,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_client_ack_read_has_a_bounded_eager_phase() {
-        assert!(!windows_should_yield_after_empty_read(1, 64));
-        assert!(!windows_should_yield_after_empty_read(64, 64));
-        assert!(!windows_should_yield_after_empty_read(71, 64));
-        assert!(windows_should_yield_after_empty_read(72, 64));
-        assert!(windows_should_yield_after_empty_read(80, 64));
-        assert!(windows_should_yield_after_empty_read(8, 0));
-    }
-
-    #[cfg(windows)]
-    #[test]
     fn windows_overlapped_client_read_keeps_the_bounded_ack_timeout() {
         let root = tempfile::tempdir().unwrap();
         let endpoint = LocalEndpoint::from_state_root(root.path()).unwrap();
@@ -2869,7 +1649,7 @@ mod tests {
                 }
             };
             stream.set_nonblocking(true).unwrap();
-            read_frame_bounded(&mut stream, Duration::from_millis(100), 0).unwrap();
+            read_frame_bounded(&mut stream, Duration::from_millis(100)).unwrap();
             thread::sleep(Duration::from_millis(30));
         });
 
@@ -2892,7 +1672,7 @@ mod tests {
         assert_eq!(encoded[4], IPC_PROTOCOL_VERSION);
         assert_eq!(IpcFrame::decode(&encoded).unwrap(), frame);
         assert_eq!(
-            frame.canonical().unwrap().evidence_transport,
+            canonical(&frame).unwrap().evidence_transport,
             EvidenceTransport::Ipc
         );
     }
