@@ -1,0 +1,448 @@
+{
+  "schema_version": 3,
+  "run_kind": "hs_g35_sanitized_ipc_qualification",
+  "legacy_cpu_heuristic": "LEGACY_EXPERIMENTAL_HOST_HEURISTIC",
+  "control_method": "paired_local_broker_ack_control",
+  "control_derivation": "min(0.5*frozen_budget,4*g28_named_pipe_ack_baseline): p95=min(0.500,0.720)=0.500; p99=min(1.000,0.960)=0.960",
+  "control_limits_ms": {
+    "p95_ms_max": 0.5,
+    "p99_ms_max": 0.96
+  },
+  "frozen_g28_budget_ms": {
+    "cooperative_p95_ms_max": 1.0,
+    "cooperative_p99_ms_max": 2.0,
+    "changed": false
+  },
+  "measurement_collector_model": "per_thread_local_buffers",
+  "client16_start_barrier": true,
+  "plan": {
+    "required_qualifying_runs_per_series": 5,
+    "max_attempts_per_series": 50,
+    "wait_interval_ms": 60000,
+    "control_samples": 1000,
+    "single_samples": 1000,
+    "client16_clients": 16,
+    "client16_samples_per_client": 100,
+    "percentile_method": "nearest_rank"
+  },
+  "controls": [
+    {
+      "series": "single_client_persistent_release",
+      "attempt": 1,
+      "position": "before",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0414,
+        "p95_ms": 0.1304,
+        "p99_ms": 0.3194,
+        "max_ms": 0.9231
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "single_client_persistent_release",
+      "attempt": 1,
+      "position": "after",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0372,
+        "p95_ms": 0.0918,
+        "p99_ms": 0.2126,
+        "max_ms": 0.6967
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "single_client_persistent_release",
+      "attempt": 2,
+      "position": "before",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0453,
+        "p95_ms": 0.125,
+        "p99_ms": 0.2874,
+        "max_ms": 1.0745
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "single_client_persistent_release",
+      "attempt": 2,
+      "position": "after",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0556,
+        "p95_ms": 0.1506,
+        "p99_ms": 0.3005,
+        "max_ms": 1.8816
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "single_client_persistent_release",
+      "attempt": 3,
+      "position": "before",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0627,
+        "p95_ms": 0.1186,
+        "p99_ms": 0.3387,
+        "max_ms": 0.9886
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "single_client_persistent_release",
+      "attempt": 3,
+      "position": "after",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0503,
+        "p95_ms": 0.1096,
+        "p99_ms": 0.2461,
+        "max_ms": 0.5487
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "single_client_persistent_release",
+      "attempt": 4,
+      "position": "before",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0588,
+        "p95_ms": 0.141,
+        "p99_ms": 0.2939,
+        "max_ms": 0.6739
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "single_client_persistent_release",
+      "attempt": 4,
+      "position": "after",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.05,
+        "p95_ms": 0.0973,
+        "p99_ms": 0.198,
+        "max_ms": 0.8339
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "single_client_persistent_release",
+      "attempt": 5,
+      "position": "before",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.048,
+        "p95_ms": 0.1069,
+        "p99_ms": 0.23,
+        "max_ms": 0.6641
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "single_client_persistent_release",
+      "attempt": 5,
+      "position": "after",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0654,
+        "p95_ms": 0.1502,
+        "p99_ms": 0.4371,
+        "max_ms": 1.2222
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "client16_persistent_release",
+      "attempt": 1,
+      "position": "before",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0535,
+        "p95_ms": 0.1039,
+        "p99_ms": 0.2879,
+        "max_ms": 0.683
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "client16_persistent_release",
+      "attempt": 1,
+      "position": "after",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0494,
+        "p95_ms": 0.109,
+        "p99_ms": 0.2821,
+        "max_ms": 0.9469
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "client16_persistent_release",
+      "attempt": 2,
+      "position": "before",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0427,
+        "p95_ms": 0.0897,
+        "p99_ms": 0.2257,
+        "max_ms": 0.4754
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "client16_persistent_release",
+      "attempt": 2,
+      "position": "after",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0446,
+        "p95_ms": 0.0887,
+        "p99_ms": 0.2221,
+        "max_ms": 0.6354
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "client16_persistent_release",
+      "attempt": 3,
+      "position": "before",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0377,
+        "p95_ms": 0.086,
+        "p99_ms": 0.1907,
+        "max_ms": 0.4807
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "client16_persistent_release",
+      "attempt": 3,
+      "position": "after",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0372,
+        "p95_ms": 0.1142,
+        "p99_ms": 0.22,
+        "max_ms": 0.433
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "client16_persistent_release",
+      "attempt": 4,
+      "position": "before",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0364,
+        "p95_ms": 0.0956,
+        "p99_ms": 0.2538,
+        "max_ms": 0.8654
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "client16_persistent_release",
+      "attempt": 4,
+      "position": "after",
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0415,
+        "p95_ms": 0.1005,
+        "p99_ms": 0.1854,
+        "max_ms": 0.7183
+      },
+      "admitted": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    }
+  ],
+  "admitted_runs": [
+    {
+      "series": "single_client_persistent_release",
+      "attempt": 1,
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0396,
+        "p95_ms": 0.0915,
+        "p99_ms": 0.254,
+        "max_ms": 1.3306
+      },
+      "frozen_budget_passed": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "single_client_persistent_release",
+      "attempt": 2,
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0557,
+        "p95_ms": 0.1607,
+        "p99_ms": 0.3804,
+        "max_ms": 0.809
+      },
+      "frozen_budget_passed": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "single_client_persistent_release",
+      "attempt": 3,
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0585,
+        "p95_ms": 0.1079,
+        "p99_ms": 0.2561,
+        "max_ms": 1.173
+      },
+      "frozen_budget_passed": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "single_client_persistent_release",
+      "attempt": 4,
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0541,
+        "p95_ms": 0.1181,
+        "p99_ms": 0.3074,
+        "max_ms": 0.7711
+      },
+      "frozen_budget_passed": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "single_client_persistent_release",
+      "attempt": 5,
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0682,
+        "p95_ms": 0.2186,
+        "p99_ms": 0.4619,
+        "max_ms": 1.8549
+      },
+      "frozen_budget_passed": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "client16_persistent_release",
+      "attempt": 1,
+      "latency": {
+        "samples": 1600,
+        "p50_ms": 0.2505,
+        "p95_ms": 0.5991,
+        "p99_ms": 1.1563,
+        "max_ms": 2.5793
+      },
+      "frozen_budget_passed": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "client16_persistent_release",
+      "attempt": 2,
+      "latency": {
+        "samples": 1600,
+        "p50_ms": 0.1487,
+        "p95_ms": 0.8557,
+        "p99_ms": 1.7896,
+        "max_ms": 3.2035
+      },
+      "frozen_budget_passed": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "client16_persistent_release",
+      "attempt": 3,
+      "latency": {
+        "samples": 1600,
+        "p50_ms": 0.2036,
+        "p95_ms": 0.3902,
+        "p99_ms": 0.8161,
+        "max_ms": 1.3352
+      },
+      "frozen_budget_passed": true,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    },
+    {
+      "series": "client16_persistent_release",
+      "attempt": 4,
+      "latency": {
+        "samples": 1600,
+        "p50_ms": 0.2021,
+        "p95_ms": 0.7476,
+        "p99_ms": 2.6105,
+        "max_ms": 5.27
+      },
+      "frozen_budget_passed": false,
+      "disposition": "admitted",
+      "measurement_error_class": null
+    }
+  ],
+  "rejected_runs": [],
+  "series": [
+    {
+      "series": "single_client_persistent_release",
+      "required_qualifying_runs": 5,
+      "admitted_runs": 5,
+      "worst_admitted_p95_ms": 0.2186,
+      "worst_admitted_p99_ms": 0.4619
+    },
+    {
+      "series": "client16_persistent_release",
+      "required_qualifying_runs": 5,
+      "admitted_runs": 4,
+      "worst_admitted_p95_ms": 0.8557,
+      "worst_admitted_p99_ms": 2.6105
+    }
+  ],
+  "outcome": "FAIL_FROZEN_G28_BUDGET",
+  "owner_live_codex_config_mutated": false,
+  "raw_private_content_captured": false
+}
