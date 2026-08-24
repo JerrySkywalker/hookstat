@@ -2845,7 +2845,7 @@ mod tests {
     }
 
     #[test]
-    fn low_traffic_time_trigger_schedules_sync_without_a_later_frame() {
+    fn fifty_millisecond_low_traffic_trigger_syncs_without_a_later_frame() {
         let temp = tempfile::tempdir().unwrap();
         let (sync, entered_receiver, release_sender) = controlled_group_sync();
         let host = BrokerHost::start_with_test_group_sync(
@@ -2858,7 +2858,7 @@ mod tests {
                 group_durability: GroupDurabilityPolicy {
                     max_records: 64,
                     max_bytes: 65_536,
-                    max_interval: Duration::from_millis(10),
+                    max_interval: Duration::from_millis(50),
                 },
             },
             Arc::clone(&sync),
@@ -2878,6 +2878,64 @@ mod tests {
         assert_eq!(sync.completed.load(Ordering::Acquire), 1);
         assert_eq!(health.durability_requests, 1);
         assert_eq!(health.group_flushes, 1);
+    }
+
+    #[test]
+    fn clean_shutdown_schedules_and_waits_for_a_final_below_threshold_group() {
+        let temp = tempfile::tempdir().unwrap();
+        let (sync, entered_receiver, release_sender) = controlled_group_sync();
+        let host = BrokerHost::start_with_test_group_sync(
+            BrokerConfig {
+                state_root: temp.path().to_path_buf(),
+                queue_capacity: 2,
+                max_connections: 1,
+                ack_timeout: Duration::from_millis(100),
+                idle_timeout: Duration::from_secs(1),
+                group_durability: GroupDurabilityPolicy {
+                    max_records: 64,
+                    max_bytes: 65_536,
+                    max_interval: Duration::from_secs(60),
+                },
+            },
+            Arc::clone(&sync),
+        )
+        .unwrap();
+        let mut client = IpcClient::connect(host.endpoint(), Duration::from_millis(100)).unwrap();
+        assert_eq!(
+            client.send(&IpcFrame::Start(lifecycle())).unwrap(),
+            BrokerAcknowledgement::Accepted
+        );
+        assert!(
+            entered_receiver
+                .recv_timeout(Duration::from_millis(20))
+                .is_err()
+        );
+        drop(client);
+
+        let (stopped_sender, stopped_receiver) = mpsc::channel();
+        let stopper = thread::spawn(move || {
+            stopped_sender.send(host.stop()).unwrap();
+        });
+        entered_receiver
+            .recv_timeout(Duration::from_millis(500))
+            .unwrap();
+        assert!(
+            stopped_receiver
+                .recv_timeout(Duration::from_millis(20))
+                .is_err()
+        );
+        release_sender.send(TestSyncOutcome::Succeed).unwrap();
+        let health = stopped_receiver
+            .recv_timeout(Duration::from_millis(500))
+            .unwrap();
+        stopper.join().unwrap();
+        assert_eq!(sync.completed.load(Ordering::Acquire), 1);
+        assert_eq!(health.accepted, 1);
+        assert_eq!(health.durability_requests, 1);
+        assert_eq!(health.group_flushes, 1);
+
+        let mut wal = Wal::open(temp.path(), GroupDurabilityPolicy::default()).unwrap();
+        assert_eq!(wal.recover_and_replay().unwrap().frames.len(), 1);
     }
 
     #[test]
