@@ -388,6 +388,11 @@ pub fn write_frame(mut output: impl Write, frame: &IpcFrame) -> Result<(), IpcEr
     output.write_all(&encoded).map_err(IpcError::Io)
 }
 
+#[cfg(feature = "performance-harness")]
+fn elapsed_nanos(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
 fn read_frame_bounded(input: &mut Stream, timeout: Duration) -> Result<IpcFrame, IpcError> {
     let deadline = Instant::now() + timeout;
     let mut header = [0_u8; FRAME_HEADER_BYTES];
@@ -1082,6 +1087,15 @@ pub(crate) enum QualificationSendFailure {
     UnexpectedAcknowledgement,
 }
 
+/// Sanitized client-side timing for the developer-only stage diagnostic.
+/// Values are bounded numeric durations only; no IPC frame content is retained.
+#[cfg(feature = "performance-harness")]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct QualificationClientStageSample {
+    pub client_write_ns: u64,
+    pub client_ack_read_ns: u64,
+}
+
 impl IpcClient {
     pub fn connect(endpoint: &LocalEndpoint, timeout: Duration) -> Result<Self, IpcError> {
         Ok(Self {
@@ -1119,6 +1133,37 @@ impl IpcClient {
             IpcFrame::Ack(value) => Ok(value),
             _ => Err(QualificationSendFailure::UnexpectedAcknowledgement),
         }
+    }
+
+    #[cfg(feature = "performance-harness")]
+    pub(crate) fn send_for_qualification_timed(
+        &mut self,
+        frame: &IpcFrame,
+    ) -> Result<(BrokerAcknowledgement, QualificationClientStageSample), QualificationSendFailure>
+    {
+        if !frame.is_lifecycle() {
+            return Err(QualificationSendFailure::Write(IpcError::Invalid(
+                "producer_frame_type",
+            )));
+        }
+        let write_started = Instant::now();
+        write_frame_bounded(&mut self.stream, frame, self.timeout)
+            .map_err(QualificationSendFailure::Write)?;
+        let client_write_ns = elapsed_nanos(write_started);
+        let read_started = Instant::now();
+        let acknowledgement = match read_frame_bounded(&mut self.stream, self.timeout)
+            .map_err(QualificationSendFailure::Read)?
+        {
+            IpcFrame::Ack(value) => value,
+            _ => return Err(QualificationSendFailure::UnexpectedAcknowledgement),
+        };
+        Ok((
+            acknowledgement,
+            QualificationClientStageSample {
+                client_write_ns,
+                client_ack_read_ns: elapsed_nanos(read_started),
+            },
+        ))
     }
 }
 
@@ -1207,9 +1252,105 @@ impl HealthCounters {
     }
 }
 
+/// Per-request broker stages collected only by the feature-gated development
+/// diagnostic. Each field is a duration in nanoseconds and contains no frame
+/// or environment data.
+#[cfg(feature = "performance-harness")]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct QualificationBrokerStageSample {
+    pub broker_read_decode_ns: u64,
+    pub activity_bookkeeping_ns: u64,
+    pub acknowledgement_channel_allocation_ns: u64,
+    pub queue_submission_ns: u64,
+    pub queue_wait_ns: u64,
+    pub wal_append_ns: u64,
+    pub worker_acknowledgement_handoff_ns: u64,
+    pub broker_ack_write_ns: u64,
+}
+
+#[cfg(feature = "performance-harness")]
+struct QualificationStageCollector {
+    samples: Mutex<Vec<QualificationBrokerStageSample>>,
+}
+
+#[cfg(feature = "performance-harness")]
+impl QualificationStageCollector {
+    fn new() -> Self {
+        Self {
+            samples: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn record(&self, sample: QualificationBrokerStageSample) {
+        if let Ok(mut samples) = self.samples.lock() {
+            samples.push(sample);
+        }
+    }
+
+    fn samples(&self) -> Vec<QualificationBrokerStageSample> {
+        self.samples
+            .lock()
+            .map(|samples| samples.clone())
+            .unwrap_or_default()
+    }
+}
+
+#[cfg(feature = "performance-harness")]
+struct QualificationRequestTiming {
+    broker_read_decode_ns: AtomicU64,
+    activity_bookkeeping_ns: AtomicU64,
+    acknowledgement_channel_allocation_ns: AtomicU64,
+    queue_submission_ns: AtomicU64,
+    queue_wait_ns: AtomicU64,
+    wal_append_ns: AtomicU64,
+    worker_acknowledgement_handoff_ns: AtomicU64,
+    broker_ack_write_ns: AtomicU64,
+}
+
+#[cfg(feature = "performance-harness")]
+impl QualificationRequestTiming {
+    fn new() -> Self {
+        Self {
+            broker_read_decode_ns: AtomicU64::new(0),
+            activity_bookkeeping_ns: AtomicU64::new(0),
+            acknowledgement_channel_allocation_ns: AtomicU64::new(0),
+            queue_submission_ns: AtomicU64::new(0),
+            queue_wait_ns: AtomicU64::new(0),
+            wal_append_ns: AtomicU64::new(0),
+            worker_acknowledgement_handoff_ns: AtomicU64::new(0),
+            broker_ack_write_ns: AtomicU64::new(0),
+        }
+    }
+
+    fn store(slot: &AtomicU64, value: u64) {
+        slot.store(value, Ordering::Release);
+    }
+
+    fn sample(&self) -> QualificationBrokerStageSample {
+        QualificationBrokerStageSample {
+            broker_read_decode_ns: self.broker_read_decode_ns.load(Ordering::Acquire),
+            activity_bookkeeping_ns: self.activity_bookkeeping_ns.load(Ordering::Acquire),
+            acknowledgement_channel_allocation_ns: self
+                .acknowledgement_channel_allocation_ns
+                .load(Ordering::Acquire),
+            queue_submission_ns: self.queue_submission_ns.load(Ordering::Acquire),
+            queue_wait_ns: self.queue_wait_ns.load(Ordering::Acquire),
+            wal_append_ns: self.wal_append_ns.load(Ordering::Acquire),
+            worker_acknowledgement_handoff_ns: self
+                .worker_acknowledgement_handoff_ns
+                .load(Ordering::Acquire),
+            broker_ack_write_ns: self.broker_ack_write_ns.load(Ordering::Acquire),
+        }
+    }
+}
+
 struct QueuedFrame {
     frame: IpcFrame,
     acknowledgement: mpsc::SyncSender<BrokerAcknowledgement>,
+    #[cfg(feature = "performance-harness")]
+    enqueued_at: Instant,
+    #[cfg(feature = "performance-harness")]
+    timing: Option<Arc<QualificationRequestTiming>>,
 }
 
 struct BrokerCore {
@@ -1219,14 +1360,19 @@ struct BrokerCore {
     ack_timeout: Duration,
     health: Arc<HealthCounters>,
     last_activity: Mutex<Instant>,
+    #[cfg(feature = "performance-harness")]
+    qualification_stage_collector: Option<Arc<QualificationStageCollector>>,
 }
 
 impl BrokerCore {
+    #[cfg(not(feature = "performance-harness"))]
     fn submit(&self, frame: IpcFrame) -> BrokerAcknowledgement {
         let (acknowledgement, receiver) = mpsc::sync_channel(1);
         let queued = QueuedFrame {
             frame,
             acknowledgement,
+            #[cfg(feature = "performance-harness")]
+            enqueued_at: Instant::now(),
         };
         // Increment before publishing to the worker: an immediate consumer
         // must never observe/decrement an unaccounted queue entry.
@@ -1257,8 +1403,118 @@ impl BrokerCore {
         }
     }
 
+    #[cfg(feature = "performance-harness")]
+    fn submit(&self, frame: IpcFrame) -> BrokerAcknowledgement {
+        let (acknowledgement, receiver) = mpsc::sync_channel(1);
+        let queued = QueuedFrame {
+            frame,
+            acknowledgement,
+            enqueued_at: Instant::now(),
+            timing: None,
+        };
+        // Increment before publishing to the worker: an immediate consumer
+        // must never observe/decrement an unaccounted queue entry.
+        let depth = self.queue_depth.fetch_add(1, Ordering::Relaxed) + 1;
+        match self.queue.try_send(queued) {
+            Ok(()) => {
+                self.health
+                    .queue_high_water
+                    .fetch_max(depth as u64, Ordering::Relaxed);
+            }
+            Err(mpsc::TrySendError::Full(_)) => {
+                self.queue_depth.fetch_sub(1, Ordering::Relaxed);
+                self.health.dropped.fetch_add(1, Ordering::Relaxed);
+                return BrokerAcknowledgement::DroppedOverloaded;
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                self.queue_depth.fetch_sub(1, Ordering::Relaxed);
+                self.health.rejected.fetch_add(1, Ordering::Relaxed);
+                return BrokerAcknowledgement::Rejected;
+            }
+        }
+        match receiver.recv_timeout(self.ack_timeout) {
+            Ok(value) => value,
+            Err(_) => {
+                self.health.ack_timeouts.fetch_add(1, Ordering::Relaxed);
+                BrokerAcknowledgement::Busy
+            }
+        }
+    }
+
+    #[cfg(feature = "performance-harness")]
+    fn submit_for_qualification(
+        &self,
+        frame: IpcFrame,
+        timing: Arc<QualificationRequestTiming>,
+    ) -> BrokerAcknowledgement {
+        self.submit_with_qualification_timing(frame, Some(timing))
+    }
+
+    #[cfg(feature = "performance-harness")]
+    fn submit_with_qualification_timing(
+        &self,
+        frame: IpcFrame,
+        timing: Option<Arc<QualificationRequestTiming>>,
+    ) -> BrokerAcknowledgement {
+        let channel_started = Instant::now();
+        let (acknowledgement, receiver) = mpsc::sync_channel(1);
+        if let Some(timing) = &timing {
+            QualificationRequestTiming::store(
+                &timing.acknowledgement_channel_allocation_ns,
+                elapsed_nanos(channel_started),
+            );
+        }
+        let queued = QueuedFrame {
+            frame,
+            acknowledgement,
+            enqueued_at: Instant::now(),
+            timing: timing.clone(),
+        };
+        let submission_started = Instant::now();
+        // Increment before publishing to the worker: an immediate consumer
+        // must never observe/decrement an unaccounted queue entry.
+        let depth = self.queue_depth.fetch_add(1, Ordering::Relaxed) + 1;
+        match self.queue.try_send(queued) {
+            Ok(()) => {
+                if let Some(timing) = &timing {
+                    QualificationRequestTiming::store(
+                        &timing.queue_submission_ns,
+                        elapsed_nanos(submission_started),
+                    );
+                }
+                self.health
+                    .queue_high_water
+                    .fetch_max(depth as u64, Ordering::Relaxed);
+            }
+            Err(mpsc::TrySendError::Full(_)) => {
+                self.queue_depth.fetch_sub(1, Ordering::Relaxed);
+                self.health.dropped.fetch_add(1, Ordering::Relaxed);
+                return BrokerAcknowledgement::DroppedOverloaded;
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                self.queue_depth.fetch_sub(1, Ordering::Relaxed);
+                self.health.rejected.fetch_add(1, Ordering::Relaxed);
+                return BrokerAcknowledgement::Rejected;
+            }
+        }
+        match receiver.recv_timeout(self.ack_timeout) {
+            Ok(value) => value,
+            Err(_) => {
+                self.health.ack_timeouts.fetch_add(1, Ordering::Relaxed);
+                BrokerAcknowledgement::Busy
+            }
+        }
+    }
+
     fn touch(&self) {
         *self.last_activity.lock().expect("broker activity lock") = Instant::now();
+    }
+
+    #[cfg(feature = "performance-harness")]
+    fn touch_for_qualification(&self, timing: &QualificationRequestTiming) {
+        let started = Instant::now();
+        self.touch();
+        QualificationRequestTiming::store(&timing.activity_bookkeeping_ns, elapsed_nanos(started));
     }
 }
 
@@ -1271,6 +1527,8 @@ pub struct BrokerHost {
     stopping: Arc<AtomicBool>,
     handles: Vec<thread::JoinHandle<()>>,
     recovery: BrokerRecovery,
+    #[cfg(feature = "performance-harness")]
+    qualification_stage_collector: Option<Arc<QualificationStageCollector>>,
 }
 
 impl BrokerHost {
@@ -1280,7 +1538,22 @@ impl BrokerHost {
         Self::start_with_wal(config, wal)
     }
 
-    fn start_with_wal(config: BrokerConfig, mut wal: Wal) -> Result<Self, IpcError> {
+    fn start_with_wal(config: BrokerConfig, wal: Wal) -> Result<Self, IpcError> {
+        Self::start_with_wal_with_qualification_timing(
+            config,
+            wal,
+            #[cfg(feature = "performance-harness")]
+            None,
+        )
+    }
+
+    fn start_with_wal_with_qualification_timing(
+        config: BrokerConfig,
+        mut wal: Wal,
+        #[cfg(feature = "performance-harness")] qualification_stage_collector: Option<
+            Arc<QualificationStageCollector>,
+        >,
+    ) -> Result<Self, IpcError> {
         let endpoint = LocalEndpoint::from_state_root(&config.state_root)?;
         let recovery = BrokerRecovery::from_wal(wal.recover_and_replay()?);
         let listener = endpoint.bind()?;
@@ -1304,6 +1577,8 @@ impl BrokerHost {
             ack_timeout: config.ack_timeout,
             health: Arc::clone(&health),
             last_activity: Mutex::new(Instant::now()),
+            #[cfg(feature = "performance-harness")]
+            qualification_stage_collector: qualification_stage_collector.clone(),
         });
         let stopping = Arc::new(AtomicBool::new(false));
         let mut handles = Vec::new();
@@ -1338,7 +1613,19 @@ impl BrokerHost {
             stopping,
             handles,
             recovery,
+            #[cfg(feature = "performance-harness")]
+            qualification_stage_collector,
         })
+    }
+
+    #[cfg(feature = "performance-harness")]
+    pub(crate) fn start_with_qualification_stage_timing(
+        config: BrokerConfig,
+    ) -> Result<Self, IpcError> {
+        config.validate()?;
+        let wal = Wal::open(&config.state_root, config.group_durability)?;
+        let collector = Arc::new(QualificationStageCollector::new());
+        Self::start_with_wal_with_qualification_timing(config, wal, Some(collector))
     }
 
     #[cfg(test)]
@@ -1360,6 +1647,14 @@ impl BrokerHost {
     }
     pub fn recovery(&self) -> &BrokerRecovery {
         &self.recovery
+    }
+
+    #[cfg(feature = "performance-harness")]
+    pub(crate) fn qualification_stage_samples(&self) -> Vec<QualificationBrokerStageSample> {
+        self.qualification_stage_collector
+            .as_ref()
+            .map(|collector| collector.samples())
+            .unwrap_or_default()
     }
 
     pub fn stop(mut self) {
@@ -1412,19 +1707,48 @@ fn wal_worker_loop(
         match receiver.recv_timeout(Duration::from_millis(2)) {
             Ok(queued) => {
                 core.queue_depth.fetch_sub(1, Ordering::Relaxed);
+                #[cfg(feature = "performance-harness")]
+                if let Some(timing) = &queued.timing {
+                    QualificationRequestTiming::store(
+                        &timing.queue_wait_ns,
+                        elapsed_nanos(queued.enqueued_at),
+                    );
+                }
                 if durability_failed {
                     health.rejected.fetch_add(1, Ordering::Relaxed);
                     let _ = queued.acknowledgement.send(BrokerAcknowledgement::Rejected);
                     continue;
                 }
+                #[cfg(feature = "performance-harness")]
+                let append_started = queued.timing.as_ref().map(|_| Instant::now());
                 match wal.append(&queued.frame) {
                     Ok(()) => {
+                        #[cfg(feature = "performance-harness")]
+                        if let (Some(timing), Some(append_started)) =
+                            (&queued.timing, append_started)
+                        {
+                            QualificationRequestTiming::store(
+                                &timing.wal_append_ns,
+                                elapsed_nanos(append_started),
+                            );
+                        }
                         health.accepted.fetch_add(1, Ordering::Relaxed);
                         // The complete record is in the OS file buffer before
                         // this send. The connection thread can therefore
                         // release the producer while group durability proceeds
                         // independently below.
+                        #[cfg(feature = "performance-harness")]
+                        let handoff_started = queued.timing.as_ref().map(|_| Instant::now());
                         let _ = queued.acknowledgement.send(BrokerAcknowledgement::Accepted);
+                        #[cfg(feature = "performance-harness")]
+                        if let (Some(timing), Some(handoff_started)) =
+                            (&queued.timing, handoff_started)
+                        {
+                            QualificationRequestTiming::store(
+                                &timing.worker_acknowledgement_handoff_ns,
+                                elapsed_nanos(handoff_started),
+                            );
+                        }
                         match wal.flush_if_due() {
                             Ok(flush) if flush.grouped_records > 0 => {
                                 health.group_flushes.fetch_add(1, Ordering::Relaxed);
@@ -1533,16 +1857,55 @@ fn connection_loop(
         core.active_connections.fetch_sub(1, Ordering::AcqRel);
         return;
     }
+    #[cfg(feature = "performance-harness")]
+    let stage_collector = core.qualification_stage_collector.as_ref().cloned();
     while !stopping.load(Ordering::Acquire) {
+        #[cfg(feature = "performance-harness")]
+        let read_started = stage_collector.as_ref().map(|_| Instant::now());
         match read_frame_bounded(&mut stream, Duration::from_millis(10)) {
             Ok(frame) if frame.is_lifecycle() => {
+                #[cfg(feature = "performance-harness")]
+                let timing = stage_collector
+                    .as_ref()
+                    .map(|_| Arc::new(QualificationRequestTiming::new()));
+                #[cfg(feature = "performance-harness")]
+                if let (Some(timing), Some(read_started)) = (&timing, read_started) {
+                    QualificationRequestTiming::store(
+                        &timing.broker_read_decode_ns,
+                        elapsed_nanos(read_started),
+                    );
+                    core.touch_for_qualification(timing);
+                } else {
+                    core.touch();
+                }
+                #[cfg(not(feature = "performance-harness"))]
                 core.touch();
+                #[cfg(feature = "performance-harness")]
+                let acknowledgement = match &timing {
+                    Some(timing) => core.submit_for_qualification(frame, Arc::clone(timing)),
+                    None => core.submit(frame),
+                };
+                #[cfg(not(feature = "performance-harness"))]
                 let acknowledgement = core.submit(frame);
+                #[cfg(feature = "performance-harness")]
+                let acknowledgement_write_started = timing.as_ref().map(|_| Instant::now());
                 let _ = write_frame_bounded(
                     &mut stream,
                     &IpcFrame::Ack(acknowledgement),
                     Duration::from_millis(5),
                 );
+                #[cfg(feature = "performance-harness")]
+                if let (Some(collector), Some(timing), Some(acknowledgement_write_started)) = (
+                    stage_collector.as_ref(),
+                    timing,
+                    acknowledgement_write_started,
+                ) {
+                    QualificationRequestTiming::store(
+                        &timing.broker_ack_write_ns,
+                        elapsed_nanos(acknowledgement_write_started),
+                    );
+                    collector.record(timing.sample());
+                }
             }
             Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::TimedOut => {
                 thread::sleep(Duration::from_millis(1));
@@ -2097,6 +2460,8 @@ mod tests {
             ack_timeout: Duration::from_millis(1),
             health: Arc::clone(&health),
             last_activity: Mutex::new(Instant::now()),
+            #[cfg(feature = "performance-harness")]
+            qualification_stage_collector: None,
         };
         assert_eq!(
             broker.submit(IpcFrame::Start(lifecycle())),

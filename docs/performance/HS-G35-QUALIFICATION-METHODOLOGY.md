@@ -45,7 +45,8 @@ against disposable state:
 ```powershell
 $env:CARGO_TARGET_DIR = 'C:\temp\hookstat-g35-qualification-target'
 $env:RUSTFLAGS = '-C debuginfo=0'
-cargo +1.97.1 build --locked --release --features performance-harness --bin hookstat-ipc-qualify
+cargo +1.97.1 build --locked --release --features performance-harness `
+  --bin hookstat-ipc-qualify --bin hookstat-ipc-collector-ab --bin hookstat-ipc-stage-timing
 & "$env:CARGO_TARGET_DIR\release\hookstat-ipc-qualify.exe" `
   --output C:\temp\g35-qualification.json `
   --max-attempts 720 --wait-ms 60000
@@ -60,9 +61,23 @@ admitted run above the immutable 1 ms p95 or 2 ms p99 limit produces
 `FAIL_FROZEN_G28_BUDGET`; insufficient admitted runs produce
 `BLOCKED_NO_QUALIFYING_WINDOW`.
 
-### Measurement-error diagnostics
+### Measurement-integrity and error diagnostics
 
-Receipt schema v2 retains a bounded `measurement_error_class` only when a
+Receipt schema v3 measures the interval in this order:
+
+```text
+ACK completion -> capture elapsed -> worker-local sample collection
+```
+
+Every worker owns a preallocated latency vector. Samples are aggregated only
+after the workers join, so no shared collector lock is on the measured path.
+For the 16-client series, all persistent client connections are established
+before a synchronization barrier releases measured traffic. The barrier is
+outside every timed request interval. The earlier shared-mutex collector order
+is retained only by the separate diagnostic binary below and never contributes
+to acceptance.
+
+Receipt schema v3 retains a bounded `measurement_error_class` only when a
 control or candidate could not be measured. Its allowed values are
 `broker_startup_failure`, `connect_timeout`, `write_send_timeout`,
 `read_ack_timeout`, `unexpected_acknowledgement`, `worker_failure`,
@@ -73,3 +88,33 @@ admitted latency result or a budget relaxation.
 
 The existing loaded-host p95=2.141 ms / p99=8.314 ms observation remains
 historical non-acceptance evidence and is neither deleted nor reclassified.
+
+### Collector-model A/B diagnostic
+
+The feature-gated diagnostic below compares the prior shared-mutex collector
+with the corrected per-thread collector using the same persistent-connection
+setup and start barrier. It writes a sanitized diagnostic receipt and is
+explicitly `acceptance_evidence=false`; paired-control admission and the frozen
+budget are unchanged for the normal qualifier.
+
+```powershell
+& "$env:CARGO_TARGET_DIR\release\hookstat-ipc-collector-ab.exe" `
+  --output C:\temp\g35-collector-ab.json `
+  --single-samples 1000 --client16-samples 100
+```
+
+### Stage timing diagnostic
+
+When a corrected, control-admitted run exceeds the frozen budget, the separate
+feature-gated stage tool reports bounded numeric p50/p95/p99 estimates for
+client write/read, broker read/decode, activity bookkeeping, acknowledgement
+channel allocation, queue submission/wait, WAL append, acknowledgement
+handoff, and broker ACK write. It is diagnostic only and does not alter the
+normal qualifier, broker protocol, WAL-before-ACK ordering, or durability
+policy.
+
+```powershell
+& "$env:CARGO_TARGET_DIR\release\hookstat-ipc-stage-timing.exe" `
+  --output C:\temp\g35-stage-timing.json `
+  --client16-samples 100
+```

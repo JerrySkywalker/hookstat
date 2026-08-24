@@ -69,6 +69,20 @@ required-features = ["performance-harness"]
 test = false
 bench = false
 
+[[bin]]
+name = "hookstat-ipc-collector-ab"
+path = "src/bin/hookstat_ipc_collector_ab.rs"
+required-features = ["performance-harness"]
+test = false
+bench = false
+
+[[bin]]
+name = "hookstat-ipc-stage-timing"
+path = "src/bin/hookstat_ipc_stage_timing.rs"
+required-features = ["performance-harness"]
+test = false
+bench = false
+
 [lints.rust]
 unsafe_code = "forbid"
 

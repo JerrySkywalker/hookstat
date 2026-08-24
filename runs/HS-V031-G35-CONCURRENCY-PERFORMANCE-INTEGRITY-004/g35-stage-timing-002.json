@@ -1,0 +1,23 @@
+{
+  "schema_version": 3,
+  "run_kind": "hs_g35_stage_timing_diagnostic",
+  "acceptance_evidence": false,
+  "collector_model": "per_thread_local_buffers",
+  "client_start_barrier": true,
+  "clients": 16,
+  "samples_per_client": 100,
+  "round_trip": null,
+  "client_write": null,
+  "broker_read_decode": null,
+  "activity_bookkeeping": null,
+  "acknowledgement_channel_allocation": null,
+  "queue_submission": null,
+  "queue_wait": null,
+  "wal_append": null,
+  "worker_acknowledgement_handoff": null,
+  "broker_ack_write": null,
+  "client_ack_read": null,
+  "measurement_error_class": "read_ack_timeout",
+  "owner_live_codex_config_mutated": false,
+  "raw_private_content_captured": false
+}
