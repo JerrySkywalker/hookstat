@@ -77,8 +77,9 @@ including queue high-water mark, malformed input, group flushes, and explicit
 drops.
 
 The broker has a bounded idle timeout. On expiry it stops accepting, drains the
-bounded queue, group-flushes, and exits. It is per-user/on-demand and is neither
-a machine-global service nor a listener on TCP, HTTP, or any network interface.
+bounded append queue, requests final durability, joins the one durability
+worker, and exits. It is per-user/on-demand and is neither a machine-global
+service nor a listener on TCP, HTTP, or any network interface.
 
 ## WAL and recovery
 
@@ -88,13 +89,46 @@ a machine-global service nor a listener on TCP, HTTP, or any network interface.
 HSWL | WAL-version=1 | reserved=0 | binary-frame-length | SHA-256-prefix checksum | HSIP frame
 ```
 
-The WAL has a 64 MiB hard cap. Group durability is a maximum of 64 records,
-64 KiB, or 50 ms, plus an explicit clean-shutdown flush. A producer ACK follows
-a successful complete WAL append to the operating system file buffer. The
-worker publishes that ACK before it evaluates or begins a due `sync_data()`;
-group durability is consequently never on the producer ACK critical path.
-The ACK does not claim power-loss durability, and there is deliberately no
-per-record fsync.
+The WAL has a 64 MiB hard cap. Group durability requests are cut at a maximum
+of 64 records, 64 KiB, or 50 ms, plus an explicit clean-shutdown request. A
+producer ACK follows a successful complete WAL append to the operating system
+file buffer. One logical append worker is the only record writer and preserves
+strict append order. One separately owned durability worker is the only caller
+of `sync_data()`; the append worker never waits for a group sync before ACKing
+the current record or dequeuing a subsequent record. The ACK does not claim
+power-loss durability, and there is deliberately no per-record fsync.
+
+Durability scheduling uses constant-size shared state rather than one message
+per record. A request advances a monotonically increasing append generation.
+If sync is already active, later due generations coalesce to the newest target;
+the single durability worker serially completes the active target and then the
+newest requested target. There is no overlapping `sync_data()`, unbounded
+message queue, or per-record thread creation. The append worker's 2 ms bounded
+receive poll continues to evaluate the 50 ms trigger, so one low-traffic record
+cannot wait indefinitely for a later frame.
+
+The durability worker uses `File::try_clone()` on the already validated WAL
+handle. Rust specifies that the clone shares the same underlying file handle;
+on Windows the underlying duplicated handle refers to the same object and
+`FlushFileBuffers` writes all buffered information for that file, while on
+Unix a duplicated descriptor refers to the same open-file description and
+`fsync` operates on the file indicated by that descriptor. The implementation
+uses the clone only for `sync_data()` and retains one writer, avoiding shared
+offset mutation. Exact Windows and Linux tests exercise clone-sync plus WAL
+recovery. See the primary platform contracts for
+[`File::try_clone`](https://doc.rust-lang.org/std/fs/struct.File.html#method.try_clone),
+[`DuplicateHandle`](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle),
+[`FlushFileBuffers`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers),
+[`dup`](https://man7.org/linux/man-pages/man2/dup.2.html), and
+[`fsync`](https://pubs.opengroup.org/onlinepubs/009695399/functions/fsync.html).
+
+A sync failure is published through a small append/failure ordering gate. An
+append that owns the gate first may complete and return its truthful OS-buffer
+`Accepted`; once failure publication owns the gate, later queued frames are
+rejected and the broker stops accepting. Already returned ACKs are never
+rewritten. Clean shutdown stops acceptance, drains queued appends, schedules
+the final pending generation, waits for its completion, joins the durability
+worker, and then exits.
 
 This creates a bounded final power-loss window of **possible observational
 evidence loss**. It never means a Hook succeeded, and a missing COMPLETE stays
@@ -114,6 +148,10 @@ later `HookInvocation`/ledger boundary.
   unowned/trailing bytes.
 - WAL never serializes a runtime command or content field, has no producer-side
   direct SQLite operation, and does not call per-record `sync_data`.
+- One ordered append owner and one non-overlapping durability owner preserve
+  framing/order while keeping current and subsequent ACK paths free of sync.
+- Durability requests are bounded/coalescing; low traffic, clean shutdown, and
+  post-ACK failure visibility have deterministic tests.
 - Queue overload is observable and does not manufacture an ACK.
 - Windows uses an owner-only Named Pipe DACL; Unix uses a `0600` socket under a
   verified private state directory. Neither path exposes a network listener.

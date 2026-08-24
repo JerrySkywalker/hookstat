@@ -208,7 +208,11 @@ pub struct StageTimingReceipt {
     pub queue_wait_residual_after_group_sync: Option<LatencyStatistics>,
     pub worker_dequeue_handoff: Option<LatencyStatistics>,
     pub queue_depth_at_dequeue_max: Option<u64>,
+    pub queue_high_water: Option<u64>,
     pub group_sync_attempts: usize,
+    pub durability_requests: Option<u64>,
+    pub durability_requests_coalesced: Option<u64>,
+    pub durability_flushes_completed: Option<u64>,
     pub group_sync_duration: Option<LatencyStatistics>,
     pub queue_wait_sync_correlation: Option<QueueWaitSyncCorrelation>,
     pub wal_append: Option<LatencyStatistics>,
@@ -234,6 +238,7 @@ type StageTimingMeasurement = (
     Vec<QualificationClientStageSample>,
     Vec<QualificationBrokerStageSample>,
     Vec<u64>,
+    crate::ipc::BrokerHealth,
 );
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -461,7 +466,7 @@ pub fn run_stage_timing_diagnostic(
 ) -> Result<StageTimingReceipt, QualificationError> {
     validate_stage_timing_config(config)?;
     match measure_stage_timing(CLIENTS_16, config.client16_samples_per_client) {
-        Ok((round_trip, client, broker, group_sync_durations)) => Ok(StageTimingReceipt {
+        Ok((round_trip, client, broker, group_sync_durations, health)) => Ok(StageTimingReceipt {
             schema_version: RECEIPT_SCHEMA_VERSION,
             run_kind: "hs_g35_stage_timing_diagnostic".into(),
             acceptance_evidence: false,
@@ -503,7 +508,11 @@ pub fn run_stage_timing_diagnostic(
                 .iter()
                 .map(|value| value.queue_depth_at_dequeue)
                 .max(),
+            queue_high_water: Some(health.queue_high_water),
             group_sync_attempts: group_sync_durations.len(),
+            durability_requests: Some(health.durability_requests),
+            durability_requests_coalesced: Some(health.durability_requests_coalesced),
+            durability_flushes_completed: Some(health.group_flushes),
             group_sync_duration: stage_statistics(group_sync_durations),
             queue_wait_sync_correlation: queue_wait_sync_correlation(&broker),
             wal_append: stage_statistics(broker.iter().map(|value| value.wal_append_ns)),
@@ -539,7 +548,11 @@ pub fn run_stage_timing_diagnostic(
             queue_wait_residual_after_group_sync: None,
             worker_dequeue_handoff: None,
             queue_depth_at_dequeue_max: None,
+            queue_high_water: None,
             group_sync_attempts: 0,
+            durability_requests: None,
+            durability_requests_coalesced: None,
+            durability_flushes_completed: None,
             group_sync_duration: None,
             queue_wait_sync_correlation: None,
             wal_append: None,
@@ -603,7 +616,8 @@ fn measure_stage_timing(
             return Err(MeasurementErrorClass::WorkerFailure);
         }
         let group_sync_durations = host.qualification_group_sync_durations();
-        Ok((round_trip, client, broker, group_sync_durations))
+        let health = host.health();
+        Ok((round_trip, client, broker, group_sync_durations, health))
     });
     host.stop();
     result

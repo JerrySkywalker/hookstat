@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -565,10 +565,9 @@ pub struct Wal {
     bytes: u64,
     pending_records: u32,
     pending_bytes: u64,
+    append_generation: u64,
     last_group_flush: std::time::Instant,
     policy: GroupDurabilityPolicy,
-    #[cfg(test)]
-    test_group_sync: Option<Arc<TestGroupSync>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -592,6 +591,12 @@ impl Default for GroupDurabilityPolicy {
 pub struct WalFlush {
     pub grouped_records: u32,
     pub grouped_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DurabilityRequest {
+    through_generation: u64,
+    group: WalFlush,
 }
 
 impl Wal {
@@ -626,10 +631,9 @@ impl Wal {
             bytes,
             pending_records: 0,
             pending_bytes: 0,
+            append_generation: 0,
             last_group_flush: std::time::Instant::now(),
             policy,
-            #[cfg(test)]
-            test_group_sync: None,
         })
     }
 
@@ -666,43 +670,60 @@ impl Wal {
         self.bytes += record_len;
         self.pending_records += 1;
         self.pending_bytes += record_len;
+        self.append_generation += 1;
         Ok(())
     }
 
     pub fn flush_if_due(&mut self) -> Result<WalFlush, IpcError> {
-        let due = self.pending_records >= self.policy.max_records
-            || self.pending_bytes >= self.policy.max_bytes
-            || self.last_group_flush.elapsed() >= self.policy.max_interval;
-        if due {
-            self.flush_group()
-        } else {
-            Ok(WalFlush::default())
-        }
+        self.flush_selected_group(false)
     }
 
     pub fn flush_group(&mut self) -> Result<WalFlush, IpcError> {
-        if self.pending_records == 0 {
+        self.flush_selected_group(true)
+    }
+
+    fn flush_selected_group(&mut self, force: bool) -> Result<WalFlush, IpcError> {
+        let Some(request) = self.take_durability_request(force) else {
             return Ok(WalFlush::default());
-        }
-        #[cfg(test)]
-        if let Some(sync) = &self.test_group_sync {
-            sync.wait_before_sync();
-        }
+        };
         self.file.sync_data().map_err(IpcError::Io)?;
-        let flushed = WalFlush {
-            grouped_records: self.pending_records,
-            grouped_bytes: self.pending_bytes,
+        Ok(request.group)
+    }
+
+    fn take_durability_request(&mut self, force: bool) -> Option<DurabilityRequest> {
+        if self.pending_records == 0 {
+            return None;
+        }
+        let due = force
+            || self.pending_records >= self.policy.max_records
+            || self.pending_bytes >= self.policy.max_bytes
+            || self.last_group_flush.elapsed() >= self.policy.max_interval;
+        if !due {
+            return None;
+        }
+        let request = DurabilityRequest {
+            through_generation: self.append_generation,
+            group: WalFlush {
+                grouped_records: self.pending_records,
+                grouped_bytes: self.pending_bytes,
+            },
         };
         self.pending_records = 0;
         self.pending_bytes = 0;
         self.last_group_flush = std::time::Instant::now();
-        Ok(flushed)
+        Some(request)
     }
 
-    #[cfg(test)]
-    fn with_test_group_sync(mut self, sync: Arc<TestGroupSync>) -> Self {
-        self.test_group_sync = Some(sync);
-        self
+    fn durability_handle(&self) -> Result<std::fs::File, IpcError> {
+        // `try_clone` shares the validated underlying file handle. The clone
+        // is sync-only; the WAL owner remains the sole writer, so neither the
+        // shared Windows file position nor Unix open-file offset is mutated by
+        // the durability worker.
+        self.file.try_clone().map_err(IpcError::Io)
+    }
+
+    fn append_generation(&self) -> u64 {
+        self.append_generation
     }
 
     /// Replays whole valid records in deterministic append order. An incomplete
@@ -1215,6 +1236,8 @@ pub struct BrokerHealth {
     pub duplicates: u64,
     pub ack_timeouts: u64,
     pub queue_high_water: u64,
+    pub durability_requests: u64,
+    pub durability_requests_coalesced: u64,
     pub group_flushes: u64,
     /// Failed post-ACK group durability makes the current broker fail closed
     /// for subsequent frames. Already accepted records remain truthful OS-file
@@ -1231,6 +1254,8 @@ struct HealthCounters {
     duplicates: AtomicU64,
     ack_timeouts: AtomicU64,
     queue_high_water: AtomicU64,
+    durability_requests: AtomicU64,
+    durability_requests_coalesced: AtomicU64,
     group_flushes: AtomicU64,
     durability_failures: AtomicU64,
 }
@@ -1246,9 +1271,118 @@ impl HealthCounters {
             duplicates: self.duplicates.load(Ordering::Relaxed),
             ack_timeouts: self.ack_timeouts.load(Ordering::Relaxed),
             queue_high_water: self.queue_high_water.load(Ordering::Relaxed),
+            durability_requests: self.durability_requests.load(Ordering::Relaxed),
+            durability_requests_coalesced: self
+                .durability_requests_coalesced
+                .load(Ordering::Relaxed),
             group_flushes: self.group_flushes.load(Ordering::Relaxed),
             durability_failures: self.durability_failures.load(Ordering::Relaxed),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DurabilityRequestStatus {
+    Scheduled,
+    Coalesced,
+    Failed,
+}
+
+#[derive(Debug, Default)]
+struct DurabilityState {
+    requested_generation: u64,
+    completed_generation: u64,
+    shutting_down: bool,
+    failed: bool,
+}
+
+#[derive(Debug, Default)]
+struct DurabilityCoordinator {
+    state: Mutex<DurabilityState>,
+    wake: Condvar,
+    failure_gate: Mutex<()>,
+    failed: AtomicBool,
+}
+
+impl DurabilityCoordinator {
+    fn request(&self, through_generation: u64) -> DurabilityRequestStatus {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.failed {
+            return DurabilityRequestStatus::Failed;
+        }
+        let status = if state.requested_generation > state.completed_generation {
+            DurabilityRequestStatus::Coalesced
+        } else {
+            DurabilityRequestStatus::Scheduled
+        };
+        state.requested_generation = state.requested_generation.max(through_generation);
+        self.wake.notify_one();
+        status
+    }
+
+    fn shutdown_and_wait(&self, through_generation: u64) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.requested_generation = state.requested_generation.max(through_generation);
+        state.shutting_down = true;
+        self.wake.notify_one();
+        while !state.failed && state.completed_generation < through_generation {
+            state = self
+                .wake
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        !state.failed && state.completed_generation >= through_generation
+    }
+
+    fn next_request(&self) -> Option<u64> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if state.failed {
+                return None;
+            }
+            if state.requested_generation > state.completed_generation {
+                return Some(state.requested_generation);
+            }
+            if state.shutting_down {
+                return None;
+            }
+            state = self
+                .wake
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    fn complete(&self, through_generation: u64) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.completed_generation = state.completed_generation.max(through_generation);
+        self.wake.notify_all();
+    }
+
+    fn publish_failure(&self) {
+        let _failure_gate = self
+            .failure_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.failed.store(true, Ordering::Release);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.failed = true;
+        self.wake.notify_all();
     }
 }
 
@@ -1275,6 +1409,7 @@ pub(crate) struct QualificationBrokerStageSample {
 struct QualificationStageCollector {
     samples: Mutex<Vec<QualificationBrokerStageSample>>,
     group_sync_durations_ns: Mutex<Vec<u64>>,
+    last_group_sync_interval: Mutex<Option<(Instant, Option<Instant>)>>,
 }
 
 #[cfg(feature = "performance-harness")]
@@ -1283,6 +1418,7 @@ impl QualificationStageCollector {
         Self {
             samples: Mutex::new(Vec::new()),
             group_sync_durations_ns: Mutex::new(Vec::new()),
+            last_group_sync_interval: Mutex::new(None),
         }
     }
 
@@ -1299,9 +1435,18 @@ impl QualificationStageCollector {
             .unwrap_or_default()
     }
 
-    fn record_group_sync(&self, duration_ns: u64) {
+    fn start_group_sync(&self, started: Instant) {
+        if let Ok(mut interval) = self.last_group_sync_interval.lock() {
+            *interval = Some((started, None));
+        }
+    }
+
+    fn record_group_sync(&self, started: Instant, completed: Instant) {
         if let Ok(mut durations) = self.group_sync_durations_ns.lock() {
-            durations.push(duration_ns);
+            durations.push(elapsed_nanos_between(started, completed));
+        }
+        if let Ok(mut interval) = self.last_group_sync_interval.lock() {
+            *interval = Some((started, Some(completed)));
         }
     }
 
@@ -1309,6 +1454,22 @@ impl QualificationStageCollector {
         self.group_sync_durations_ns
             .lock()
             .map(|durations| durations.clone())
+            .unwrap_or_default()
+    }
+
+    fn group_sync_overlap_ns(&self, enqueued_at: Instant, dequeued_at: Instant) -> u64 {
+        self.last_group_sync_interval
+            .lock()
+            .ok()
+            .and_then(|interval| *interval)
+            .map(|(started, completed)| {
+                interval_overlap_nanos(
+                    enqueued_at,
+                    dequeued_at,
+                    started,
+                    completed.unwrap_or(dequeued_at),
+                )
+            })
             .unwrap_or_default()
     }
 }
@@ -1573,6 +1734,8 @@ impl BrokerHost {
             wal,
             #[cfg(feature = "performance-harness")]
             None,
+            #[cfg(test)]
+            None,
         )
     }
 
@@ -1582,9 +1745,11 @@ impl BrokerHost {
         #[cfg(feature = "performance-harness")] qualification_stage_collector: Option<
             Arc<QualificationStageCollector>,
         >,
+        #[cfg(test)] test_group_sync: Option<Arc<TestGroupSync>>,
     ) -> Result<Self, IpcError> {
         let endpoint = LocalEndpoint::from_state_root(&config.state_root)?;
         let recovery = BrokerRecovery::from_wal(wal.recover_and_replay()?);
+        let durability_handle = wal.durability_handle()?;
         let listener = endpoint.bind()?;
         let (queue_sender, queue_receiver) = mpsc::sync_channel(config.queue_capacity);
         let health = Arc::new(HealthCounters {
@@ -1596,6 +1761,8 @@ impl BrokerHost {
             duplicates: AtomicU64::new(0),
             ack_timeouts: AtomicU64::new(0),
             queue_high_water: AtomicU64::new(0),
+            durability_requests: AtomicU64::new(0),
+            durability_requests_coalesced: AtomicU64::new(0),
             group_flushes: AtomicU64::new(0),
             durability_failures: AtomicU64::new(0),
         });
@@ -1610,13 +1777,34 @@ impl BrokerHost {
             qualification_stage_collector: qualification_stage_collector.clone(),
         });
         let stopping = Arc::new(AtomicBool::new(false));
+        let durability = Arc::new(DurabilityCoordinator::default());
         let mut handles = Vec::new();
         {
             let health = Arc::clone(&health);
             let core = Arc::clone(&core);
             let stopping = Arc::clone(&stopping);
+            let durability = Arc::clone(&durability);
             handles.push(thread::spawn(move || {
-                wal_worker_loop(&mut wal, queue_receiver, core, health, stopping)
+                wal_worker_loop(&mut wal, queue_receiver, core, health, stopping, durability)
+            }));
+        }
+        {
+            let health = Arc::clone(&health);
+            let stopping = Arc::clone(&stopping);
+            let durability = Arc::clone(&durability);
+            #[cfg(feature = "performance-harness")]
+            let qualification_stage_collector = qualification_stage_collector.clone();
+            handles.push(thread::spawn(move || {
+                durability_worker_loop(
+                    durability_handle,
+                    durability,
+                    health,
+                    stopping,
+                    #[cfg(feature = "performance-harness")]
+                    qualification_stage_collector,
+                    #[cfg(test)]
+                    test_group_sync,
+                )
             }));
         }
         {
@@ -1654,7 +1842,13 @@ impl BrokerHost {
         config.validate()?;
         let wal = Wal::open(&config.state_root, config.group_durability)?;
         let collector = Arc::new(QualificationStageCollector::new());
-        Self::start_with_wal_with_qualification_timing(config, wal, Some(collector))
+        Self::start_with_wal_with_qualification_timing(
+            config,
+            wal,
+            Some(collector),
+            #[cfg(test)]
+            None,
+        )
     }
 
     #[cfg(test)]
@@ -1663,9 +1857,14 @@ impl BrokerHost {
         sync: Arc<TestGroupSync>,
     ) -> Result<Self, IpcError> {
         config.validate()?;
-        let wal =
-            Wal::open(&config.state_root, config.group_durability)?.with_test_group_sync(sync);
-        Self::start_with_wal(config, wal)
+        let wal = Wal::open(&config.state_root, config.group_durability)?;
+        Self::start_with_wal_with_qualification_timing(
+            config,
+            wal,
+            #[cfg(feature = "performance-harness")]
+            None,
+            Some(sync),
+        )
     }
 
     pub fn endpoint(&self) -> &LocalEndpoint {
@@ -1694,13 +1893,14 @@ impl BrokerHost {
             .unwrap_or_default()
     }
 
-    pub fn stop(mut self) {
+    pub fn stop(mut self) -> BrokerHealth {
         self.stopping.store(true, Ordering::Release);
         for handle in self.handles.drain(..) {
             let _ = handle.join();
         }
         #[cfg(unix)]
         self.endpoint.remove_socket_if_owned();
+        self.health.snapshot()
     }
 
     pub fn wait_for_idle(&mut self, timeout: Duration) -> bool {
@@ -1738,10 +1938,8 @@ fn wal_worker_loop(
     core: Arc<BrokerCore>,
     health: Arc<HealthCounters>,
     stopping: Arc<AtomicBool>,
+    durability: Arc<DurabilityCoordinator>,
 ) {
-    let mut durability_failed = false;
-    #[cfg(feature = "performance-harness")]
-    let mut last_group_sync_interval = None;
     loop {
         #[cfg(feature = "performance-harness")]
         let worker_available_at = Instant::now();
@@ -1769,134 +1967,153 @@ fn wal_worker_loop(
                     );
                     QualificationRequestTiming::store(
                         &timing.queue_wait_group_sync_overlap_ns,
-                        last_group_sync_interval
-                            .map(|(started, completed)| {
-                                interval_overlap_nanos(
-                                    queued.enqueued_at,
-                                    dequeued_at,
-                                    started,
-                                    completed,
-                                )
+                        core.qualification_stage_collector
+                            .as_ref()
+                            .map(|collector| {
+                                collector.group_sync_overlap_ns(queued.enqueued_at, dequeued_at)
                             })
                             .unwrap_or_default(),
                     );
                 }
-                if durability_failed {
-                    health.rejected.fetch_add(1, Ordering::Relaxed);
-                    let _ = queued.acknowledgement.send(BrokerAcknowledgement::Rejected);
-                    continue;
-                }
-                #[cfg(feature = "performance-harness")]
-                let append_started = queued.timing.as_ref().map(|_| Instant::now());
-                match wal.append(&queued.frame) {
-                    Ok(()) => {
-                        #[cfg(feature = "performance-harness")]
-                        if let (Some(timing), Some(append_started)) =
-                            (&queued.timing, append_started)
-                        {
-                            QualificationRequestTiming::store(
-                                &timing.wal_append_ns,
-                                elapsed_nanos(append_started),
-                            );
-                        }
-                        health.accepted.fetch_add(1, Ordering::Relaxed);
-                        // The complete record is in the OS file buffer before
-                        // this send. The connection thread can therefore
-                        // release the producer while group durability proceeds
-                        // independently below.
-                        #[cfg(feature = "performance-harness")]
-                        let handoff_started = queued.timing.as_ref().map(|_| Instant::now());
-                        let _ = queued.acknowledgement.send(BrokerAcknowledgement::Accepted);
-                        #[cfg(feature = "performance-harness")]
-                        if let (Some(timing), Some(handoff_started)) =
-                            (&queued.timing, handoff_started)
-                        {
-                            QualificationRequestTiming::store(
-                                &timing.worker_acknowledgement_handoff_ns,
-                                elapsed_nanos(handoff_started),
-                            );
-                        }
-                        match worker_flush_if_due(
-                            wal,
-                            #[cfg(feature = "performance-harness")]
-                            core.qualification_stage_collector.as_deref(),
-                            #[cfg(feature = "performance-harness")]
-                            &mut last_group_sync_interval,
-                        ) {
-                            Ok(flush) if flush.grouped_records > 0 => {
-                                health.group_flushes.fetch_add(1, Ordering::Relaxed);
-                            }
-                            Ok(_) => {}
-                            Err(_) => {
-                                // An ACK never promises power-loss durability.
-                                // Stop accepting new records rather than
-                                // continuing after a failed governed flush.
-                                durability_failed = true;
-                                health.durability_failures.fetch_add(1, Ordering::Relaxed);
-                                stopping.store(true, Ordering::Release);
-                            }
-                        }
-                    }
-                    Err(_) => {
+                let appended = {
+                    let _failure_gate = durability
+                        .failure_gate
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if durability.failed.load(Ordering::Acquire) {
                         health.rejected.fetch_add(1, Ordering::Relaxed);
                         let _ = queued.acknowledgement.send(BrokerAcknowledgement::Rejected);
+                        false
+                    } else {
+                        #[cfg(feature = "performance-harness")]
+                        let append_started = queued.timing.as_ref().map(|_| Instant::now());
+                        match wal.append(&queued.frame) {
+                            Ok(()) => {
+                                #[cfg(feature = "performance-harness")]
+                                if let (Some(timing), Some(append_started)) =
+                                    (&queued.timing, append_started)
+                                {
+                                    QualificationRequestTiming::store(
+                                        &timing.wal_append_ns,
+                                        elapsed_nanos(append_started),
+                                    );
+                                }
+                                health.accepted.fetch_add(1, Ordering::Relaxed);
+                                // The complete record is in the OS file buffer
+                                // before this send. Physical group durability
+                                // has one separate owner and cannot delay this
+                                // or a subsequent append-worker dequeue.
+                                #[cfg(feature = "performance-harness")]
+                                let handoff_started =
+                                    queued.timing.as_ref().map(|_| Instant::now());
+                                let _ =
+                                    queued.acknowledgement.send(BrokerAcknowledgement::Accepted);
+                                #[cfg(feature = "performance-harness")]
+                                if let (Some(timing), Some(handoff_started)) =
+                                    (&queued.timing, handoff_started)
+                                {
+                                    QualificationRequestTiming::store(
+                                        &timing.worker_acknowledgement_handoff_ns,
+                                        elapsed_nanos(handoff_started),
+                                    );
+                                }
+                                true
+                            }
+                            Err(_) => {
+                                health.rejected.fetch_add(1, Ordering::Relaxed);
+                                let _ =
+                                    queued.acknowledgement.send(BrokerAcknowledgement::Rejected);
+                                false
+                            }
+                        }
                     }
+                };
+                if appended {
+                    schedule_wal_durability(wal, false, &durability, &health);
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                match worker_flush_if_due(
-                    wal,
-                    #[cfg(feature = "performance-harness")]
-                    core.qualification_stage_collector.as_deref(),
-                    #[cfg(feature = "performance-harness")]
-                    &mut last_group_sync_interval,
-                ) {
-                    Ok(flush) if flush.grouped_records > 0 => {
-                        health.group_flushes.fetch_add(1, Ordering::Relaxed);
-                    }
-                    Ok(_) => {}
-                    Err(_) => {
-                        durability_failed = true;
-                        health.durability_failures.fetch_add(1, Ordering::Relaxed);
-                        stopping.store(true, Ordering::Release);
-                    }
-                }
+                schedule_wal_durability(wal, false, &durability, &health);
                 if stopping.load(Ordering::Acquire)
                     && core.queue_depth.load(Ordering::Acquire) == 0
                     && core.active_connections.load(Ordering::Acquire) == 0
                 {
-                    let _ = wal.flush_group();
+                    schedule_wal_durability(wal, true, &durability, &health);
+                    let _ = durability.shutdown_and_wait(wal.append_generation());
                     break;
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let _ = wal.flush_group();
+                schedule_wal_durability(wal, true, &durability, &health);
+                let _ = durability.shutdown_and_wait(wal.append_generation());
                 break;
             }
         }
     }
 }
 
-fn worker_flush_if_due(
+fn schedule_wal_durability(
     wal: &mut Wal,
-    #[cfg(feature = "performance-harness")] collector: Option<&QualificationStageCollector>,
-    #[cfg(feature = "performance-harness")] last_group_sync_interval: &mut Option<(
-        Instant,
-        Instant,
-    )>,
-) -> Result<WalFlush, IpcError> {
-    #[cfg(feature = "performance-harness")]
-    let started = Instant::now();
-    let result = wal.flush_if_due();
-    #[cfg(feature = "performance-harness")]
-    if matches!(&result, Ok(flush) if flush.grouped_records > 0) || result.is_err() {
-        let completed = Instant::now();
-        if let Some(collector) = collector {
-            collector.record_group_sync(elapsed_nanos_between(started, completed));
-        }
-        *last_group_sync_interval = Some((started, completed));
+    force: bool,
+    durability: &DurabilityCoordinator,
+    health: &HealthCounters,
+) {
+    let Some(request) = wal.take_durability_request(force) else {
+        return;
+    };
+    health.durability_requests.fetch_add(1, Ordering::Relaxed);
+    if durability.request(request.through_generation) == DurabilityRequestStatus::Coalesced {
+        health
+            .durability_requests_coalesced
+            .fetch_add(1, Ordering::Relaxed);
     }
-    result
+}
+
+fn durability_worker_loop(
+    durability_handle: std::fs::File,
+    durability: Arc<DurabilityCoordinator>,
+    health: Arc<HealthCounters>,
+    stopping: Arc<AtomicBool>,
+    #[cfg(feature = "performance-harness")] qualification_stage_collector: Option<
+        Arc<QualificationStageCollector>,
+    >,
+    #[cfg(test)] test_group_sync: Option<Arc<TestGroupSync>>,
+) {
+    while let Some(through_generation) = durability.next_request() {
+        #[cfg(feature = "performance-harness")]
+        let sync_started = Instant::now();
+        #[cfg(feature = "performance-harness")]
+        if let Some(collector) = &qualification_stage_collector {
+            collector.start_group_sync(sync_started);
+        }
+        #[cfg(test)]
+        let before_sync = test_group_sync
+            .as_ref()
+            .map_or(Ok(()), |sync| sync.wait_before_sync());
+        #[cfg(not(test))]
+        let before_sync: Result<(), IpcError> = Ok(());
+        let result = before_sync.and_then(|()| durability_handle.sync_data().map_err(IpcError::Io));
+        #[cfg(feature = "performance-harness")]
+        if let Some(collector) = &qualification_stage_collector {
+            collector.record_group_sync(sync_started, Instant::now());
+        }
+        match result {
+            Ok(()) => {
+                #[cfg(test)]
+                if let Some(sync) = &test_group_sync {
+                    sync.mark_completed();
+                }
+                health.group_flushes.fetch_add(1, Ordering::Relaxed);
+                durability.complete(through_generation);
+            }
+            Err(_) => {
+                health.durability_failures.fetch_add(1, Ordering::Relaxed);
+                durability.publish_failure();
+                stopping.store(true, Ordering::Release);
+                break;
+            }
+        }
+    }
 }
 
 #[cfg(feature = "performance-harness")]
@@ -2261,24 +2478,41 @@ impl<'a> Cursor<'a> {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TestSyncOutcome {
+    Succeed,
+    Fail,
+}
+
+#[cfg(test)]
 struct TestGroupSync {
     entered: mpsc::Sender<()>,
-    release: Mutex<mpsc::Receiver<()>>,
-    completed: AtomicBool,
+    release: Mutex<mpsc::Receiver<TestSyncOutcome>>,
+    completed: AtomicU64,
 }
 
 #[cfg(test)]
 impl TestGroupSync {
-    fn wait_before_sync(&self) {
+    fn wait_before_sync(&self) -> Result<(), IpcError> {
         self.entered
             .send(())
-            .expect("slow group-flush test must observe the flush");
-        self.release
+            .map_err(|_| IpcError::Io(io::Error::other("test sync observer unavailable")))?;
+        match self
+            .release
             .lock()
-            .expect("slow group-flush release lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .recv()
-            .expect("slow group-flush test must release the flush");
-        self.completed.store(true, Ordering::Release);
+            .map_err(|_| IpcError::Io(io::Error::other("test sync permit unavailable")))?
+        {
+            TestSyncOutcome::Succeed => Ok(()),
+            TestSyncOutcome::Fail => Err(IpcError::Io(io::Error::other(
+                "injected durability failure",
+            ))),
+        }
+    }
+
+    fn mark_completed(&self) {
+        self.completed.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -2309,6 +2543,24 @@ mod tests {
                 duration_ms: 12,
             },
         }
+    }
+
+    fn controlled_group_sync() -> (
+        Arc<TestGroupSync>,
+        mpsc::Receiver<()>,
+        mpsc::Sender<TestSyncOutcome>,
+    ) {
+        let (entered_sender, entered_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        (
+            Arc::new(TestGroupSync {
+                entered: entered_sender,
+                release: Mutex::new(release_receiver),
+                completed: AtomicU64::new(0),
+            }),
+            entered_receiver,
+            release_sender,
+        )
     }
 
     #[test]
@@ -2469,18 +2721,71 @@ mod tests {
     }
 
     #[test]
-    fn slow_group_durability_never_blocks_producer_ack_and_shutdown_waits() {
+    fn default_group_thresholds_and_record_and_byte_triggers_are_exact() {
+        let defaults = GroupDurabilityPolicy::default();
+        assert_eq!(defaults.max_records, 64);
+        assert_eq!(defaults.max_bytes, 65_536);
+        assert_eq!(defaults.max_interval, Duration::from_millis(50));
+
+        let records_temp = tempfile::tempdir().unwrap();
+        let mut records = Wal::open(
+            records_temp.path(),
+            GroupDurabilityPolicy {
+                max_records: 64,
+                max_bytes: u64::MAX,
+                max_interval: Duration::from_secs(60),
+            },
+        )
+        .unwrap();
+        for _ in 0..63 {
+            records.append(&IpcFrame::Start(lifecycle())).unwrap();
+        }
+        assert!(records.take_durability_request(false).is_none());
+        records.append(&IpcFrame::Start(lifecycle())).unwrap();
+        let record_request = records.take_durability_request(false).unwrap();
+        assert_eq!(record_request.group.grouped_records, 64);
+
+        let bytes_temp = tempfile::tempdir().unwrap();
+        let mut bytes = Wal::open(
+            bytes_temp.path(),
+            GroupDurabilityPolicy {
+                max_records: u32::MAX,
+                max_bytes: 65_536,
+                max_interval: Duration::from_secs(60),
+            },
+        )
+        .unwrap();
+        let byte_request = loop {
+            bytes.append(&IpcFrame::Start(lifecycle())).unwrap();
+            if let Some(request) = bytes.take_durability_request(false) {
+                break request;
+            }
+        };
+        assert!(byte_request.group.grouped_bytes >= 65_536);
+        assert!(
+            byte_request.group.grouped_bytes
+                < 65_536 + u64::try_from(MAX_IPC_FRAME_BYTES + WAL_HEADER_BYTES).unwrap()
+        );
+    }
+
+    #[test]
+    fn cloned_durability_handle_syncs_the_same_appended_wal() {
         let temp = tempfile::tempdir().unwrap();
-        let (entered_sender, entered_receiver) = mpsc::channel();
-        let (release_sender, release_receiver) = mpsc::channel();
-        let sync = Arc::new(TestGroupSync {
-            entered: entered_sender,
-            release: Mutex::new(release_receiver),
-            completed: AtomicBool::new(false),
-        });
+        let mut wal = Wal::open(temp.path(), GroupDurabilityPolicy::default()).unwrap();
+        let durability_handle = wal.durability_handle().unwrap();
+        wal.append(&IpcFrame::Start(lifecycle())).unwrap();
+        durability_handle.sync_data().unwrap();
+        let recovery = wal.recover_and_replay().unwrap();
+        assert_eq!(recovery.frames, vec![IpcFrame::Start(lifecycle())]);
+    }
+
+    #[test]
+    fn async_group_sync_blocks_neither_current_ack_nor_subsequent_appends_and_coalesces() {
+        let temp = tempfile::tempdir().unwrap();
+        let (sync, entered_receiver, release_sender) = controlled_group_sync();
         let configuration = BrokerConfig {
             state_root: temp.path().to_path_buf(),
-            queue_capacity: 1,
+            queue_capacity: 2,
             max_connections: 1,
             ack_timeout: Duration::from_millis(100),
             idle_timeout: Duration::from_secs(1),
@@ -2492,51 +2797,134 @@ mod tests {
         };
         let host =
             BrokerHost::start_with_test_group_sync(configuration, Arc::clone(&sync)).unwrap();
-        let endpoint = host.endpoint().clone();
-        let (producer_sender, producer_receiver) = mpsc::channel();
-        let producer = thread::spawn(move || {
-            let mut client = IpcClient::connect(&endpoint, Duration::from_millis(100)).unwrap();
-            producer_sender
-                .send(client.send(&IpcFrame::Start(lifecycle())))
-                .unwrap();
-        });
-
-        // The group flush has entered its deliberate pause after append and
-        // ACK publication. This is a synchronization assertion, not a timing
-        // assertion against real filesystem latency.
+        let mut client = IpcClient::connect(host.endpoint(), Duration::from_millis(100)).unwrap();
+        for _ in 0..10 {
+            assert_eq!(
+                client.send(&IpcFrame::Start(lifecycle())).unwrap(),
+                BrokerAcknowledgement::Accepted
+            );
+        }
         entered_receiver
-            .recv_timeout(Duration::from_millis(100))
+            .recv_timeout(Duration::from_millis(500))
             .unwrap();
-        assert_eq!(
-            producer_receiver
-                .recv_timeout(Duration::from_millis(100))
-                .unwrap()
-                .unwrap(),
-            BrokerAcknowledgement::Accepted
-        );
-        producer.join().unwrap();
-        assert!(!sync.completed.load(Ordering::Acquire));
+        assert_eq!(sync.completed.load(Ordering::Acquire), 0);
+        drop(client);
 
         let (stopped_sender, stopped_receiver) = mpsc::channel();
         let stopper = thread::spawn(move || {
-            host.stop();
-            stopped_sender.send(()).unwrap();
+            stopped_sender.send(host.stop()).unwrap();
         });
         assert!(
             stopped_receiver
                 .recv_timeout(Duration::from_millis(20))
                 .is_err()
         );
-        release_sender.send(()).unwrap();
-        stopped_receiver
+        release_sender.send(TestSyncOutcome::Succeed).unwrap();
+        entered_receiver
+            .recv_timeout(Duration::from_millis(500))
+            .unwrap();
+        assert!(
+            stopped_receiver
+                .recv_timeout(Duration::from_millis(20))
+                .is_err()
+        );
+        release_sender.send(TestSyncOutcome::Succeed).unwrap();
+        let health = stopped_receiver
             .recv_timeout(Duration::from_millis(500))
             .unwrap();
         stopper.join().unwrap();
-        assert!(sync.completed.load(Ordering::Acquire));
+        assert_eq!(sync.completed.load(Ordering::Acquire), 2);
+        assert_eq!(health.durability_requests, 10);
+        assert_eq!(health.durability_requests_coalesced, 9);
+        assert_eq!(health.group_flushes, 2);
+        assert_eq!(health.durability_failures, 0);
 
         let mut wal = Wal::open(temp.path(), GroupDurabilityPolicy::default()).unwrap();
         let recovery = wal.recover_and_replay().unwrap();
-        assert_eq!(recovery.frames, vec![IpcFrame::Start(lifecycle())]);
+        assert_eq!(recovery.frames.len(), 10);
+    }
+
+    #[test]
+    fn low_traffic_time_trigger_schedules_sync_without_a_later_frame() {
+        let temp = tempfile::tempdir().unwrap();
+        let (sync, entered_receiver, release_sender) = controlled_group_sync();
+        let host = BrokerHost::start_with_test_group_sync(
+            BrokerConfig {
+                state_root: temp.path().to_path_buf(),
+                queue_capacity: 2,
+                max_connections: 1,
+                ack_timeout: Duration::from_millis(100),
+                idle_timeout: Duration::from_secs(1),
+                group_durability: GroupDurabilityPolicy {
+                    max_records: 64,
+                    max_bytes: 65_536,
+                    max_interval: Duration::from_millis(10),
+                },
+            },
+            Arc::clone(&sync),
+        )
+        .unwrap();
+        let mut client = IpcClient::connect(host.endpoint(), Duration::from_millis(100)).unwrap();
+        assert_eq!(
+            client.send(&IpcFrame::Start(lifecycle())).unwrap(),
+            BrokerAcknowledgement::Accepted
+        );
+        entered_receiver
+            .recv_timeout(Duration::from_millis(500))
+            .unwrap();
+        release_sender.send(TestSyncOutcome::Succeed).unwrap();
+        drop(client);
+        let health = host.stop();
+        assert_eq!(sync.completed.load(Ordering::Acquire), 1);
+        assert_eq!(health.durability_requests, 1);
+        assert_eq!(health.group_flushes, 1);
+    }
+
+    #[test]
+    fn asynchronous_durability_failure_fails_closed_for_later_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let (sync, entered_receiver, release_sender) = controlled_group_sync();
+        let host = BrokerHost::start_with_test_group_sync(
+            BrokerConfig {
+                state_root: temp.path().to_path_buf(),
+                queue_capacity: 2,
+                max_connections: 1,
+                ack_timeout: Duration::from_millis(100),
+                idle_timeout: Duration::from_secs(1),
+                group_durability: GroupDurabilityPolicy {
+                    max_records: 1,
+                    max_bytes: 4_096,
+                    max_interval: Duration::from_secs(1),
+                },
+            },
+            sync,
+        )
+        .unwrap();
+        let mut client = IpcClient::connect(host.endpoint(), Duration::from_millis(100)).unwrap();
+        assert_eq!(
+            client.send(&IpcFrame::Start(lifecycle())).unwrap(),
+            BrokerAcknowledgement::Accepted
+        );
+        entered_receiver
+            .recv_timeout(Duration::from_millis(500))
+            .unwrap();
+        release_sender.send(TestSyncOutcome::Fail).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while host.health().durability_failures == 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(host.health().durability_failures, 1);
+        assert!(!matches!(
+            client.send(&IpcFrame::Start(lifecycle())),
+            Ok(BrokerAcknowledgement::Accepted)
+        ));
+        drop(client);
+        let health = host.stop();
+        assert_eq!(health.accepted, 1);
+        assert_eq!(health.durability_failures, 1);
+
+        let mut wal = Wal::open(temp.path(), GroupDurabilityPolicy::default()).unwrap();
+        assert_eq!(wal.recover_and_replay().unwrap().frames.len(), 1);
     }
 
     #[test]
@@ -2592,6 +2980,8 @@ mod tests {
             duplicates: AtomicU64::new(0),
             ack_timeouts: AtomicU64::new(0),
             queue_high_water: AtomicU64::new(0),
+            durability_requests: AtomicU64::new(0),
+            durability_requests_coalesced: AtomicU64::new(0),
             group_flushes: AtomicU64::new(0),
             durability_failures: AtomicU64::new(0),
         });
