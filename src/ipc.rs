@@ -662,17 +662,17 @@ impl Wal {
             return Err(IpcError::WalTooLarge);
         }
         let checksum = checksum(&body);
-        self.file.write_all(&WAL_MAGIC).map_err(IpcError::Io)?;
-        self.file
-            .write_all(&[WAL_VERSION, 0])
-            .map_err(IpcError::Io)?;
-        self.file
-            .write_all(&body_len.to_le_bytes())
-            .map_err(IpcError::Io)?;
-        self.file
-            .write_all(&checksum.to_le_bytes())
-            .map_err(IpcError::Io)?;
-        self.file.write_all(&body).map_err(IpcError::Io)?;
+        let mut record =
+            Vec::with_capacity(usize::try_from(record_len).map_err(|_| IpcError::Oversized)?);
+        record.extend_from_slice(&WAL_MAGIC);
+        record.extend_from_slice(&[WAL_VERSION, 0]);
+        record.extend_from_slice(&body_len.to_le_bytes());
+        record.extend_from_slice(&checksum.to_le_bytes());
+        record.extend_from_slice(&body);
+        debug_assert_eq!(record.len() as u64, record_len);
+        // One serialized OS-buffer append retains complete-record framing and
+        // minimizes file-operation collisions with the durability worker.
+        self.file.write_all(&record).map_err(IpcError::Io)?;
         self.bytes += record_len;
         self.pending_records += 1;
         self.pending_bytes += record_len;
