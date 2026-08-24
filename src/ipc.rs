@@ -1246,10 +1246,10 @@ impl IpcClient {
     pub fn connect(endpoint: &LocalEndpoint, timeout: Duration) -> Result<Self, IpcError> {
         #[cfg(unix)]
         {
-            return Ok(Self {
+            Ok(Self {
                 stream: endpoint.connect_stream(timeout)?,
                 timeout,
-            });
+            })
         }
         #[cfg(windows)]
         {
