@@ -36,6 +36,8 @@ tempfile = "3"
 chrono-tz = "0.10"
 
 [target.'cfg(windows)'.dependencies]
+interprocess = { version = "2.4.3", features = ["tokio"] }
+tokio = { version = "1.36", features = ["io-util", "net", "rt", "time"] }
 win32job = "2.0.3"
 widestring = "1.2.1"
 

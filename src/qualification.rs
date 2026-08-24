@@ -223,6 +223,7 @@ pub struct StageTimingReceipt {
     pub queue_wait_sync_correlation: Option<QueueWaitSyncCorrelation>,
     pub wal_append: Option<LatencyStatistics>,
     pub worker_acknowledgement_handoff: Option<LatencyStatistics>,
+    pub connection_resume_after_ack: Option<LatencyStatistics>,
     pub broker_ack_write: Option<LatencyStatistics>,
     pub client_ack_read: Option<LatencyStatistics>,
     pub measurement_error_class: Option<MeasurementErrorClass>,
@@ -532,6 +533,11 @@ pub fn run_stage_timing_diagnostic(
                     .iter()
                     .map(|value| value.worker_acknowledgement_handoff_ns),
             ),
+            connection_resume_after_ack: stage_statistics(
+                broker
+                    .iter()
+                    .map(|value| value.connection_resume_after_ack_ns),
+            ),
             broker_ack_write: stage_statistics(
                 broker.iter().map(|value| value.broker_ack_write_ns),
             ),
@@ -569,6 +575,7 @@ pub fn run_stage_timing_diagnostic(
             queue_wait_sync_correlation: None,
             wal_append: None,
             worker_acknowledgement_handoff: None,
+            connection_resume_after_ack: None,
             broker_ack_write: None,
             client_ack_read: None,
             measurement_error_class: Some(error),

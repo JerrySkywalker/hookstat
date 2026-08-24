@@ -56,6 +56,13 @@ no path-bearing protocol field and cannot choose a WAL or endpoint target.
 | Windows | `interprocess` generic namespaced local socket, implemented as a Named Pipe | owner-rights protected DACL (`GR`/`GW` only); no TCP address or network listener |
 | Unix | filesystem Unix Domain Socket under `<state-root>/ipc` | root and `ipc` directory reject symlink/non-directory/unsafe permission objects; socket mode is `0600` |
 
+The Windows broker keeps the synchronous `interprocess` listener that creates
+the owner-rights protected pipe. Windows producers connect to that same pipe
+through the adapter's Tokio stream and a client-owned current-thread runtime,
+so overlapped kernel waits enforce the existing bounded read/write deadline
+without nonblocking polling. This is not a daemon, service, alternate protocol,
+or evidence path. Unix producers retain the synchronous bounded stream.
+
 The Unix endpoint is not reclaimed through the transport library's unsafe
 automatic overwrite mode. G35 validates the secure state directory, probes a
 candidate stale socket, and removes only a dead socket object in that directory.

@@ -1,0 +1,72 @@
+{
+  "schema_version": 3,
+  "run_kind": "hs_g35_collector_model_ab_diagnostic",
+  "acceptance_evidence": false,
+  "legacy_capture_order": "ack_completion_then_shared_samples_mutex_then_before_elapsed",
+  "corrected_capture_order": "ack_completion_then_before_elapsed_then_per_thread_collection",
+  "client_start_barrier": true,
+  "observations": [
+    {
+      "collector_model": "legacy_shared_mutex",
+      "series": "single_client_persistent_release",
+      "clients": 1,
+      "samples_per_client": 1000,
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0492,
+        "p95_ms": 0.1306,
+        "p99_ms": 0.2152,
+        "max_ms": 0.7033
+      },
+      "frozen_budget_passed": true,
+      "measurement_error_class": null
+    },
+    {
+      "collector_model": "per_thread_local_buffers",
+      "series": "single_client_persistent_release",
+      "clients": 1,
+      "samples_per_client": 1000,
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0394,
+        "p95_ms": 0.1229,
+        "p99_ms": 0.2526,
+        "max_ms": 0.579
+      },
+      "frozen_budget_passed": true,
+      "measurement_error_class": null
+    },
+    {
+      "collector_model": "legacy_shared_mutex",
+      "series": "client16_persistent_release",
+      "clients": 16,
+      "samples_per_client": 100,
+      "latency": {
+        "samples": 1600,
+        "p50_ms": 0.1224,
+        "p95_ms": 0.5008,
+        "p99_ms": 0.7666,
+        "max_ms": 1.0972
+      },
+      "frozen_budget_passed": true,
+      "measurement_error_class": null
+    },
+    {
+      "collector_model": "per_thread_local_buffers",
+      "series": "client16_persistent_release",
+      "clients": 16,
+      "samples_per_client": 100,
+      "latency": {
+        "samples": 1600,
+        "p50_ms": 0.1058,
+        "p95_ms": 0.3354,
+        "p99_ms": 0.6186,
+        "max_ms": 1.0714
+      },
+      "frozen_budget_passed": true,
+      "measurement_error_class": null
+    }
+  ],
+  "owner_live_codex_config_mutated": false,
+  "raw_private_content_captured": false
+}

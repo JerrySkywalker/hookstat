@@ -12,10 +12,14 @@ use crate::evidence::{
     RuntimeNeutralEvidenceCore, SourceCoverage, SourceScope,
 };
 use interprocess::ConnectWaitMode;
+#[cfg(unix)]
+use interprocess::local_socket::ConnectOptions;
 #[cfg(windows)]
 use interprocess::local_socket::GenericNamespaced;
+#[cfg(windows)]
+use interprocess::local_socket::tokio::Stream as TokioStream;
 use interprocess::local_socket::{
-    ConnectOptions, Listener, ListenerNonblockingMode, ListenerOptions, Stream, prelude::*,
+    Listener, ListenerNonblockingMode, ListenerOptions, Stream, prelude::*,
 };
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -37,10 +41,6 @@ pub const MAX_WAL_BYTES: u64 = 64 * 1024 * 1024;
 
 const FRAME_HEADER_BYTES: usize = 10;
 const WAL_HEADER_BYTES: usize = 12;
-// Only the client ACK read uses this bounded eager phase. Broker connection
-// reads retain the original yield cadence so 16 idle readers do not compete
-// with the clients that must receive an ACK before producing the next frame.
-const WINDOWS_EAGER_READ_SPINS: u32 = 64;
 
 /// A bounded runtime-neutral lifecycle envelope. Every string is an opaque
 /// identifier, not a path, command, payload, or stream.
@@ -424,6 +424,54 @@ fn write_frame_bounded(
 ) -> Result<(), IpcError> {
     let encoded = frame.encode()?;
     write_all_bounded(input, &encoded, Instant::now() + timeout)
+}
+
+#[cfg(windows)]
+async fn read_frame_bounded_tokio(
+    input: &mut TokioStream,
+    timeout: Duration,
+) -> Result<IpcFrame, IpcError> {
+    use tokio::io::AsyncReadExt;
+
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut header = [0_u8; FRAME_HEADER_BYTES];
+    tokio::time::timeout_at(deadline, input.read_exact(&mut header))
+        .await
+        .map_err(|_| bounded_tokio_timeout("bounded IPC read"))?
+        .map_err(IpcError::Io)?;
+    let length = u16::from_le_bytes([header[8], header[9]]) as usize;
+    if length > MAX_IPC_FRAME_BYTES - FRAME_HEADER_BYTES {
+        return Err(IpcError::Oversized);
+    }
+    let mut encoded = Vec::with_capacity(FRAME_HEADER_BYTES + length);
+    encoded.extend_from_slice(&header);
+    let mut payload = vec![0_u8; length];
+    tokio::time::timeout_at(deadline, input.read_exact(&mut payload))
+        .await
+        .map_err(|_| bounded_tokio_timeout("bounded IPC read"))?
+        .map_err(IpcError::Io)?;
+    encoded.extend_from_slice(&payload);
+    IpcFrame::decode(&encoded)
+}
+
+#[cfg(windows)]
+async fn write_frame_bounded_tokio(
+    input: &mut TokioStream,
+    frame: &IpcFrame,
+    timeout: Duration,
+) -> Result<(), IpcError> {
+    use tokio::io::AsyncWriteExt;
+
+    let encoded = frame.encode()?;
+    tokio::time::timeout(timeout, input.write_all(&encoded))
+        .await
+        .map_err(|_| bounded_tokio_timeout("bounded IPC write"))?
+        .map_err(IpcError::Io)
+}
+
+#[cfg(windows)]
+fn bounded_tokio_timeout(operation: &'static str) -> IpcError {
+    IpcError::Io(io::Error::new(io::ErrorKind::TimedOut, operation))
 }
 
 fn read_exact_bounded(
@@ -1043,6 +1091,7 @@ impl LocalEndpoint {
         Ok(canonical)
     }
 
+    #[cfg(unix)]
     fn connect_stream(&self, timeout: Duration) -> Result<Stream, IpcError> {
         #[cfg(unix)]
         let name = {
@@ -1063,6 +1112,27 @@ impl LocalEndpoint {
             .map_err(IpcError::Io)?;
         stream.set_nonblocking(true).map_err(IpcError::Io)?;
         Ok(stream)
+    }
+
+    #[cfg(windows)]
+    async fn connect_tokio_stream(&self, timeout: Duration) -> Result<TokioStream, IpcError> {
+        use interprocess::os::windows::named_pipe::{
+            local_socket::tokio::Stream as WindowsTokioStream, pipe_mode::Bytes,
+            tokio::DuplexPipeStream,
+        };
+
+        // The generic Tokio connector currently dispatches through an
+        // unbounded named-pipe wait. Cancelling an outer timeout leaves that
+        // blocking helper alive, and it can later consume a listener instance.
+        // Bound the connector itself, then restore the local-socket wrapper.
+        let path = format!(r"\\.\pipe\{}", self.named_pipe_name());
+        let stream = DuplexPipeStream::<Bytes>::connect_by_path_with_wait_mode(
+            path,
+            ConnectWaitMode::Timeout(timeout),
+        )
+        .await
+        .map_err(IpcError::Io)?;
+        Ok(TokioStream::NamedPipe(WindowsTokioStream::from(stream)))
     }
 
     fn bind(&self) -> Result<Listener, IpcError> {
@@ -1144,7 +1214,12 @@ fn owner_only_pipe_security_descriptor()
 /// A connected generic producer. G36 may supply a cooperative producer or a
 /// tiny shim, but neither is implemented here.
 pub struct IpcClient {
+    #[cfg(unix)]
     stream: Stream,
+    #[cfg(windows)]
+    stream: TokioStream,
+    #[cfg(windows)]
+    runtime: tokio::runtime::Runtime,
     timeout: Duration,
 }
 
@@ -1169,18 +1244,48 @@ pub(crate) struct QualificationClientStageSample {
 
 impl IpcClient {
     pub fn connect(endpoint: &LocalEndpoint, timeout: Duration) -> Result<Self, IpcError> {
-        Ok(Self {
-            stream: endpoint.connect_stream(timeout)?,
-            timeout,
-        })
+        #[cfg(unix)]
+        {
+            return Ok(Self {
+                stream: endpoint.connect_stream(timeout)?,
+                timeout,
+            });
+        }
+        #[cfg(windows)]
+        {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .enable_time()
+                .build()
+                .map_err(IpcError::Io)?;
+            let stream = runtime.block_on(endpoint.connect_tokio_stream(timeout))?;
+            Ok(Self {
+                stream,
+                runtime,
+                timeout,
+            })
+        }
     }
 
     pub fn send(&mut self, frame: &IpcFrame) -> Result<BrokerAcknowledgement, IpcError> {
         if !frame.is_lifecycle() {
             return Err(IpcError::Invalid("producer_frame_type"));
         }
+        #[cfg(unix)]
         write_frame_bounded(&mut self.stream, frame, self.timeout)?;
-        match read_frame_bounded(&mut self.stream, self.timeout, WINDOWS_EAGER_READ_SPINS)? {
+        #[cfg(windows)]
+        self.runtime.block_on(write_frame_bounded_tokio(
+            &mut self.stream,
+            frame,
+            self.timeout,
+        ))?;
+        #[cfg(unix)]
+        let acknowledgement = read_frame_bounded(&mut self.stream, self.timeout, 0)?;
+        #[cfg(windows)]
+        let acknowledgement = self
+            .runtime
+            .block_on(read_frame_bounded_tokio(&mut self.stream, self.timeout))?;
+        match acknowledgement {
             IpcFrame::Ack(value) => Ok(value),
             _ => Err(IpcError::Invalid("acknowledgement")),
         }
@@ -1196,11 +1301,26 @@ impl IpcClient {
                 "producer_frame_type",
             )));
         }
+        #[cfg(unix)]
         write_frame_bounded(&mut self.stream, frame, self.timeout)
             .map_err(QualificationSendFailure::Write)?;
-        match read_frame_bounded(&mut self.stream, self.timeout, WINDOWS_EAGER_READ_SPINS)
-            .map_err(QualificationSendFailure::Read)?
-        {
+        #[cfg(windows)]
+        self.runtime
+            .block_on(write_frame_bounded_tokio(
+                &mut self.stream,
+                frame,
+                self.timeout,
+            ))
+            .map_err(QualificationSendFailure::Write)?;
+        #[cfg(unix)]
+        let acknowledgement = read_frame_bounded(&mut self.stream, self.timeout, 0)
+            .map_err(QualificationSendFailure::Read)?;
+        #[cfg(windows)]
+        let acknowledgement = self
+            .runtime
+            .block_on(read_frame_bounded_tokio(&mut self.stream, self.timeout))
+            .map_err(QualificationSendFailure::Read)?;
+        match acknowledgement {
             IpcFrame::Ack(value) => Ok(value),
             _ => Err(QualificationSendFailure::UnexpectedAcknowledgement),
         }
@@ -1218,17 +1338,31 @@ impl IpcClient {
             )));
         }
         let write_started = Instant::now();
+        #[cfg(unix)]
         write_frame_bounded(&mut self.stream, frame, self.timeout)
+            .map_err(QualificationSendFailure::Write)?;
+        #[cfg(windows)]
+        self.runtime
+            .block_on(write_frame_bounded_tokio(
+                &mut self.stream,
+                frame,
+                self.timeout,
+            ))
             .map_err(QualificationSendFailure::Write)?;
         let client_write_ns = elapsed_nanos(write_started);
         let read_started = Instant::now();
-        let acknowledgement =
-            match read_frame_bounded(&mut self.stream, self.timeout, WINDOWS_EAGER_READ_SPINS)
-                .map_err(QualificationSendFailure::Read)?
-            {
-                IpcFrame::Ack(value) => value,
-                _ => return Err(QualificationSendFailure::UnexpectedAcknowledgement),
-            };
+        #[cfg(unix)]
+        let acknowledgement = read_frame_bounded(&mut self.stream, self.timeout, 0)
+            .map_err(QualificationSendFailure::Read)?;
+        #[cfg(windows)]
+        let acknowledgement = self
+            .runtime
+            .block_on(read_frame_bounded_tokio(&mut self.stream, self.timeout))
+            .map_err(QualificationSendFailure::Read)?;
+        let acknowledgement = match acknowledgement {
+            IpcFrame::Ack(value) => value,
+            _ => return Err(QualificationSendFailure::UnexpectedAcknowledgement),
+        };
         Ok((
             acknowledgement,
             QualificationClientStageSample {
@@ -1472,6 +1606,7 @@ pub(crate) struct QualificationBrokerStageSample {
     pub worker_dequeue_handoff_ns: u64,
     pub wal_append_ns: u64,
     pub worker_acknowledgement_handoff_ns: u64,
+    pub connection_resume_after_ack_ns: u64,
     pub broker_ack_write_ns: u64,
 }
 
@@ -1546,6 +1681,7 @@ impl QualificationStageCollector {
 
 #[cfg(feature = "performance-harness")]
 struct QualificationRequestTiming {
+    origin: Instant,
     broker_read_decode_ns: AtomicU64,
     activity_bookkeeping_ns: AtomicU64,
     acknowledgement_channel_allocation_ns: AtomicU64,
@@ -1556,6 +1692,8 @@ struct QualificationRequestTiming {
     worker_dequeue_handoff_ns: AtomicU64,
     wal_append_ns: AtomicU64,
     worker_acknowledgement_handoff_ns: AtomicU64,
+    worker_acknowledgement_ready_ns: AtomicU64,
+    connection_resume_after_ack_ns: AtomicU64,
     broker_ack_write_ns: AtomicU64,
 }
 
@@ -1563,6 +1701,7 @@ struct QualificationRequestTiming {
 impl QualificationRequestTiming {
     fn new() -> Self {
         Self {
+            origin: Instant::now(),
             broker_read_decode_ns: AtomicU64::new(0),
             activity_bookkeeping_ns: AtomicU64::new(0),
             acknowledgement_channel_allocation_ns: AtomicU64::new(0),
@@ -1573,6 +1712,8 @@ impl QualificationRequestTiming {
             worker_dequeue_handoff_ns: AtomicU64::new(0),
             wal_append_ns: AtomicU64::new(0),
             worker_acknowledgement_handoff_ns: AtomicU64::new(0),
+            worker_acknowledgement_ready_ns: AtomicU64::new(0),
+            connection_resume_after_ack_ns: AtomicU64::new(0),
             broker_ack_write_ns: AtomicU64::new(0),
         }
     }
@@ -1598,6 +1739,9 @@ impl QualificationRequestTiming {
             wal_append_ns: self.wal_append_ns.load(Ordering::Acquire),
             worker_acknowledgement_handoff_ns: self
                 .worker_acknowledgement_handoff_ns
+                .load(Ordering::Acquire),
+            connection_resume_after_ack_ns: self
+                .connection_resume_after_ack_ns
                 .load(Ordering::Acquire),
             broker_ack_write_ns: self.broker_ack_write_ns.load(Ordering::Acquire),
         }
@@ -1758,7 +1902,18 @@ impl BrokerCore {
             }
         }
         match receiver.recv_timeout(self.ack_timeout) {
-            Ok(value) => value,
+            Ok(value) => {
+                if let Some(timing) = &timing {
+                    let ready = timing
+                        .worker_acknowledgement_ready_ns
+                        .load(Ordering::Acquire);
+                    QualificationRequestTiming::store(
+                        &timing.connection_resume_after_ack_ns,
+                        elapsed_nanos(timing.origin).saturating_sub(ready),
+                    );
+                }
+                value
+            }
             Err(_) => {
                 self.health.ack_timeouts.fetch_add(1, Ordering::Relaxed);
                 BrokerAcknowledgement::Busy
@@ -2076,6 +2231,13 @@ fn wal_worker_loop(
                                 #[cfg(feature = "performance-harness")]
                                 let handoff_started =
                                     queued.timing.as_ref().map(|_| Instant::now());
+                                #[cfg(feature = "performance-harness")]
+                                if let Some(timing) = &queued.timing {
+                                    QualificationRequestTiming::store(
+                                        &timing.worker_acknowledgement_ready_ns,
+                                        elapsed_nanos(timing.origin),
+                                    );
+                                }
                                 let _ =
                                     queued.acknowledgement.send(BrokerAcknowledgement::Accepted);
                                 #[cfg(feature = "performance-harness")]
@@ -2412,6 +2574,16 @@ impl BrokerStartup {
             }
             if let Some(_lease) = StartupLease::try_acquire(&self.endpoint, self.stale_lease_after)?
             {
+                // A follower can miss a healthy Windows pipe while every
+                // current instance is busy, then acquire the lease just after
+                // the original starter releases it. Recheck while elected so
+                // a transiently busy endpoint cannot trigger a second broker.
+                // A genuinely absent pipe returns immediately; the wait is
+                // bounded only for an existing busy endpoint.
+                let recheck_timeout = self.timeout.min(Duration::from_millis(25));
+                if let Ok(client) = IpcClient::connect(&self.endpoint, recheck_timeout) {
+                    return Ok(client);
+                }
                 start()?;
                 // The elected starter retains its lease until the new endpoint
                 // is actually connectable. Without this, a just-started pipe
@@ -2457,8 +2629,28 @@ impl StartupLease {
             .open(&path)
         {
             Ok(_) => Ok(Some(Self { path })),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                let metadata = std::fs::symlink_metadata(&path).map_err(IpcError::Io)?;
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::AlreadyExists | io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                let metadata = match std::fs::symlink_metadata(&path) {
+                    Ok(metadata) => metadata,
+                    Err(metadata_error)
+                        if matches!(
+                            metadata_error.kind(),
+                            io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                        ) =>
+                    {
+                        // The current lease can disappear between create-new
+                        // and inspection. Windows can also report a live lease
+                        // as access denied. Neither state grants ownership;
+                        // the caller retries under its startup deadline.
+                        return Ok(None);
+                    }
+                    Err(metadata_error) => return Err(IpcError::Io(metadata_error)),
+                };
                 if metadata.file_type().is_symlink() || !metadata.is_file() {
                     return Err(IpcError::UnsafeStateObject);
                 }
@@ -2468,7 +2660,19 @@ impl StartupLease {
                     .and_then(|modified| modified.elapsed().ok())
                     .is_some_and(|elapsed| elapsed >= stale_after)
                 {
-                    std::fs::remove_file(&path).map_err(IpcError::Io)?;
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => {}
+                        Err(remove_error)
+                            if matches!(
+                                remove_error.kind(),
+                                io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                            ) =>
+                        {
+                            // Cleanup lost a race or the lease is still in
+                            // transition; ownership remains ungranted.
+                        }
+                        Err(remove_error) => return Err(IpcError::Io(remove_error)),
+                    }
                 }
                 Ok(None)
             }
@@ -2644,6 +2848,40 @@ mod tests {
         assert!(windows_should_yield_after_empty_read(72, 64));
         assert!(windows_should_yield_after_empty_read(80, 64));
         assert!(windows_should_yield_after_empty_read(8, 0));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_overlapped_client_read_keeps_the_bounded_ack_timeout() {
+        let root = tempfile::tempdir().unwrap();
+        let endpoint = LocalEndpoint::from_state_root(root.path()).unwrap();
+        let listener = endpoint.bind().unwrap();
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok(stream) => break stream,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "client did not connect");
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("listener failed: {error}"),
+                }
+            };
+            stream.set_nonblocking(true).unwrap();
+            read_frame_bounded(&mut stream, Duration::from_millis(100), 0).unwrap();
+            thread::sleep(Duration::from_millis(30));
+        });
+
+        let mut client = IpcClient::connect(&endpoint, Duration::from_millis(5)).unwrap();
+        let started = Instant::now();
+        let error = client.send(&IpcFrame::Start(lifecycle())).unwrap_err();
+        assert!(matches!(
+            error,
+            IpcError::Io(ref value) if value.kind() == io::ErrorKind::TimedOut
+        ));
+        assert!(started.elapsed() < Duration::from_millis(30));
+        server.join().unwrap();
     }
 
     #[test]
