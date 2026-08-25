@@ -1,8 +1,13 @@
 //! G36 cooperative producer proof against the actual G35 broker/WAL.
 
-use hookstat::ipc::{
-    BrokerConfig, BrokerHost, Completion, CooperativeProducer, ExitClassification, LifecycleFrame,
-    ObservationDisposition, TerminalOutcome,
+#[allow(dead_code)]
+#[path = "../src/ipc_client.rs"]
+mod ipc_client;
+
+use hookstat::ipc::{BrokerConfig, BrokerHost};
+use ipc_client::{
+    Completion, CooperativeProducer, ExitClassification, LifecycleFrame, ObservationDisposition,
+    TerminalOutcome,
 };
 use std::time::Duration;
 

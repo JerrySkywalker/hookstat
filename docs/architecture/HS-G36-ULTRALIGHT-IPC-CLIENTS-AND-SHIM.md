@@ -2,20 +2,20 @@
 
 ## Boundary
 
-`crates/hookstat-ipc-client` is the single source of the G35 binary IPC v1
-wire definition. The application broker imports and re-exports its types;
-the cooperative producer and `hookstat-hook` use the same crate directly.
-There is no second frame parser, JSON receipt path, SQLite access, analytics,
-report, workbench, localization, Ratatui, or Crossterm dependency on either
-producer path.
+The package-internal `src/ipc_client.rs` module is the single source of the
+G35 binary IPC v1 wire definition. `src/ipc.rs` owns only the broker/WAL and
+imports that internal module; both the cooperative producer and
+`hookstat-hook` compile the same internal source directly. There is no second
+frame parser, JSON receipt path, SQLite access, analytics, report, workbench,
+localization, Ratatui, or Crossterm dependency on either producer path.
 
 ```text
 cooperative Hook / hookstat-hook
              |
-             +-- hookstat-ipc-client (bounded binary START / COMPLETE)
+             +-- src/ipc_client.rs (bounded binary START / COMPLETE)
                                       |
                                       v
-                         G35 local broker and append WAL
+                         src/ipc.rs G35 local broker and append WAL
 ```
 
 The only evidence transport remains `EvidenceTransport::Ipc`.
@@ -120,10 +120,12 @@ ordinary CLI, `hookstat-ipc-broker`, and `hookstat-hook`, so an ordinary
 `cargo install hookstat` supplies every HookStat runtime executable without a
 second hidden install step. The shared protocol/client and shim are internal
 source modules in that package; the shim binary compiles those modules directly
-and does not initialize the product library. This preserves one binary protocol
-source while avoiding a new public IPC-client crate or a public API commitment
-to external cooperative consumers. The controlled TabBeacon proof remains a
-local, unmerged consumer proof and is not a v0.3.1 publication requirement.
+and does not initialize the product library. In particular, cooperative-
+producer policy and observation types remain package-internal: HookStat does
+not publish a new IPC-client API commitment to external cooperative consumers.
+This preserves one binary protocol source while avoiding a new public
+IPC-client crate. The controlled TabBeacon proof remains a local, unmerged
+consumer proof and is not a v0.3.1 publication requirement.
 
 ## Performance status
 

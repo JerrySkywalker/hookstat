@@ -22,9 +22,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub use crate::ipc_client::{
-    BrokerAcknowledgement, BrokerStartup, Completion, CooperativeProducer, ExitClassification,
-    IpcClient, IpcFrame, LifecycleFrame, LocalEndpoint, ObservationDisposition, ProducerPolicy,
-    TerminalOutcome,
+    BrokerAcknowledgement, BrokerStartup, Completion, ExitClassification, IpcClient, IpcFrame,
+    LifecycleFrame, LocalEndpoint, TerminalOutcome,
 };
 pub use crate::ipc_client::{
     IPC_MAGIC, IPC_PROTOCOL_VERSION, IpcError, MAX_IPC_FRAME_BYTES, MAX_IPC_REFERENCE_BYTES,
