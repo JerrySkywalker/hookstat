@@ -340,7 +340,14 @@ impl CapsuleStore {
         if path.parent() != Some(self.root.as_path()) {
             return Err(CapsuleError::Path);
         }
-        fs::write(path, capsule.seal(key)?).map_err(|_| CapsuleError::Io)
+        fs::write(&path, capsule.seal(key)?).map_err(|_| CapsuleError::Io)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .map_err(|_| CapsuleError::Io)?;
+        }
+        Ok(())
     }
 }
 
@@ -1139,6 +1146,11 @@ mod tests {
             .write_for_test(Path::new(&name), &capsule(), &key)
             .unwrap();
         let path = root.join(&name);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o077, 0);
+        }
         let mut bytes = fs::read(&path).unwrap();
         let final_byte = bytes.len() - 1;
         bytes[final_byte] ^= 1;
