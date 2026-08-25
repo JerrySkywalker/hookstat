@@ -56,7 +56,7 @@ path = '$proofTomlPath'
     & rustup run $RustToolchain cargo test --manifest-path (Join-Path $tabbeacon 'Cargo.toml') --test g36_hookstat_cooperative
     if ($LASTEXITCODE -ne 0) { throw 'current-source TabBeacon cooperative proof failed' }
 
-    $tree = @(& rustup run $RustToolchain cargo tree --manifest-path (Join-Path $tabbeacon 'Cargo.toml') --package hookstat-ipc-client-proof --target all --edges normal --prefix none)
+    $tree = @(& rustup run $RustToolchain cargo tree --manifest-path $proofManifest --locked --target all --edges normal --prefix none)
     if ($LASTEXITCODE -ne 0) { throw 'proof-adapter dependency audit failed' }
     $forbidden = @($tree | Where-Object { $_ -match '^(ratatui|crossterm|rusqlite|hookstat v)' })
     if ($forbidden.Count -ne 0) {
