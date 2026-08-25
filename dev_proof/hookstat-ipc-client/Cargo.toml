@@ -25,6 +25,7 @@ nix = { version = "0.29.0", features = ["socket"] }
 
 [lints.rust]
 unsafe_code = "forbid"
+dead_code = "allow"
 
 [lints.clippy]
 all = "warn"

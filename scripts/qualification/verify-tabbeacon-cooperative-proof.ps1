@@ -56,7 +56,7 @@ path = '$proofTomlPath'
     & rustup run $RustToolchain cargo test --manifest-path (Join-Path $tabbeacon 'Cargo.toml') --test g36_hookstat_cooperative
     if ($LASTEXITCODE -ne 0) { throw 'current-source TabBeacon cooperative proof failed' }
 
-    $tree = @(& rustup run $RustToolchain cargo tree --manifest-path (Join-Path $tabbeacon 'Cargo.toml') --package hookstat-ipc-client-proof --edges normal --prefix none)
+    $tree = @(& rustup run $RustToolchain cargo tree --manifest-path (Join-Path $tabbeacon 'Cargo.toml') --package hookstat-ipc-client-proof --target all --edges normal --prefix none)
     if ($LASTEXITCODE -ne 0) { throw 'proof-adapter dependency audit failed' }
     $forbidden = @($tree | Where-Object { $_ -match '^(ratatui|crossterm|rusqlite|hookstat v)' })
     if ($forbidden.Count -ne 0) {
@@ -70,15 +70,15 @@ path = '$proofTomlPath'
         hookstat_source_git_head = $sourceHead
         hookstat_ipc_client_source_sha256 = $clientSourceSha256
         tabbeacon_git_head = $actualTabBeaconCommit
-        current_source_adapter = true
-        adapter_publishable = false
-        adapter_packaged = false
-        real_g35_broker_start_complete = true
-        real_tabbeacon_codex_hook_runtime = true
-        tabbeacon_declaration_has_hookstat_wrapper = false
+        current_source_adapter = $true
+        adapter_publishable = $false
+        adapter_packaged = $false
+        real_g35_broker_start_complete = $true
+        real_tabbeacon_codex_hook_runtime = $true
+        tabbeacon_declaration_has_hookstat_wrapper = $false
         product_dependency_boundary = 'PASS'
-        owner_live_codex_config_mutated = false
-        raw_private_content_captured = false
+        owner_live_codex_config_mutated = $false
+        raw_private_content_captured = $false
     }
     $outputParent = Split-Path -Parent $resolvedOutput
     if (-not [string]::IsNullOrWhiteSpace($outputParent)) {
