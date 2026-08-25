@@ -438,7 +438,7 @@ pub fn run_capsule(capsule: &HandlerCapsule, state_root: &Path) -> Result<ShimOu
         Err(error) => {
             // Preserve process-tree containment at process exit while still
             // allowing the CLI to choose its documented nonzero exit code.
-            std::mem::forget(containment);
+            containment.retain_until_process_exit();
             return Err(error);
         }
     };
@@ -469,7 +469,7 @@ pub fn run_capsule(capsule: &HandlerCapsule, state_root: &Path) -> Result<ShimOu
         // terminate the shim before it publishes exit 124. Retain the sole
         // handle until normal process exit; Windows then closes it and kills
         // the child tree while `main` preserves the timeout exit class.
-        std::mem::forget(containment);
+        containment.retain_until_process_exit();
     }
     Ok(ShimOutcome {
         exit_code,
@@ -537,7 +537,7 @@ pub(crate) fn run_capsule_for_qualification_timed(
     {
         Ok(value) => value,
         Err(error) => {
-            std::mem::forget(containment);
+            containment.retain_until_process_exit();
             return Err(error);
         }
     };
@@ -568,7 +568,7 @@ pub(crate) fn run_capsule_for_qualification_timed(
     );
     let complete_ipc_ns = elapsed_ns(complete_ipc_started);
     if timed_out {
-        std::mem::forget(containment);
+        containment.retain_until_process_exit();
     }
     Ok((
         ShimOutcome {
@@ -811,6 +811,9 @@ impl ProcessContainment {
             .set_extended_limit_info(&limits)
             .map_err(|_| ShimError::Containment)
     }
+    fn retain_until_process_exit(self) {
+        std::mem::forget(self);
+    }
 }
 #[cfg(not(windows))]
 struct ProcessContainment;
@@ -822,6 +825,7 @@ impl ProcessContainment {
     fn release_after_normal_root_exit(&mut self) -> Result<(), ShimError> {
         Ok(())
     }
+    fn retain_until_process_exit(self) {}
 }
 
 #[derive(Debug)]
