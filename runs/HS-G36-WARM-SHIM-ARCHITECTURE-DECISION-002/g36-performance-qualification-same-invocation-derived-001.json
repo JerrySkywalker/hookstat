@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "run_kind": "g36_release_artifact_performance_qualification_deterministic_reduction",
+  "classification": "FULL_ACCEPTANCE_PASS",
+  "derived": true,
+  "source_receipt": "g36-performance-qualification-same-invocation-001.json",
+  "source_receipt_sha256": "c6921cd41b3bf1be5a3252f0f47e0fa6fa34d2aceb35207d6616a2d54fa3ac7b",
+  "source_receipt_classification": "INVALIDATED_BY_METHOD",
+  "source_invalidation": "maximum_signed_difference_from_one_startup_run_pair_selected_independent_scheduler_noise",
+  "release_artifacts": true,
+  "build_profile": "release",
+  "shim_measurement": "same_invocation_parent_lifetime_minus_child_spawn_wait_with_conservative_shipping_startup_tail_correction",
+  "reduction": "each_raw_oracle_percentile_plus_max_zero_shipping_worst_of_five_p99_minus_instrumented_worst_of_five_p99",
+  "paired_method_identifiable": false,
+  "same_invocation_oracle": true,
+  "oracle_transport": "feature_gated_local_fixed_32_byte_timing_side_channel",
+  "oracle_record_bytes": 32,
+  "observed_overhead_includes_oracle_side_channel": true,
+  "warmup_definition": "25_unmeasured_fresh_actual_instrumented_hookstat_hook_help_launches_before_each_timed_invocation",
+  "warm_harness_self_load": false,
+  "qualifying_runs": 5,
+  "samples_per_run": 100,
+  "warmups_per_timed_sample": 25,
+  "collector_model": "per_thread_local_samples",
+  "elapsed_capture": "immediately_after_operation",
+  "shipping_binary_size_bytes": 550400,
+  "instrumented_binary_size_bytes": 557568,
+  "shipping_startup_p99_series_ms": [
+    13.4711,
+    15.4546,
+    12.4124,
+    16.1891,
+    13.7764
+  ],
+  "instrumented_startup_p99_series_ms": [
+    13.4585,
+    15.3259,
+    14.5795,
+    13.9797,
+    13.2878
+  ],
+  "shipping_startup_worst_p99_ms": 16.1891,
+  "instrumented_startup_worst_p99_ms": 15.3259,
+  "startup_tail_bias_correction_ms": 0.8632,
+  "startup_bias_material": false,
+  "startup_bias_material_limit_ms": 2.0,
+  "series": [
+    {
+      "kind": "cooperative",
+      "run": 1,
+      "timing": { "samples": 100, "p50_ms": 0.0444, "p95_ms": 0.1371, "p99_ms": 0.2753, "max_ms": 0.4182 },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "cooperative",
+      "run": 2,
+      "timing": { "samples": 100, "p50_ms": 0.0379, "p95_ms": 0.0928, "p99_ms": 0.1369, "max_ms": 0.2628 },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "cooperative",
+      "run": 3,
+      "timing": { "samples": 100, "p50_ms": 0.0367, "p95_ms": 0.0568, "p99_ms": 0.1067, "max_ms": 0.1654 },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "cooperative",
+      "run": 4,
+      "timing": { "samples": 100, "p50_ms": 0.0788, "p95_ms": 0.1733, "p99_ms": 0.2044, "max_ms": 0.5570 },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "cooperative",
+      "run": 5,
+      "timing": { "samples": 100, "p50_ms": 0.0460, "p95_ms": 0.1403, "p99_ms": 0.3467, "max_ms": 0.4077 },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm",
+      "run": 1,
+      "timing": { "samples": 100, "p50_ms": 14.6370, "p95_ms": 17.4263, "p99_ms": 20.5058, "max_ms": 20.7547 },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm",
+      "run": 2,
+      "timing": { "samples": 100, "p50_ms": 14.0100, "p95_ms": 16.3050, "p99_ms": 16.8524, "max_ms": 16.9290 },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm",
+      "run": 3,
+      "timing": { "samples": 100, "p50_ms": 14.4027, "p95_ms": 17.2505, "p99_ms": 19.4093, "max_ms": 19.5162 },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm",
+      "run": 4,
+      "timing": { "samples": 100, "p50_ms": 14.7739, "p95_ms": 18.3269, "p99_ms": 20.3539, "max_ms": 21.0032 },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm",
+      "run": 5,
+      "timing": { "samples": 100, "p50_ms": 14.4966, "p95_ms": 17.9946, "p99_ms": 19.8292, "max_ms": 21.6856 },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold",
+      "run": 1,
+      "timing": { "samples": 100, "p50_ms": 14.6214, "p95_ms": 17.7238, "p99_ms": 20.3288, "max_ms": 26.1900 },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold",
+      "run": 2,
+      "timing": { "samples": 100, "p50_ms": 14.7279, "p95_ms": 18.5793, "p99_ms": 21.0314, "max_ms": 33.7997 },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold",
+      "run": 3,
+      "timing": { "samples": 100, "p50_ms": 14.1308, "p95_ms": 16.9726, "p99_ms": 17.9946, "max_ms": 19.6541 },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold",
+      "run": 4,
+      "timing": { "samples": 100, "p50_ms": 13.6548, "p95_ms": 15.9693, "p99_ms": 17.4713, "max_ms": 20.2248 },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold",
+      "run": 5,
+      "timing": { "samples": 100, "p50_ms": 14.0087, "p95_ms": 16.6428, "p99_ms": 19.6823, "max_ms": 26.4636 },
+      "observation_gaps": 0
+    }
+  ],
+  "oracle_primary_record_worst_p95_ms": 0.0544,
+  "oracle_primary_record_worst_p99_ms": 0.0870,
+  "cooperative_worst_p95_ms": 0.1733,
+  "cooperative_worst_p99_ms": 0.3467,
+  "shim_warm_worst_p95_ms": 18.3269,
+  "shim_warm_worst_p99_ms": 20.5058,
+  "shim_cold_worst_p95_ms": 18.5793,
+  "healthy_near_timeout_runs": 5,
+  "hookstat_induced_timeouts_for_healthy_hook": 0,
+  "outcome": "PASS",
+  "owner_live_codex_config_mutated": false,
+  "raw_private_content_captured": false,
+  "frozen_g28_budget_changed": false,
+  "native_admission_changed": false,
+  "g37_started": false,
+  "g38_started": false,
+  "publication_authorized": false
+}

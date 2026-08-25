@@ -159,13 +159,17 @@ single evidence transport and the normal shipping build has no oracle path.
 The first 100-sample diagnostic measured raw warm overhead at `16.3280` ms p95
 and `16.6528` ms p99 while charging the complete oracle channel.  Its primary
 record observation cost was `0.0347/0.0435` ms p95/p99.  The instrumented
-binary was 7,168 bytes larger but its help-path startup was slightly faster
-than shipping by `0.3394` ms at p95 and `1.1668` ms at p99.  Adding the larger
-p99 startup-tail difference to both raw percentiles gives a conservative
-diagnostic `17.4948/17.8196` ms.  This supports the repeated-fresh one-process
-architecture as viable with `2.5052` ms p95 headroom, but the receipt remains
-`DIAGNOSTIC_ONLY` until the correction and complete five-series qualification
-are encoded and run.
+binary was 7,168 bytes larger but slightly faster in that diagnostic; the
+result established one-process viability without claiming acceptance.
+
+The complete qualification retained five 100-sample populations per path and
+compared the complete shipping and instrumented startup envelopes.  Their
+worst p99 values are `16.1891` and `15.3259` ms, so every same-invocation raw
+population receives a conservative `0.8632`-ms shipping-build correction.  The
+corrected result is cooperative `0.1733/0.3467` ms p95/p99, warm transparent
+`18.3269/20.5058` ms p95/p99, cold transparent `18.5793` ms p95, zero
+observation gaps, and zero HookStat-induced timeouts.  The oracle record itself
+is `0.0544/0.0870` ms worst p95/p99.  The frozen G28 limits are unchanged.
 
 ```text
 WARM_ACCEPTANCE_METRIC=OTHER_PROVEN_METRIC
@@ -173,5 +177,7 @@ OTHER_PROVEN_METRIC=SAME_INVOCATION_PARENT_LIFETIME_MINUS_CHILD_SPAWN_WAIT
 PAIRED_METHOD_IDENTIFIABLE=false
 ONE_PROCESS_ARCHITECTURE=VIABLE
 HELPER_PROTOTYPE_JUSTIFIED=false
+FINAL_G36_SHIM_ARCHITECTURE=ONE_PROCESS_OPTIMIZED
+G36_PERFORMANCE=PASS
 FROZEN_G28_BUDGET_CHANGED=false
 ```

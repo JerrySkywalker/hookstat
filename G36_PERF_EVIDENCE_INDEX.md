@@ -51,11 +51,15 @@ receipt's historical `outcome` field.
 | `runs/HS-G36-WINDOWS-PERFORMANCE-RCA-001/g36-shim-stage-diagnostic-001.json` | `DIAGNOSTIC_ONLY` | Feature-gated 100-sample stage attribution, explicitly not acceptance evidence. | Shipping startup is the primary one-process cost; child wait is not HookStat overhead. |
 | `runs/HS-G36-WARM-SHIM-ARCHITECTURE-DECISION-002/g36-same-invocation-oracle-smoke-001.json` | `DIAGNOSTIC_ONLY` | Bounded ten-sample implementation smoke, not a tail series. | It proved the fixed-record channel end to end and retained its loaded-host outliers. |
 | `runs/HS-G36-WARM-SHIM-ARCHITECTURE-DECISION-002/g36-same-invocation-oracle-001.json` | `DIAGNOSTIC_ONLY` | One 100-sample release oracle series with shipping/instrumented startup comparison; it explicitly sets `acceptance_evidence=false`. | Raw same-invocation overhead is 16.3280/16.6528 ms p95/p99 with the entire oracle channel included. A 1.1668-ms p99 startup-tail correction still yields 17.4948/17.8196 ms, supporting one-process viability but not full acceptance. |
+| `runs/HS-G36-WARM-SHIM-ARCHITECTURE-DECISION-002/g36-performance-qualification-same-invocation-001.json` | `INVALIDATED_BY_METHOD` | The complete release populations are retained, but the first reducer selected the maximum signed p99 difference from one adjacent shipping/instrumented startup pair. Those two independently scheduled populations do not make that pairwise tail identifiable. | Its raw samples remain the immutable input to the corrected deterministic reduction; its recorded FAIL outcome is not acceptance evidence. |
+| `runs/HS-G36-WARM-SHIM-ARCHITECTURE-DECISION-002/g36-performance-qualification-same-invocation-derived-001.json` | `FULL_ACCEPTANCE_PASS` | It is SHA-256-bound to the complete source receipt and changes only its reducer: the conservative build correction is the shipping worst-of-five p99 envelope minus the instrumented worst-of-five p99 envelope. A constant translation exactly translates every retained raw-oracle quantile. | Cooperative is 0.1733/0.3467 ms p95/p99, warm is 18.3269/20.5058 ms, cold p95 is 18.5793 ms, observation gaps are zero, and induced timeouts are zero. |
 
-There is no current `FULL_ACCEPTANCE_PASS` G36 receipt. The two corrected-method
-debug receipts are `INVALIDATED_BY_BUILD_PROFILE`; the two older committed full
-receipts each retain an independently valid cooperative failure while their
-warm shim submeasurement is `INVALIDATED_BY_METHOD`.
+The current `FULL_ACCEPTANCE_PASS` is the deterministic reduction of one
+complete release qualification, not a rerun or selected subset.  The two
+corrected-method debug receipts remain `INVALIDATED_BY_BUILD_PROFILE`; the two
+older committed full receipts each retain an independently valid cooperative
+failure while their warm shim submeasurement remains
+`INVALIDATED_BY_METHOD`.
 
 ## Why the checkpoint values differ
 
@@ -166,9 +170,9 @@ FROZEN_G28_BUDGET_CHANGED=false
 
 ```text
 FULL_ACCEPTANCE_FAIL_RECEIPTS=4
-FULL_ACCEPTANCE_PASS_RECEIPTS=0
+FULL_ACCEPTANCE_PASS_RECEIPTS=1
 DIAGNOSTIC_ONLY_MEASUREMENT_GROUPS=8
-INVALIDATED_BY_METHOD_MEASUREMENT_GROUPS=3
+INVALIDATED_BY_METHOD_MEASUREMENT_GROUPS=4
 INVALIDATED_BY_BUILD_PROFILE_RECEIPTS=2
 WARM_ACCEPTANCE_METRIC=OTHER_PROVEN_METRIC
 PAIRED_METHOD_IDENTIFIABLE=false
