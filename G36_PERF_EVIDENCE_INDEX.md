@@ -49,6 +49,8 @@ receipt's historical `outcome` field.
 | Same release receipts: alternating paired warm subtraction | `INVALIDATED_BY_METHOD` | Alternating adjacent samples remove order preference and reduce low-frequency drift, but each delta still subtracts two distinct child process lifetimes with independent Windows scheduling noise. | The 62.0514/87.0825-ms tail cannot establish the transparent overhead tail. |
 | `runs/HS-G36-WINDOWS-PERFORMANCE-RCA-001/g36-cooperative-stage-diagnostic-001.json` | `DIAGNOSTIC_ONLY` | Feature-gated 100-sample stage attribution, explicitly not acceptance evidence. | It identifies the old per-frame connect/close lifecycle and supports the reusable-client change. |
 | `runs/HS-G36-WINDOWS-PERFORMANCE-RCA-001/g36-shim-stage-diagnostic-001.json` | `DIAGNOSTIC_ONLY` | Feature-gated 100-sample stage attribution, explicitly not acceptance evidence. | Shipping startup is the primary one-process cost; child wait is not HookStat overhead. |
+| `runs/HS-G36-WARM-SHIM-ARCHITECTURE-DECISION-002/g36-same-invocation-oracle-smoke-001.json` | `DIAGNOSTIC_ONLY` | Bounded ten-sample implementation smoke, not a tail series. | It proved the fixed-record channel end to end and retained its loaded-host outliers. |
+| `runs/HS-G36-WARM-SHIM-ARCHITECTURE-DECISION-002/g36-same-invocation-oracle-001.json` | `DIAGNOSTIC_ONLY` | One 100-sample release oracle series with shipping/instrumented startup comparison; it explicitly sets `acceptance_evidence=false`. | Raw same-invocation overhead is 16.3280/16.6528 ms p95/p99 with the entire oracle channel included. A 1.1668-ms p99 startup-tail correction still yields 17.4948/17.8196 ms, supporting one-process viability but not full acceptance. |
 
 There is no current `FULL_ACCEPTANCE_PASS` G36 receipt. The two corrected-method
 debug receipts are `INVALIDATED_BY_BUILD_PROFILE`; the two older committed full
@@ -165,7 +167,7 @@ FROZEN_G28_BUDGET_CHANGED=false
 ```text
 FULL_ACCEPTANCE_FAIL_RECEIPTS=4
 FULL_ACCEPTANCE_PASS_RECEIPTS=0
-DIAGNOSTIC_ONLY_MEASUREMENT_GROUPS=6
+DIAGNOSTIC_ONLY_MEASUREMENT_GROUPS=8
 INVALIDATED_BY_METHOD_MEASUREMENT_GROUPS=3
 INVALIDATED_BY_BUILD_PROFILE_RECEIPTS=2
 WARM_ACCEPTANCE_METRIC=OTHER_PROVEN_METRIC

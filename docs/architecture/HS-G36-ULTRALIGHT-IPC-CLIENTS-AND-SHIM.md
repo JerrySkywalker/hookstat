@@ -136,7 +136,42 @@ consumer proof and is not a v0.3.1 publication requirement.
 
 ## Performance status
 
-This implementation removes structural costs from the intended shim path but
-does not claim qualifying G36 tail-latency evidence. Any loaded-host timings
-remain `NON_QUALIFYING_DEVELOPMENT_MEASUREMENT`; the frozen G28 budget is
-unchanged.
+The M1 methodology audit proved that adjacent alternating
+`transparent_duration - direct_duration` samples still subtract two distinct
+process lifetimes and cannot identify HookStat's Windows tail overhead.  G36
+therefore uses one actual transparent invocation as the candidate acceptance
+quantity:
+
+```text
+parent-observed shipping-shim lifetime
+- shim-observed original child spawn/wait interval
+= HookStat transparent overhead
+```
+
+The developer-only oracle is compiled only by `performance-harness`.  It sends
+two fixed 16-byte records over one owner-only local pipe after normal COMPLETE
+instrumentation: the same-invocation child interval and the connect plus first
+record write duration.  It serializes no command, capsule content, path,
+prompt, tool data, stream, or credential.  This is an ephemeral measurement
+control channel, not a reliability evidence transport; G35 IPC remains the
+single evidence transport and the normal shipping build has no oracle path.
+
+The first 100-sample diagnostic measured raw warm overhead at `16.3280` ms p95
+and `16.6528` ms p99 while charging the complete oracle channel.  Its primary
+record observation cost was `0.0347/0.0435` ms p95/p99.  The instrumented
+binary was 7,168 bytes larger but its help-path startup was slightly faster
+than shipping by `0.3394` ms at p95 and `1.1668` ms at p99.  Adding the larger
+p99 startup-tail difference to both raw percentiles gives a conservative
+diagnostic `17.4948/17.8196` ms.  This supports the repeated-fresh one-process
+architecture as viable with `2.5052` ms p95 headroom, but the receipt remains
+`DIAGNOSTIC_ONLY` until the correction and complete five-series qualification
+are encoded and run.
+
+```text
+WARM_ACCEPTANCE_METRIC=OTHER_PROVEN_METRIC
+OTHER_PROVEN_METRIC=SAME_INVOCATION_PARENT_LIFETIME_MINUS_CHILD_SPAWN_WAIT
+PAIRED_METHOD_IDENTIFIABLE=false
+ONE_PROCESS_ARCHITECTURE=VIABLE
+HELPER_PROTOTYPE_JUSTIFIED=false
+FROZEN_G28_BUDGET_CHANGED=false
+```

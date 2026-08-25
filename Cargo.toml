@@ -112,6 +112,13 @@ test = false
 bench = false
 
 [[bin]]
+name = "hookstat-g36-same-invocation-oracle"
+path = "src/bin/hookstat_g36_same_invocation_oracle.rs"
+required-features = ["performance-harness"]
+test = false
+bench = false
+
+[[bin]]
 name = "hookstat-g36-breakaway-launcher"
 path = "src/bin/hookstat_g36_breakaway_launcher.rs"
 required-features = ["performance-harness"]

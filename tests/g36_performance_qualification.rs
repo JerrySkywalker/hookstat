@@ -285,6 +285,14 @@ fn write_receipt(receipt: &Receipt) {
     fs::write(output, serde_json::to_vec_pretty(receipt).unwrap()).unwrap();
 }
 
+#[cfg(debug_assertions)]
+fn require_release_profile() {
+    panic!("G36 qualification requires cargo test --release; debug artifacts are diagnostic only");
+}
+
+#[cfg(not(debug_assertions))]
+fn require_release_profile() {}
+
 #[test]
 #[ignore = "explicit release-artifact G36 performance qualification"]
 fn release_artifact_meets_the_frozen_g36_budget() {
@@ -293,10 +301,7 @@ fn release_artifact_meets_the_frozen_g36_budget() {
     // the receipt claimed otherwise.  Keep the ignored test compilable for
     // ordinary coverage, but reject such an invocation before it can write a
     // qualifying receipt.
-    assert!(
-        !cfg!(debug_assertions),
-        "G36 qualification requires cargo test --release; debug artifacts are diagnostic only"
-    );
+    require_release_profile();
     let temporary = tempfile::tempdir().unwrap();
     let capsule_root = temporary.path().join("capsules");
     let state_root = temporary.path().join("state");

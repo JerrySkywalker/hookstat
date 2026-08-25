@@ -375,6 +375,10 @@ pub struct ShimOutcome {
     pub completed: ObservationDisposition,
     pub timed_out: bool,
     pub direct_process: bool,
+    /// Developer-only duration from immediately before the original child
+    /// spawn through completion of its wait in this same invocation.
+    #[cfg(feature = "performance-harness")]
+    pub original_child_interval_ns: u64,
 }
 
 /// Sanitized feature-only execution stages for one real shim transaction.
@@ -417,6 +421,8 @@ pub fn run_capsule(capsule: &HandlerCapsule, state_root: &Path) -> Result<ShimOu
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    #[cfg(feature = "performance-harness")]
+    let original_child_interval_started = Instant::now();
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(_) => {
@@ -436,6 +442,8 @@ pub fn run_capsule(capsule: &HandlerCapsule, state_root: &Path) -> Result<ShimOu
             return Err(error);
         }
     };
+    #[cfg(feature = "performance-harness")]
+    let original_child_interval_ns = elapsed_ns(original_child_interval_started);
     if !timed_out {
         containment.release_after_normal_root_exit()?;
     }
@@ -469,6 +477,8 @@ pub fn run_capsule(capsule: &HandlerCapsule, state_root: &Path) -> Result<ShimOu
         completed,
         timed_out,
         direct_process: matches!(capsule.execution, ExecutionPlan::Direct { .. }),
+        #[cfg(feature = "performance-harness")]
+        original_child_interval_ns,
     })
 }
 
@@ -512,6 +522,7 @@ pub(crate) fn run_capsule_for_qualification_timed(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let command_construction_ns = elapsed_ns(command_started);
+    let original_child_interval_started = Instant::now();
     let spawn_started = Instant::now();
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -531,6 +542,7 @@ pub(crate) fn run_capsule_for_qualification_timed(
         }
     };
     let child_wait_poll_ns = elapsed_ns(wait_started);
+    let original_child_interval_ns = elapsed_ns(original_child_interval_started);
     let release_started = Instant::now();
     if !timed_out {
         containment.release_after_normal_root_exit()?;
@@ -565,6 +577,7 @@ pub(crate) fn run_capsule_for_qualification_timed(
             completed,
             timed_out,
             direct_process: matches!(capsule.execution, ExecutionPlan::Direct { .. }),
+            original_child_interval_ns,
         },
         ShimExecutionStageTiming {
             capsule_validate_ns,
