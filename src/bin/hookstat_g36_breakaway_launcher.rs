@@ -2,12 +2,15 @@
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(windows)]
 use std::path::PathBuf;
+#[cfg(windows)]
 use std::process::Command;
 
 #[cfg(windows)]
 const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 
+#[cfg(windows)]
 fn main() {
     let mut program = None;
     let mut receipt_output = None;
@@ -42,7 +45,6 @@ fn main() {
         eprintln!("hookstat-g36-breakaway-launcher received no shipping shim");
         std::process::exit(2);
     }
-    #[cfg(windows)]
     let result = {
         let mut command = Command::new(program);
         command
@@ -54,10 +56,6 @@ fn main() {
         }
         command.status()
     };
-    #[cfg(not(windows))]
-    let result: Result<std::process::ExitStatus, std::io::Error> = Err(std::io::Error::other(
-        "G36 breakaway launcher is Windows-only",
-    ));
     match result {
         Ok(status) if status.success() => println!("G36_BREAKAWAY_TEST_PASSED"),
         Ok(_) | Err(_) => {
@@ -65,4 +63,10 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("hookstat-g36-breakaway-launcher is Windows-only");
+    std::process::exit(2);
 }
