@@ -7,6 +7,7 @@ mod ipc_client;
 
 use hook_shim::{CapsuleStore, run_capsule};
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 #[cfg(all(feature = "performance-harness", unix))]
 use interprocess::local_socket::{GenericFilePath, ToFsName};
@@ -59,8 +60,16 @@ fn emit_g36_same_invocation_oracle(root: &Path, child_interval_ns: u64) -> Optio
     stream.flush().ok()
 }
 
-fn main() {
-    std::process::exit(run());
+fn main() -> ExitCode {
+    let exit_code = run();
+    if let Ok(exit_code) = u8::try_from(exit_code) {
+        // Preserve ordinary Rust teardown on the common path. Developer-only
+        // oracle records rely on normal handle closure after their flushed
+        // write, while Windows needs process::exit only for wider native codes.
+        ExitCode::from(exit_code)
+    } else {
+        std::process::exit(exit_code)
+    }
 }
 
 fn run() -> i32 {
