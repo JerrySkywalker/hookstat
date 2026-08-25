@@ -25,6 +25,7 @@ use ipc_client::{
     ObservationDisposition, TerminalOutcome,
 };
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -88,8 +89,12 @@ struct Receipt {
     warmups_per_timed_sample: usize,
     collector_model: &'static str,
     elapsed_capture: &'static str,
+    source_git_head: String,
+    source_tracked_worktree_clean: bool,
     shipping_binary_size_bytes: u64,
     instrumented_binary_size_bytes: u64,
+    shipping_binary_sha256: String,
+    instrumented_binary_sha256: String,
     startup_comparison_series: Vec<StartupComparisonSeries>,
     shipping_startup_worst_p99_ms: f64,
     instrumented_startup_worst_p99_ms: f64,
@@ -413,6 +418,59 @@ fn write_receipt(receipt: &Receipt) {
     fs::write(output, serde_json::to_vec_pretty(receipt).unwrap()).unwrap();
 }
 
+fn source_git_provenance() -> (String, bool) {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let head = Command::new("git")
+        .args(["-C", root, "rev-parse", "HEAD"])
+        .output()
+        .expect("read qualification source HEAD");
+    assert!(
+        head.status.success(),
+        "qualification source HEAD unavailable"
+    );
+    let head = String::from_utf8(head.stdout)
+        .expect("qualification source HEAD is UTF-8")
+        .trim()
+        .to_owned();
+    assert!(
+        head.len() == 40 && head.bytes().all(|value| value.is_ascii_hexdigit()),
+        "qualification source HEAD is not a full Git object id"
+    );
+    let status = Command::new("git")
+        .args([
+            "-C",
+            root,
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=no",
+        ])
+        .output()
+        .expect("read qualification tracked status");
+    assert!(
+        status.status.success(),
+        "qualification tracked status unavailable"
+    );
+    (head, status.stdout.is_empty())
+}
+
+fn sha256_file(path: &Path) -> String {
+    let mut file = fs::File::open(path).expect("qualification artifact is readable");
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).expect("hash qualification artifact");
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 #[cfg(debug_assertions)]
 fn require_release_profile() {
     panic!("G36 qualification requires cargo test --release; debug artifacts are diagnostic only");
@@ -430,6 +488,11 @@ fn release_artifact_meets_the_frozen_g36_budget() {
     // ordinary coverage, but reject such an invocation before it can write a
     // qualifying receipt.
     require_release_profile();
+    let (source_git_head, source_tracked_worktree_clean) = source_git_provenance();
+    assert!(
+        source_tracked_worktree_clean,
+        "qualification requires a tracked-clean source head"
+    );
     let temporary = tempfile::tempdir().unwrap();
     let capsule_root = temporary.path().join("capsules");
     let state_root = temporary.path().join("state");
@@ -459,6 +522,8 @@ fn release_artifact_meets_the_frozen_g36_budget() {
         shipping_shim.is_file(),
         "ordinary shipping shim is not a file"
     );
+    let shipping_binary_sha256 = sha256_file(&shipping_shim);
+    let instrumented_binary_sha256 = sha256_file(&shim);
     let oracle_endpoint = LocalEndpoint::from_state_root(&oracle_root).unwrap();
     let oracle_listener = oracle_endpoint.bind().unwrap();
     let oracle_context = OracleContext {
@@ -613,8 +678,12 @@ fn release_artifact_meets_the_frozen_g36_budget() {
         warmups_per_timed_sample: WARMUPS_PER_SAMPLE,
         collector_model: "per_thread_local_samples",
         elapsed_capture: "immediately_after_operation",
+        source_git_head,
+        source_tracked_worktree_clean,
         shipping_binary_size_bytes: fs::metadata(&shipping_shim).unwrap().len(),
         instrumented_binary_size_bytes: fs::metadata(&shim).unwrap().len(),
+        shipping_binary_sha256,
+        instrumented_binary_sha256,
         startup_comparison_series,
         shipping_startup_worst_p99_ms,
         instrumented_startup_worst_p99_ms,

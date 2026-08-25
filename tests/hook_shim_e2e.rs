@@ -117,6 +117,19 @@ fn direct_exit_and_shell_fallback_preserve_original_exit_codes_when_broker_is_ab
     );
     assert_eq!(invoke(temp.path(), &direct).status.code(), Some(7));
 
+    let wide_root = tempfile::tempdir().unwrap();
+    let wide = seal(
+        wide_root.path(),
+        capsule(
+            ExecutionPlan::Direct {
+                executable: "cmd.exe".into(),
+                arguments: vec!["/C".into(), "exit /b 256".into()],
+            },
+            Duration::from_secs(1),
+        ),
+    );
+    assert_eq!(invoke(wide_root.path(), &wide).status.code(), Some(256));
+
     let fallback_root = tempfile::tempdir().unwrap();
     let fallback = seal(
         fallback_root.path(),

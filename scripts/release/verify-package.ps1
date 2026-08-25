@@ -32,6 +32,14 @@ try {
 
     Push-Location $resolvedRoot
     try {
+        $sourceHead = (& git rev-parse HEAD).Trim()
+        if ($LASTEXITCODE -ne 0 -or $sourceHead -notmatch '^[0-9a-f]{40}$') {
+            throw 'package verification could not resolve an exact source HEAD'
+        }
+        $trackedStatus = @(& git status --porcelain=v1 --untracked-files=no)
+        if ($LASTEXITCODE -ne 0 -or $trackedStatus.Count -ne 0) {
+            throw 'package verification requires a tracked-clean exact source HEAD'
+        }
         Invoke-Cargo package --locked
     }
     finally {
@@ -43,6 +51,7 @@ try {
     if ($null -eq $crate) {
         throw 'cargo package did not produce a hookstat .crate artifact'
     }
+    $crateSha256 = (Get-FileHash -LiteralPath $crate.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     & tar -xzf $crate.FullName -C $unpacked
     if ($LASTEXITCODE -ne 0) {
         throw "tar extraction failed with exit code $LASTEXITCODE"
@@ -67,6 +76,9 @@ try {
     if ($pathDependency) {
         throw 'packaged manifest retains a path dependency or path-only package reference'
     }
+    if (Test-Path -LiteralPath (Join-Path $packageRoot.FullName 'dev_proof')) {
+        throw 'developer-only cooperative proof adapter leaked into the public package'
+    }
 
     Invoke-Cargo build --manifest-path $manifest --locked --bins
     Invoke-Cargo install --path $packageRoot.FullName --locked --root $installRoot
@@ -88,6 +100,13 @@ try {
 
     'PACKAGE_ARCHIVE_SELF_CONTAINED=true'
     'FRESH_INSTALL_REQUIRED_BINARIES=true'
+    "PACKAGE_SOURCE_GIT_HEAD=$sourceHead"
+    "PACKAGE_ARCHIVE_SHA256=$crateSha256"
+    foreach ($binary in 'hookstat', 'hookstat-hook', 'hookstat-ipc-broker') {
+        $candidate = Join-Path $installRoot ("bin/{0}{1}" -f $binary, $extension)
+        $binarySha256 = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+        "FRESH_INSTALL_BINARY_SHA256_{0}={1}" -f $binary.ToUpperInvariant().Replace('-', '_'), $binarySha256
+    }
 }
 finally {
     if (-not $KeepLab -and (Test-Path -LiteralPath $lab)) {

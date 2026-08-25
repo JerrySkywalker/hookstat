@@ -7,7 +7,6 @@ mod ipc_client;
 
 use hook_shim::{CapsuleStore, run_capsule};
 use std::path::PathBuf;
-use std::process::ExitCode;
 
 #[cfg(all(feature = "performance-harness", unix))]
 use interprocess::local_socket::{GenericFilePath, ToFsName};
@@ -60,7 +59,11 @@ fn emit_g36_same_invocation_oracle(root: &Path, child_interval_ns: u64) -> Optio
     stream.flush().ok()
 }
 
-fn main() -> ExitCode {
+fn main() {
+    std::process::exit(run());
+}
+
+fn run() -> i32 {
     let mut capsule = None;
     let mut capsule_root = None;
     let mut state_root = None;
@@ -74,23 +77,23 @@ fn main() -> ExitCode {
                 println!(
                     "usage: hookstat-hook --capsule <private-file> --capsule-root <private-dir> --state-root <hookstat-state>"
                 );
-                return ExitCode::SUCCESS;
+                return 0;
             }
             _ => {
                 eprintln!("hookstat-hook: invalid arguments");
-                return ExitCode::from(2);
+                return 2;
             }
         };
         let Some(value) = values.next() else {
             eprintln!("hookstat-hook: invalid arguments");
-            return ExitCode::from(2);
+            return 2;
         };
         *target = Some(PathBuf::from(value));
     }
     let (Some(capsule), Some(capsule_root), Some(state_root)) = (capsule, capsule_root, state_root)
     else {
         eprintln!("hookstat-hook: --capsule, --capsule-root, and --state-root are required");
-        return ExitCode::from(2);
+        return 2;
     };
     let result = CapsuleStore::open(capsule_root)
         .and_then(|store| store.load(capsule))
@@ -106,11 +109,11 @@ fn main() -> ExitCode {
                     outcome.original_child_interval_ns,
                 );
             }
-            ExitCode::from(outcome.exit_code as u8)
+            outcome.exit_code
         }
         Err(_) => {
             eprintln!("hookstat-hook: private control-plane or execution setup failed");
-            ExitCode::from(1)
+            1
         }
     }
 }

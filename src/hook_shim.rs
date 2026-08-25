@@ -12,6 +12,7 @@ use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
@@ -285,8 +286,10 @@ impl CapsuleStore {
             &self.root,
             Path::new("capsule.key"),
         )?)?;
-        let capsule =
-            HandlerCapsule::unseal(&fs::read(&file).map_err(|_| CapsuleError::Io)?, &key)?;
+        let capsule = HandlerCapsule::unseal(
+            &read_bounded_file(&file, MAX_CAPSULE_BYTES, "capsule_bytes")?,
+            &key,
+        )?;
         let expected = capsule_file_name(&capsule)?;
         if file.file_name().and_then(|name| name.to_str()) != Some(expected.as_str()) {
             return Err(CapsuleError::Path);
@@ -309,7 +312,7 @@ impl CapsuleStore {
         let key = read_key(&key_file)?;
         let key_read_ns = elapsed_ns(key_read_started);
         let capsule_read_started = Instant::now();
-        let bytes = fs::read(&file).map_err(|_| CapsuleError::Io)?;
+        let bytes = read_bounded_file(&file, MAX_CAPSULE_BYTES, "capsule_bytes")?;
         let capsule_read_ns = elapsed_ns(capsule_read_started);
         let hmac_validation_started = Instant::now();
         let capsule = HandlerCapsule::unseal(&bytes, &key)?;
@@ -428,6 +431,7 @@ pub fn run_capsule(capsule: &HandlerCapsule, state_root: &Path) -> Result<ShimOu
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    let original_deadline = Instant::now() + capsule.original_budget.0;
     #[cfg(feature = "performance-harness")]
     let original_child_interval_started = Instant::now();
     let mut child = match command.spawn() {
@@ -439,8 +443,7 @@ pub fn run_capsule(capsule: &HandlerCapsule, state_root: &Path) -> Result<ShimOu
             return Err(ShimError::Spawn);
         }
     };
-    let (status, timed_out) = match wait_with_original_budget(&mut child, capsule.original_budget.0)
-    {
+    let (status, timed_out) = match wait_until_original_deadline(&mut child, original_deadline) {
         Ok(value) => value,
         Err(error) => {
             // Preserve process-tree containment at process exit while still
@@ -529,6 +532,7 @@ pub(crate) fn run_capsule_for_qualification_timed(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let command_construction_ns = elapsed_ns(command_started);
+    let original_deadline = Instant::now() + capsule.original_budget.0;
     let original_child_interval_started = Instant::now();
     let spawn_started = Instant::now();
     let mut child = match command.spawn() {
@@ -540,8 +544,7 @@ pub(crate) fn run_capsule_for_qualification_timed(
     };
     let original_child_spawn_ns = elapsed_ns(spawn_started);
     let wait_started = Instant::now();
-    let (status, timed_out) = match wait_with_original_budget(&mut child, capsule.original_budget.0)
-    {
+    let (status, timed_out) = match wait_until_original_deadline(&mut child, original_deadline) {
         Ok(value) => value,
         Err(error) => {
             containment.retain_until_process_exit();
@@ -728,11 +731,10 @@ fn platform_shell(command_line: &str) -> Command {
     value
 }
 
-fn wait_with_original_budget(
+fn wait_until_original_deadline(
     child: &mut std::process::Child,
-    budget: Duration,
+    deadline: Instant,
 ) -> Result<(Option<ExitStatus>, bool), ShimError> {
-    let deadline = Instant::now() + budget;
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
         let _ = child.kill();
@@ -784,13 +786,35 @@ fn completion_from_status(
             ExitClassification::ExitCode,
             Some(code),
         ),
-        None => (
-            1,
-            TerminalOutcome::ProtocolFailure,
-            ExitClassification::RuntimeControlled,
-            Some(1),
-        ),
+        None => completion_from_signal(status),
     }
+}
+
+#[cfg(unix)]
+fn completion_from_signal(
+    status: Option<&ExitStatus>,
+) -> (i32, TerminalOutcome, ExitClassification, Option<i32>) {
+    use std::os::unix::process::ExitStatusExt;
+
+    let signal = status.and_then(ExitStatusExt::signal).unwrap_or(1);
+    (
+        128_i32.saturating_add(signal),
+        TerminalOutcome::Failed,
+        ExitClassification::Signal,
+        Some(signal),
+    )
+}
+
+#[cfg(not(unix))]
+fn completion_from_signal(
+    _status: Option<&ExitStatus>,
+) -> (i32, TerminalOutcome, ExitClassification, Option<i32>) {
+    (
+        1,
+        TerminalOutcome::ProtocolFailure,
+        ExitClassification::RuntimeControlled,
+        Some(1),
+    )
 }
 
 #[cfg(windows)]
@@ -952,10 +976,28 @@ fn metadata_is_unsafe(metadata: &fs::Metadata) -> bool {
     false
 }
 fn read_key(path: &Path) -> Result<[u8; CAPSULE_MAC_BYTES], CapsuleError> {
-    fs::read(path)
-        .map_err(|_| CapsuleError::Io)?
+    read_bounded_file(path, CAPSULE_MAC_BYTES, "capsule_key")?
         .try_into()
         .map_err(|_| CapsuleError::Invalid("capsule_key"))
+}
+fn read_bounded_file(
+    path: &Path,
+    maximum_bytes: usize,
+    invalid: &'static str,
+) -> Result<Vec<u8>, CapsuleError> {
+    let file = fs::File::open(path).map_err(|_| CapsuleError::Io)?;
+    let length = file.metadata().map_err(|_| CapsuleError::Io)?.len();
+    if length > maximum_bytes as u64 {
+        return Err(CapsuleError::Invalid(invalid));
+    }
+    let mut bytes = Vec::with_capacity(length as usize);
+    file.take(maximum_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| CapsuleError::Io)?;
+    if bytes.len() > maximum_bytes {
+        return Err(CapsuleError::Invalid(invalid));
+    }
+    Ok(bytes)
 }
 fn validate_reference(value: &str) -> Result<(), CapsuleError> {
     if value.is_empty()
@@ -1156,6 +1198,77 @@ mod tests {
         bytes[final_byte] ^= 1;
         fs::write(&path, bytes).unwrap();
         assert!(matches!(store.load(&name), Err(CapsuleError::Tampered)));
+    }
+
+    #[test]
+    fn capsule_and_key_reads_reject_oversized_files() {
+        let key = [5_u8; CAPSULE_MAC_BYTES];
+
+        let oversized_capsule_temp = tempfile::tempdir().unwrap();
+        let oversized_capsule_root = oversized_capsule_temp.path().join("capsules");
+        fs::create_dir(&oversized_capsule_root).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&oversized_capsule_root, fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let store = CapsuleStore::open(&oversized_capsule_root).unwrap();
+        write_key_for_test(&oversized_capsule_root, &key).unwrap();
+        let name = capsule_file_name(&capsule()).unwrap();
+        let oversized_capsule = oversized_capsule_root.join(&name);
+        fs::write(&oversized_capsule, vec![0_u8; MAX_CAPSULE_BYTES + 1]).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&oversized_capsule, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        assert!(matches!(
+            store.load(&name),
+            Err(CapsuleError::Invalid("capsule_bytes"))
+        ));
+
+        let oversized_key_temp = tempfile::tempdir().unwrap();
+        let oversized_key_root = oversized_key_temp.path().join("capsules");
+        fs::create_dir(&oversized_key_root).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&oversized_key_root, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let store = CapsuleStore::open(&oversized_key_root).unwrap();
+        let name = capsule_file_name(&capsule()).unwrap();
+        let capsule_path = oversized_key_root.join(&name);
+        fs::write(&capsule_path, capsule().seal(&key).unwrap()).unwrap();
+        let key_path = oversized_key_root.join("capsule.key");
+        fs::write(&key_path, vec![0_u8; CAPSULE_MAC_BYTES + 1]).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&capsule_path, fs::Permissions::from_mode(0o600)).unwrap();
+            fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        assert!(matches!(
+            store.load(&name),
+            Err(CapsuleError::Invalid("capsule_key"))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn signal_exit_is_preserved_as_signal_evidence() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let status = ExitStatus::from_raw(9);
+        assert_eq!(
+            completion_from_status(Some(&status), false),
+            (
+                137,
+                TerminalOutcome::Failed,
+                ExitClassification::Signal,
+                Some(9)
+            )
+        );
     }
 
     #[cfg(windows)]

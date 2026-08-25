@@ -30,6 +30,7 @@ fn public_package_owns_every_production_binary() {
     assert!(manifest.contains("name = \"hookstat-shim-fixture\""));
     assert!(manifest.contains("required-features = [\"test-fixtures\"]"));
     assert!(!manifest.contains("hookstat-ipc-client"));
+    assert!(manifest.contains("exclude = [\"dev_proof/**\"]"));
     assert!(!root.join("crates/hookstat-ipc-client/Cargo.toml").exists());
     assert!(!root.join("crates/hookstat-hook/Cargo.toml").exists());
 }

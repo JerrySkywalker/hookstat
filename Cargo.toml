@@ -9,6 +9,7 @@ repository = "https://github.com/JerrySkywalker/hookstat"
 readme = "README.md"
 keywords = ["hooks", "reliability", "agents", "codex", "tui"]
 categories = ["command-line-utilities", "development-tools"]
+exclude = ["dev_proof/**"]
 
 # G36's shipping shim is a repeated-fresh Windows process. Keep release code
 # generation compact without enabling the Thin LTO configuration whose local
