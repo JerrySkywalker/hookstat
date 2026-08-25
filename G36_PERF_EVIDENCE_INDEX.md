@@ -53,6 +53,7 @@ receipt's historical `outcome` field.
 | `runs/HS-G36-WARM-SHIM-ARCHITECTURE-DECISION-002/g36-same-invocation-oracle-001.json` | `DIAGNOSTIC_ONLY` | One 100-sample release oracle series with shipping/instrumented startup comparison; it explicitly sets `acceptance_evidence=false`. | Raw same-invocation overhead is 16.3280/16.6528 ms p95/p99 with the entire oracle channel included. A 1.1668-ms p99 startup-tail correction still yields 17.4948/17.8196 ms, supporting one-process viability but not full acceptance. |
 | `runs/HS-G36-WARM-SHIM-ARCHITECTURE-DECISION-002/g36-performance-qualification-same-invocation-001.json` | `INVALIDATED_BY_METHOD` | The complete release populations are retained, but the first reducer selected the maximum signed p99 difference from one adjacent shipping/instrumented startup pair. Those two independently scheduled populations do not make that pairwise tail identifiable. | Its raw samples remain the immutable input to the corrected deterministic reduction; its recorded FAIL outcome is not acceptance evidence. |
 | `runs/HS-G36-WARM-SHIM-ARCHITECTURE-DECISION-002/g36-performance-qualification-same-invocation-derived-001.json` | `FULL_ACCEPTANCE_PASS` | It is SHA-256-bound to the complete source receipt and changes only its reducer: the conservative build correction is the shipping worst-of-five p99 envelope minus the instrumented worst-of-five p99 envelope. A constant translation exactly translates every retained raw-oracle quantile. | Cooperative is 0.1733/0.3467 ms p95/p99, warm is 18.3269/20.5058 ms, cold p95 is 18.5793 ms, observation gaps are zero, and induced timeouts are zero. |
+| `runs/HS-G36-WINDOWS-PERFORMANCE-RCA-001/g36-full-acceptance-08f83bc-fail.json` | `FULL_ACCEPTANCE_FAIL` | Clean exact source head `08f83bc...`, ordinary and instrumented release-artifact hashes, five independent 100-sample populations, and the accepted same-invocation reducer are recorded. | Cooperative is 0.1357/0.2187 ms p95/p99, cold p95 is 20.5353 ms, and induced timeouts are zero. Warm is 32.6951/245.2032 ms and therefore fails the frozen contract. Four warm populations remain close to the gate while one retains a large fresh-process scheduling tail; the one-process candidate lacks repeatable acceptance margin. |
 
 The current `FULL_ACCEPTANCE_PASS` is the deterministic reduction of one
 complete release qualification, not a rerun or selected subset.  The two
@@ -169,7 +170,7 @@ FROZEN_G28_BUDGET_CHANGED=false
 ## M1 disposition
 
 ```text
-FULL_ACCEPTANCE_FAIL_RECEIPTS=4
+FULL_ACCEPTANCE_FAIL_RECEIPTS=5
 FULL_ACCEPTANCE_PASS_RECEIPTS=1
 DIAGNOSTIC_ONLY_MEASUREMENT_GROUPS=8
 INVALIDATED_BY_METHOD_MEASUREMENT_GROUPS=4
