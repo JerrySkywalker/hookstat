@@ -19,21 +19,41 @@ healthy-hook HookStat-induced timeouts = 0
 
 ## Evidence taxonomy
 
-| Evidence | Classification | Why | Retained conclusion |
-| --- | --- | --- | --- |
-| `runs/HS-V031-G35-G36-LANDING-G37-FOUNDATION-007/g36-performance-qualification.json` | `FULL_ACCEPTANCE_FAIL` | Release artifacts, five independent 100-sample series, and all required result fields are present. Cooperative p95/p99 are 2.2717/4.9652 ms and it has one observation gap, independently failing the frozen contract. Its cold worst p95 is 40.0164 ms and its healthy near-timeout count is zero. | A full series proves the pre-RCA cooperative implementation is not acceptable. Its warm subtraction result is retained only as a diagnostic because the warm methodology defect below invalidates that particular warm-tail claim. |
-| `runs/HS-V031-G35-G36-LANDING-G37-FOUNDATION-007/g36-performance-qualification-rerun-001.json` | `FULL_ACCEPTANCE_FAIL` | Release artifacts, five independent 100-sample series, and all required fields are present. Cooperative p95/p99 are 15.6190/19.6304 ms with 168 total observation gaps, independently failing the frozen contract. Its cold worst p95 is 40.6802 ms and its healthy near-timeout count is zero. | A second full series confirms that the old producer is not qualifying. Its warm subtraction result is diagnostic only for the same methodology reason. |
-| `runs/HS-V031-G35-G36-LANDING-G37-FOUNDATION-007/checkpoint.md` | `REDUCED_DIAGNOSTIC_ONLY` | It declares itself a reduced warmup diagnostic and does not include five complete per-run series, release-artifact provenance, sample vectors, observation-gap accounting, or a complete receipt schema. | The values identify a possible direction for investigation only; they cannot pass or fail G36 acceptance. |
-| `runs/HS-G36-WINDOWS-PERFORMANCE-RCA-001/g36-corrected-method-debug-receipts.md` receipt `001` | `INVALIDATED_BY_HARNESS_DEFECT` | It has the corrected warm-up and paired design and a complete five-by-100 series, but was executed through the debug test profile while claiming release artifacts. | The cooperative result is diagnostic evidence for connection reuse; it is not an acceptance result. |
-| `runs/HS-G36-WINDOWS-PERFORMANCE-RCA-001/g36-corrected-method-debug-receipts.md` receipt `002` | `INVALIDATED_BY_HARNESS_DEFECT` | Same release-profile harness defect; it separately records the post-wait candidate's complete five-by-100 series. | The warm, cold, and timeout result is diagnostic only. |
-| `runs/HS-G36-WINDOWS-PERFORMANCE-RCA-001/g36-release-profile-receipts.md` receipt `001` | `FULL_ACCEPTANCE_FAIL` | Corrected warm/pair method, five 100-sample release series, and release-profile provenance. Cooperative and cold meet their frozen limits, but every warm series exceeds the frozen p95 limit. | The first current candidate is not acceptable. |
-| `runs/HS-G36-WINDOWS-PERFORMANCE-RCA-001/g36-release-profile-receipts.md` receipt `002` | `FULL_ACCEPTANCE_FAIL` | Same qualifying methodology and release provenance after the targeted containment/profile improvements. Its worst warm p95/p99 is 62.0514/87.0825 ms. | The startup improvements are insufficient at full warm tails. |
+The only classification values used by this index are:
 
-There is no current `FULL_ACCEPTANCE_CAPABLE` G36 receipt. The two new
-corrected-method debug receipts are `INVALIDATED_BY_HARNESS_DEFECT`; the two
-older committed full receipts each retain an independently valid cooperative
-failure while their *warm shim submeasurement* is invalidated as a
-tail-acceptance metric by the methodology defects below.
+```text
+FULL_ACCEPTANCE_FAIL
+FULL_ACCEPTANCE_PASS
+DIAGNOSTIC_ONLY
+INVALIDATED_BY_METHOD
+INVALIDATED_BY_BUILD_PROFILE
+```
+
+Receipt-level outcomes are preserved as they were recorded.  Where one
+receipt contains measurements with different evidentiary status, the table
+classifies those measurement groups separately rather than rewriting the
+receipt's historical `outcome` field.
+
+| Evidence / measurement group | Classification | Why | Retained conclusion |
+| --- | --- | --- | --- |
+| `runs/HS-V031-G35-G36-LANDING-G37-FOUNDATION-007/g36-performance-qualification.json`: receipt outcome and cooperative series | `FULL_ACCEPTANCE_FAIL` | Release artifacts, five independent 100-sample series, and all required result fields are present. Cooperative p95/p99 are 2.2717/4.9652 ms and it has one observation gap, independently failing the frozen contract. | The pre-RCA cooperative implementation was not acceptable. |
+| Same receipt: unpaired saturating warm subtraction | `INVALIDATED_BY_METHOD` | It subtracts independent process lifetimes and clips negative samples. | It cannot prove a warm pass or failure. |
+| Same receipt: cold p95 and healthy near-timeout result | `DIAGNOSTIC_ONLY` | Cold p95 is 40.0164 ms and the induced-timeout count is zero, but the receipt already fails cooperative acceptance and cannot be promoted piecemeal to a full pass. | It supports continuity only. |
+| `runs/HS-V031-G35-G36-LANDING-G37-FOUNDATION-007/g36-performance-qualification-rerun-001.json`: receipt outcome and cooperative series | `FULL_ACCEPTANCE_FAIL` | Cooperative p95/p99 are 15.6190/19.6304 ms with 168 total observation gaps, independently failing the frozen contract. | The old producer was not acceptable. |
+| Same receipt: unpaired saturating warm subtraction | `INVALIDATED_BY_METHOD` | It has the same independent-lifetime and clipping defects. | It cannot prove a warm pass or failure. |
+| Same receipt: cold p95 and healthy near-timeout result | `DIAGNOSTIC_ONLY` | Cold p95 is 40.6802 ms and the induced-timeout count is zero, but the full receipt fails cooperative acceptance. | It supports continuity only. |
+| `runs/HS-V031-G35-G36-LANDING-G37-FOUNDATION-007/checkpoint.md` reduced measurements | `DIAGNOSTIC_ONLY` | It declares itself a reduced warmup diagnostic and lacks five complete per-run series, release-artifact provenance, sample vectors, observation-gap accounting, and a complete receipt schema. | The values identify a direction only. |
+| `runs/HS-G36-WINDOWS-PERFORMANCE-RCA-001/g36-corrected-method-debug-receipts.md` receipts `001` and `002` | `INVALIDATED_BY_BUILD_PROFILE` | Both complete series were executed through the debug test profile while claiming release artifacts. | Their numbers are retained but cannot prove acceptance. |
+| `runs/HS-G36-WINDOWS-PERFORMANCE-RCA-001/g36-release-profile-receipts.md` receipts `001` and `002`: recorded receipt outcomes | `FULL_ACCEPTANCE_FAIL` | These release receipts truthfully record failure under the then-current paired-subtraction method. | The historical failure outcomes are preserved. |
+| Same release receipts: cooperative, cold, and healthy near-timeout groups | `DIAGNOSTIC_ONLY` | Cooperative worst p95/p99 is 0.2798/0.7591 ms with zero gaps, cold worst p95 is 38.4506 ms, and induced timeouts are zero. A complete acceptance pass still requires a valid warm metric on one exact candidate. | Current continuity evidence supports cooperative/cold/timeout status but is not a standalone full pass. |
+| Same release receipts: alternating paired warm subtraction | `INVALIDATED_BY_METHOD` | Alternating adjacent samples remove order preference and reduce low-frequency drift, but each delta still subtracts two distinct child process lifetimes with independent Windows scheduling noise. | The 62.0514/87.0825-ms tail cannot establish the transparent overhead tail. |
+| `runs/HS-G36-WINDOWS-PERFORMANCE-RCA-001/g36-cooperative-stage-diagnostic-001.json` | `DIAGNOSTIC_ONLY` | Feature-gated 100-sample stage attribution, explicitly not acceptance evidence. | It identifies the old per-frame connect/close lifecycle and supports the reusable-client change. |
+| `runs/HS-G36-WINDOWS-PERFORMANCE-RCA-001/g36-shim-stage-diagnostic-001.json` | `DIAGNOSTIC_ONLY` | Feature-gated 100-sample stage attribution, explicitly not acceptance evidence. | Shipping startup is the primary one-process cost; child wait is not HookStat overhead. |
+
+There is no current `FULL_ACCEPTANCE_PASS` G36 receipt. The two corrected-method
+debug receipts are `INVALIDATED_BY_BUILD_PROFILE`; the two older committed full
+receipts each retain an independently valid cooperative failure while their
+warm shim submeasurement is `INVALIDATED_BY_METHOD`.
 
 ## Why the checkpoint values differ
 
@@ -88,14 +108,68 @@ does not preserve tail percentiles: independently sampled process-duration
 tails are not paired observations of one operation, and clipping negative
 differences biases the distribution.  It is retained as historical diagnostic
 data only.  The corrected test uses an alternating-order paired sequence and
-keeps the signed transparent-minus-direct value for every pair; acceptance uses
-that paired incremental distribution against the frozen G28 warm budget.
+keeps the signed transparent-minus-direct value for every pair.  That was a
+necessary interim correction, but the M1 audit below proves it is still not an
+identifiable warm-tail acceptance metric.
+
+### M1 warm metric identifiability audit
+
+The alternating signed method corrected clipping, warmup self-load, and fixed
+order.  It did not make the incremental tail identifiable.  For adjacent
+observations `i` and `j`, the measured value is:
+
+```text
+delta = transparent_i - direct_j
+      = HookStat_overhead_i + original_child_i - direct_child_j
+```
+
+The two child terms are different process lifetimes.  Alternation can balance
+order effects and adjacency can reduce slow machine-load drift, but neither
+creates the covariance needed to cancel independent Windows process-scheduling
+noise.  Quantiles are also not linear: the p95 or p99 of a difference is not
+the difference of the component quantiles.  The method can therefore move the
+reported tail both above and below the real HookStat overhead tail.
+
+The frozen G28 warm limit was calibrated from a cache-warmed fresh minimal-shim
+startup.  Operationally it governs HookStat-added synchronous transparent
+overhead, including shipping shim startup, pre-handler instrumentation,
+post-handler instrumentation, and shim exit, while excluding the original
+handler's own child spawn/wait lifetime.  The numeric 20/25-ms limits are
+unchanged.
+
+The acceptance replacement is a same-invocation oracle:
+
+```text
+parent-observed full shipping-shim lifetime
+- shim-observed interval from immediately before child spawn
+  through completion of the child wait
+= HookStat transparent overhead
+```
+
+This subtraction uses one actual transparent invocation.  Scheduler delay
+while the original child lifecycle is active belongs to the subtracted
+interval; scheduler delay in the shim's own startup/pre/post/exit regions
+remains charged to HookStat.  The oracle is diagnostic until its bounded timing
+side channel and instrumented-versus-shipping startup effect are measured.
+
+```text
+WARM_ACCEPTANCE_METRIC=OTHER_PROVEN_METRIC
+OTHER_PROVEN_METRIC=SAME_INVOCATION_PARENT_LIFETIME_MINUS_CHILD_SPAWN_WAIT
+PAIRED_METHOD_IDENTIFIABLE=false
+PAIRED_INCREMENTAL_STATUS=PAIRED_INCREMENTAL_NOT_IDENTIFIABLE
+FROZEN_G28_BUDGET_CHANGED=false
+```
 
 ## M1 disposition
 
 ```text
-FULL_RECEIPTS_CLASSIFIED=2 FULL_ACCEPTANCE_FAIL
-REDUCED_DIAGNOSTIC_CLASSIFIED=1
+FULL_ACCEPTANCE_FAIL_RECEIPTS=4
+FULL_ACCEPTANCE_PASS_RECEIPTS=0
+DIAGNOSTIC_ONLY_MEASUREMENT_GROUPS=6
+INVALIDATED_BY_METHOD_MEASUREMENT_GROUPS=3
+INVALIDATED_BY_BUILD_PROFILE_RECEIPTS=2
+WARM_ACCEPTANCE_METRIC=OTHER_PROVEN_METRIC
+PAIRED_METHOD_IDENTIFIABLE=false
 FROZEN_G28_BUDGET_CHANGED=false
 OWNER_LIVE_CODEX_CONFIG_MUTATED=false
 RAW_PRIVATE_CONTENT_CAPTURED=false

@@ -24,7 +24,7 @@ saturating subtraction distorts tail ranks.
 The first two full corrected series were inadvertently invoked through the
 debug test profile. Their timing structure is useful diagnostic evidence, but
 their `release_artifacts=true` claim was not independently true and they are
-therefore `INVALIDATED_BY_HARNESS_DEFECT` for acceptance. They are retained,
+therefore `INVALIDATED_BY_BUILD_PROFILE` for acceptance. They are retained,
 including their cooperative and shim numbers, and are not rerun-selected.
 
 The qualification test now refuses a debug-profile invocation before it can

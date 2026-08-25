@@ -8,8 +8,8 @@ content.
 
 | Receipt sequence | Cooperative worst p95 / p99 (ms) | Gaps | Warm worst p95 / p99 (ms) | Cold worst p95 (ms) | Healthy HookStat-induced timeouts | Classification |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `001` (before the OS-backed child wait) | 0.1925 / 0.2693 | 0 | 39.5605 / 117.2534 | 32.7291 | 0 | `INVALIDATED_BY_HARNESS_DEFECT` |
-| `002` (connection-reuse plus OS-backed child wait) | 0.1913 / 0.2983 | 0 | 32.7607 / 53.0405 | 34.4153 | 0 | `INVALIDATED_BY_HARNESS_DEFECT` |
+| `001` (before the OS-backed child wait) | 0.1925 / 0.2693 | 0 | 39.5605 / 117.2534 | 32.7291 | 0 | `INVALIDATED_BY_BUILD_PROFILE` |
+| `002` (connection-reuse plus OS-backed child wait) | 0.1913 / 0.2983 | 0 | 32.7607 / 53.0405 | 34.4153 | 0 | `INVALIDATED_BY_BUILD_PROFILE` |
 
 Receipt `002` series-level values, retained to make the classification
 auditable, were:
