@@ -71,7 +71,10 @@ try {
     Invoke-Cargo build --manifest-path $manifest --locked --bins
     Invoke-Cargo install --path $packageRoot.FullName --locked --root $installRoot
 
-    $extension = if ($IsWindows) { '.exe' } else { '' }
+    # `$IsWindows` is available in PowerShell Core but is not defined by
+    # Windows PowerShell 5.1. Use the stable process environment instead so
+    # this fresh-install gate validates the files Cargo actually installs.
+    $extension = if ($env:OS -eq 'Windows_NT') { '.exe' } else { '' }
     foreach ($binary in 'hookstat', 'hookstat-hook', 'hookstat-ipc-broker') {
         $candidate = Join-Path $installRoot ("bin/{0}{1}" -f $binary, $extension)
         if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
