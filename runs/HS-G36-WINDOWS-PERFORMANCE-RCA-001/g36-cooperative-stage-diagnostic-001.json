@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "run_kind": "hs_g36_cooperative_connection_lifecycle_diagnostic",
+  "acceptance_evidence": false,
+  "samples_per_mode": 100,
+  "fresh_one_frame_connection": {
+    "successful_samples": 100,
+    "observation_gaps": 0,
+    "connection_acquisition": { "p50_ms": 0.0863, "p95_ms": 0.1186, "p99_ms": 0.2090 },
+    "frame_encode": { "p50_ms": 0.0024, "p95_ms": 0.0032, "p99_ms": 0.0052 },
+    "frame_write": { "p50_ms": 0.0200, "p95_ms": 0.0315, "p99_ms": 0.0524 },
+    "broker_processing": { "p50_ms": 0.0980, "p95_ms": 0.1832, "p99_ms": 0.3122 },
+    "broker_ack_write": { "p50_ms": 0.0110, "p95_ms": 0.0261, "p99_ms": 0.0366 },
+    "acknowledgement_read": { "p50_ms": 1.3812, "p95_ms": 1.9453, "p99_ms": 2.9211 },
+    "client_shutdown_or_drop": { "p50_ms": 0.0748, "p95_ms": 0.1219, "p99_ms": 0.1547 },
+    "total_emit": { "p50_ms": 1.5718, "p95_ms": 2.1071, "p99_ms": 3.2200 }
+  },
+  "persistent_ipc_client_connection": {
+    "successful_samples": 100,
+    "observation_gaps": 0,
+    "frame_encode": { "p50_ms": 0.0011, "p95_ms": 0.0027, "p99_ms": 0.0033 },
+    "frame_write": { "p50_ms": 0.0079, "p95_ms": 0.0193, "p99_ms": 0.0281 },
+    "broker_processing": { "p50_ms": 0.1116, "p95_ms": 0.2021, "p99_ms": 0.2653 },
+    "broker_ack_write": { "p50_ms": 0.0103, "p95_ms": 0.0187, "p99_ms": 0.0225 },
+    "acknowledgement_read": { "p50_ms": 0.0888, "p95_ms": 0.1813, "p99_ms": 0.6957 },
+    "total_emit": { "p50_ms": 0.1039, "p95_ms": 0.1912, "p99_ms": 0.7392 }
+  },
+  "current_cooperative_producer": {
+    "successful_samples": 100,
+    "observation_gaps": 0,
+    "endpoint_producer_prework": { "p50_ms": 0.6925, "p95_ms": 0.9605, "p99_ms": 1.0593 },
+    "connection_acquisition": { "p50_ms": 0.0000, "p95_ms": 0.0000, "p99_ms": 0.0000 },
+    "frame_encode": { "p50_ms": 0.0013, "p95_ms": 0.0025, "p99_ms": 0.0028 },
+    "frame_write": { "p50_ms": 0.0089, "p95_ms": 0.0177, "p99_ms": 0.0284 },
+    "broker_processing": { "p50_ms": 0.1109, "p95_ms": 0.2128, "p99_ms": 0.9479 },
+    "broker_ack_write": { "p50_ms": 0.0084, "p95_ms": 0.0197, "p99_ms": 0.0242 },
+    "acknowledgement_read": { "p50_ms": 0.0919, "p95_ms": 0.2078, "p99_ms": 0.9530 },
+    "other_bounded_remainder": { "p50_ms": 0.0008, "p95_ms": 0.0013, "p99_ms": 0.0014 },
+    "total_emit": { "p50_ms": 0.1064, "p95_ms": 0.2214, "p99_ms": 0.9730 }
+  },
+  "owner_live_codex_config_mutated": false,
+  "raw_private_content_captured": false
+}

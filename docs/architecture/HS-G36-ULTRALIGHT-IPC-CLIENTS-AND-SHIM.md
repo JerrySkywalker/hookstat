@@ -29,9 +29,16 @@ Every non-`Accepted` value is an explicit observation disposition, never an
 observed-Hook failure. The local connection and acknowledgement limits default
 to 2 ms and 5 ms respectively; the acknowledgement limit covers the complete
 post-connect frame write and reply, rather than being accidentally reduced to
-the connection limit. A capsule-scoped instrumentation allowance can stop an
-observation at `BudgetExhausted`; that is a truthful coverage gap and never a
-handler outcome.
+the connection limit. A producer owns at most one local connection. It uses a
+nonblocking local synchronization attempt, returns `Busy` rather than making a
+Hook wait behind another emitter, and reuses an acknowledged connection only
+for 25 milliseconds. This is intentionally shorter than the broker's bounded
+50-millisecond idle read release. A later `COMPLETE` after a long-running
+original Hook therefore drops the idle client before it writes any lifecycle
+frame and reconnects under the ordinary bounded policy. An uncertain write or
+ACK failure discards the client but never replays that frame. A capsule-scoped
+instrumentation allowance can stop an observation at `BudgetExhausted`; that is
+a truthful coverage gap and never a handler outcome.
 
 The broker is optional and idle-expiring. `hookstat-hook` requests its narrow
 `hookstat-ipc-broker` sibling only after an unavailable result, does not wait

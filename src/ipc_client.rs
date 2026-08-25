@@ -16,8 +16,7 @@ use interprocess::local_socket::{ListenerNonblockingMode, ListenerOptions, prelu
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::io::{self, Read, Write};
-#[cfg(windows)]
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -30,6 +29,10 @@ pub const MAX_IPC_FRAME_BYTES: usize = 1024;
 pub const MAX_IPC_REFERENCE_BYTES: usize = 128;
 
 const FRAME_HEADER_BYTES: usize = 10;
+// The broker releases an idle server-side connection after a 50 ms bounded
+// read window. Reconnect before half that window so a long-running Hook never
+// sends a lifecycle frame over a connection whose delivery is ambiguous.
+const PRODUCER_CONNECTION_REUSE_WINDOW: Duration = Duration::from_millis(25);
 
 /// Bounded, opaque runtime-neutral lifecycle metadata. No command, stream,
 /// prompt, tool payload, credential, or filesystem path is a protocol field.
@@ -397,10 +400,19 @@ async fn write_frame_bounded_tokio(
     frame: &IpcFrame,
     timeout: Duration,
 ) -> Result<(), IpcError> {
+    let encoded = frame.encode()?;
+    write_encoded_bounded_tokio(output, &encoded, timeout).await
+}
+
+#[cfg(windows)]
+async fn write_encoded_bounded_tokio(
+    output: &mut TokioStream,
+    encoded: &[u8],
+    timeout: Duration,
+) -> Result<(), IpcError> {
     use tokio::io::AsyncWriteExt;
 
-    let encoded = frame.encode()?;
-    tokio::time::timeout(timeout, output.write_all(&encoded))
+    tokio::time::timeout(timeout, output.write_all(encoded))
         .await
         .map_err(|_| timed_out("bounded IPC write"))?
         .map_err(IpcError::Io)
@@ -762,10 +774,16 @@ pub struct IpcClient {
     timeout: Duration,
 }
 
+struct CachedConnection {
+    client: IpcClient,
+    last_acknowledgement: Instant,
+}
+
 /// Sanitized timings used only by the developer-only qualification harness.
 #[cfg(feature = "performance-harness")]
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct QualificationClientStageSample {
+    pub client_frame_encode_ns: u64,
     pub client_write_ns: u64,
     pub client_ack_read_ns: u64,
 }
@@ -834,14 +852,6 @@ impl IpcClient {
         })
     }
 
-    #[cfg(windows)]
-    fn close_after_ack(&mut self) -> Result<(), IpcError> {
-        use tokio::io::AsyncWriteExt;
-
-        self.runtime
-            .block_on(self.stream.shutdown())
-            .map_err(IpcError::Io)
-    }
     pub fn send(&mut self, frame: &IpcFrame) -> Result<BrokerAcknowledgement, IpcError> {
         self.send_with_timeout(frame, self.timeout)
     }
@@ -931,15 +941,18 @@ impl IpcClient {
             )));
         }
         let deadline = Instant::now() + self.timeout;
+        let encode_started = Instant::now();
+        let encoded = frame.encode().map_err(QualificationSendFailure::Write)?;
+        let client_frame_encode_ns = elapsed_nanos(encode_started);
         let write_started = Instant::now();
         #[cfg(unix)]
-        write_frame_until(&mut self.stream, frame, deadline)
+        write_all_bounded(&mut self.stream, &encoded, deadline)
             .map_err(QualificationSendFailure::Write)?;
         #[cfg(windows)]
         self.runtime
-            .block_on(write_frame_bounded_tokio(
+            .block_on(write_encoded_bounded_tokio(
                 &mut self.stream,
-                frame,
+                &encoded,
                 deadline.saturating_duration_since(Instant::now()),
             ))
             .map_err(QualificationSendFailure::Write)?;
@@ -963,6 +976,7 @@ impl IpcClient {
         Ok((
             acknowledgement,
             QualificationClientStageSample {
+                client_frame_encode_ns,
                 client_write_ns,
                 client_ack_read_ns: elapsed_nanos(read_started),
             },
@@ -994,16 +1008,34 @@ pub enum ObservationDisposition {
     BudgetExhausted,
 }
 
+/// Sanitized feature-only timing for one successful current-producer emit.
+/// Durations contain no endpoint, frame, or environment content.
+#[cfg(feature = "performance-harness")]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct QualificationProducerStageSample {
+    pub endpoint_producer_prework_ns: u64,
+    pub connection_acquisition_ns: u64,
+    pub frame_encode_ns: u64,
+    pub frame_write_ns: u64,
+    pub acknowledgement_read_ns: u64,
+    pub total_ns: u64,
+    pub other_bounded_remainder_ns: u64,
+}
+
 /// Tiny, runtime-neutral START/COMPLETE producer. Every failure mode is an
 /// observation result: callers must not convert it into a Hook failure.
 #[derive(Clone)]
 pub struct CooperativeProducer {
     endpoint: LocalEndpoint,
     policy: ProducerPolicy,
+    // One local connection is shared by producer clones. `try_lock` makes
+    // contention an explicit fail-open observation gap rather than allowing a
+    // Hook to block behind another emitter. The broker releases its server-side
+    // slot after its bounded read window; a retained stale client is discarded
+    // on its next failed operation and is never replayed automatically.
+    connection: Arc<Mutex<Option<CachedConnection>>>,
     // The overlapped-I/O runtime is built once per producer, rather than once
-    // per lifecycle frame. Frames still use independently closed connections:
-    // a long-running handler can publish COMPLETE after the broker's bounded
-    // connection-read window and a one-frame producer releases its slot.
+    // per lifecycle frame.
     #[cfg(windows)]
     runtime: Arc<tokio::runtime::Runtime>,
 }
@@ -1024,6 +1056,7 @@ impl CooperativeProducer {
         Ok(Self {
             endpoint,
             policy,
+            connection: Arc::new(Mutex::new(None)),
             #[cfg(windows)]
             runtime,
         })
@@ -1054,6 +1087,89 @@ impl CooperativeProducer {
         self.emit_with_budget(frame, Duration::MAX)
     }
 
+    /// Measures the current reusable producer without changing its production
+    /// behavior. It is unavailable outside the developer performance feature.
+    #[cfg(feature = "performance-harness")]
+    pub(crate) fn emit_for_qualification_timed(
+        &self,
+        frame: IpcFrame,
+    ) -> Result<QualificationProducerStageSample, ObservationDisposition> {
+        let total_started = Instant::now();
+        let prework_started = Instant::now();
+        let mut connection = self
+            .connection
+            .try_lock()
+            .map_err(|_| ObservationDisposition::Busy)?;
+        let endpoint_producer_prework_ns = elapsed_nanos(prework_started);
+        let mut connection_acquisition_ns = 0;
+        if connection.as_ref().is_some_and(|cached| {
+            cached.last_acknowledgement.elapsed() >= PRODUCER_CONNECTION_REUSE_WINDOW
+        }) {
+            let _ = connection.take();
+        }
+        if connection.is_none() {
+            let connected_started = Instant::now();
+            #[cfg(unix)]
+            let connected = IpcClient::connect_with_timeouts(
+                &self.endpoint,
+                self.policy.connect_timeout,
+                self.policy.acknowledgement_timeout,
+            );
+            #[cfg(windows)]
+            let connected = IpcClient::connect_with_runtime(
+                &self.endpoint,
+                self.policy.connect_timeout,
+                self.policy.acknowledgement_timeout,
+                Arc::clone(&self.runtime),
+            );
+            let client = connected.map_err(|_| ObservationDisposition::Unavailable)?;
+            connection_acquisition_ns = elapsed_nanos(connected_started);
+            *connection = Some(CachedConnection {
+                client,
+                last_acknowledgement: Instant::now(),
+            });
+        }
+        let result = connection
+            .as_mut()
+            .expect("cooperative connection is established")
+            .client
+            .send_for_qualification_timed(&frame);
+        let (_, client) = match result {
+            Ok(value) => {
+                connection
+                    .as_mut()
+                    .expect("cooperative connection remains established")
+                    .last_acknowledgement = Instant::now();
+                value
+            }
+            Err(error) => {
+                let _ = connection.take();
+                return Err(match error {
+                    QualificationSendFailure::Write(IpcError::Io(_))
+                    | QualificationSendFailure::Read(IpcError::Io(_)) => {
+                        ObservationDisposition::Unavailable
+                    }
+                    _ => ObservationDisposition::Rejected,
+                });
+            }
+        };
+        let total_ns = elapsed_nanos(total_started);
+        let accounted_ns = endpoint_producer_prework_ns
+            .saturating_add(connection_acquisition_ns)
+            .saturating_add(client.client_frame_encode_ns)
+            .saturating_add(client.client_write_ns)
+            .saturating_add(client.client_ack_read_ns);
+        Ok(QualificationProducerStageSample {
+            endpoint_producer_prework_ns,
+            connection_acquisition_ns,
+            frame_encode_ns: client.client_frame_encode_ns,
+            frame_write_ns: client.client_write_ns,
+            acknowledgement_read_ns: client.client_ack_read_ns,
+            total_ns,
+            other_bounded_remainder_ns: total_ns.saturating_sub(accounted_ns),
+        })
+    }
+
     /// Emit one observation without spending more than `budget` on the
     /// endpoint probe plus the complete frame/acknowledgement exchange. This
     /// is deliberately an observation result: a depleted budget never changes
@@ -1063,74 +1179,88 @@ impl CooperativeProducer {
             return ObservationDisposition::BudgetExhausted;
         }
         let deadline = Instant::now().checked_add(budget);
-        let Some(deadline) = deadline else {
-            return self.emit_unbounded(frame);
-        };
-        let connect_timeout = self
-            .policy
-            .connect_timeout
-            .min(deadline.saturating_duration_since(Instant::now()));
-        if connect_timeout.is_zero() {
-            return ObservationDisposition::BudgetExhausted;
-        }
-        #[cfg(unix)]
-        let connected = IpcClient::connect_with_timeouts(
-            &self.endpoint,
-            connect_timeout,
-            self.policy.acknowledgement_timeout,
-        );
-        #[cfg(windows)]
-        let connected = IpcClient::connect_with_runtime(
-            &self.endpoint,
-            connect_timeout,
-            self.policy.acknowledgement_timeout,
-            Arc::clone(&self.runtime),
-        );
-        let Ok(mut client) = connected else {
-            return ObservationDisposition::Unavailable;
-        };
-        let acknowledgement_timeout = self
-            .policy
-            .acknowledgement_timeout
-            .min(deadline.saturating_duration_since(Instant::now()));
-        if acknowledgement_timeout.is_zero() {
-            return ObservationDisposition::BudgetExhausted;
-        }
-        let result = client.send_with_timeout(&frame, acknowledgement_timeout);
-        #[cfg(windows)]
-        let _ = client.close_after_ack();
-        match result {
-            Ok(value) => observation_from_ack(value),
-            Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::TimedOut => {
-                ObservationDisposition::BudgetExhausted
-            }
-            Err(IpcError::Io(_)) => ObservationDisposition::Unavailable,
-            Err(_) => ObservationDisposition::Rejected,
-        }
+        self.emit_with_deadline(frame, deadline)
     }
 
     fn emit_unbounded(&self, frame: IpcFrame) -> ObservationDisposition {
-        #[cfg(unix)]
-        let connected = IpcClient::connect_with_timeouts(
-            &self.endpoint,
-            self.policy.connect_timeout,
-            self.policy.acknowledgement_timeout,
-        );
-        #[cfg(windows)]
-        let connected = IpcClient::connect_with_runtime(
-            &self.endpoint,
-            self.policy.connect_timeout,
-            self.policy.acknowledgement_timeout,
-            Arc::clone(&self.runtime),
-        );
-        let Ok(mut client) = connected else {
-            return ObservationDisposition::Unavailable;
+        self.emit_with_deadline(frame, None)
+    }
+
+    fn emit_with_deadline(
+        &self,
+        frame: IpcFrame,
+        deadline: Option<Instant>,
+    ) -> ObservationDisposition {
+        let mut connection = match self.connection.try_lock() {
+            Ok(connection) => connection,
+            Err(_) => return ObservationDisposition::Busy,
         };
-        let result = client.send(&frame);
-        #[cfg(windows)]
-        let _ = client.close_after_ack();
+        let remaining = |limit: Duration| {
+            deadline.map_or(limit, |deadline| {
+                limit.min(deadline.saturating_duration_since(Instant::now()))
+            })
+        };
+        if connection.as_ref().is_some_and(|cached| {
+            cached.last_acknowledgement.elapsed() >= PRODUCER_CONNECTION_REUSE_WINDOW
+        }) {
+            // Dropping before a new frame is safe: no lifecycle data is in
+            // flight. A long-running Hook therefore reconnects transparently
+            // rather than attempting COMPLETE on the broker's expired read
+            // window.
+            let _ = connection.take();
+        }
+        if connection.is_none() {
+            let connect_timeout = remaining(self.policy.connect_timeout);
+            if connect_timeout.is_zero() {
+                return ObservationDisposition::BudgetExhausted;
+            }
+            #[cfg(unix)]
+            let connected = IpcClient::connect_with_timeouts(
+                &self.endpoint,
+                connect_timeout,
+                self.policy.acknowledgement_timeout,
+            );
+            #[cfg(windows)]
+            let connected = IpcClient::connect_with_runtime(
+                &self.endpoint,
+                connect_timeout,
+                self.policy.acknowledgement_timeout,
+                Arc::clone(&self.runtime),
+            );
+            let Ok(client) = connected else {
+                return ObservationDisposition::Unavailable;
+            };
+            *connection = Some(CachedConnection {
+                client,
+                last_acknowledgement: Instant::now(),
+            });
+        }
+        let acknowledgement_timeout = remaining(self.policy.acknowledgement_timeout);
+        if acknowledgement_timeout.is_zero() {
+            return ObservationDisposition::BudgetExhausted;
+        }
+        let result = connection
+            .as_mut()
+            .expect("cooperative connection is established")
+            .client
+            .send_with_timeout(&frame, acknowledgement_timeout);
+        if result.is_err() {
+            // An ACK read failure can occur after the broker has appended the
+            // frame. Discard the connection for a future bounded reconnect but
+            // never replay this frame and risk fabricating duplicate evidence.
+            let _ = connection.take();
+        }
         match result {
-            Ok(value) => observation_from_ack(value),
+            Ok(value) => {
+                connection
+                    .as_mut()
+                    .expect("cooperative connection remains established")
+                    .last_acknowledgement = Instant::now();
+                observation_from_ack(value)
+            }
+            Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::TimedOut => {
+                ObservationDisposition::BudgetExhausted
+            }
             Err(IpcError::Io(_)) => ObservationDisposition::Unavailable,
             Err(_) => ObservationDisposition::Rejected,
         }
@@ -1526,23 +1656,23 @@ mod tests {
     }
 
     #[test]
-    fn producer_closes_each_lifecycle_frame_connection() {
+    fn producer_reuses_one_connection_for_adjacent_lifecycle_frames() {
         let temp = tempfile::tempdir().unwrap();
         let endpoint = LocalEndpoint::from_state_root(temp.path()).unwrap();
         let listener = endpoint.bind().unwrap();
         let server = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(1);
-            for expected in [true, false] {
-                let mut stream = loop {
-                    match listener.accept() {
-                        Ok(stream) => break stream,
-                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                            assert!(Instant::now() < deadline, "producer did not connect");
-                            thread::sleep(Duration::from_millis(1));
-                        }
-                        Err(error) => panic!("listener failed: {error}"),
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok(stream) => break stream,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "producer did not connect");
+                        thread::sleep(Duration::from_millis(1));
                     }
-                };
+                    Err(error) => panic!("listener failed: {error}"),
+                }
+            };
+            for expected in [true, false] {
                 let frame = read_frame_bounded(&mut stream, Duration::from_millis(100));
                 assert!(matches!(
                     (expected, frame),
@@ -1569,6 +1699,87 @@ mod tests {
             producer.emit_start(frame.clone()),
             ObservationDisposition::Accepted
         );
+        assert_eq!(
+            producer.emit_complete(
+                frame,
+                Completion {
+                    terminal_status: TerminalOutcome::Completed,
+                    exit_classification: ExitClassification::ExitCode,
+                    exit_value: Some(0),
+                    duration_ms: 1,
+                }
+            ),
+            ObservationDisposition::Accepted
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn producer_reconnects_before_a_long_running_hook_completion() {
+        let temp = tempfile::tempdir().unwrap();
+        let endpoint = LocalEndpoint::from_state_root(temp.path()).unwrap();
+        let listener = endpoint.bind().unwrap();
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let mut first = loop {
+                match listener.accept() {
+                    Ok(stream) => break stream,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "producer did not connect");
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("listener failed: {error}"),
+                }
+            };
+            assert!(matches!(
+                read_frame_bounded(&mut first, Duration::from_millis(100)),
+                Ok(IpcFrame::Start(_))
+            ));
+            write_frame_bounded(
+                &mut first,
+                &IpcFrame::Ack(BrokerAcknowledgement::Accepted),
+                Duration::from_millis(100),
+            )
+            .unwrap();
+            drop(first);
+            let mut second = loop {
+                match listener.accept() {
+                    Ok(stream) => break stream,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "producer did not reconnect");
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("listener failed: {error}"),
+                }
+            };
+            assert!(matches!(
+                read_frame_bounded(&mut second, Duration::from_millis(100)),
+                Ok(IpcFrame::Complete { .. })
+            ));
+            write_frame_bounded(
+                &mut second,
+                &IpcFrame::Ack(BrokerAcknowledgement::Accepted),
+                Duration::from_millis(100),
+            )
+            .unwrap();
+        });
+        let producer = CooperativeProducer::new(
+            endpoint,
+            ProducerPolicy {
+                connect_timeout: Duration::from_millis(100),
+                acknowledgement_timeout: Duration::from_millis(100),
+            },
+        )
+        .unwrap();
+        let frame = lifecycle();
+        assert_eq!(
+            producer.emit_start(frame.clone()),
+            ObservationDisposition::Accepted
+        );
+        // This exceeds the producer reuse window but does not consume an
+        // unbounded broker slot. COMPLETE uses a fresh connection before any
+        // lifecycle frame is attempted on the stale pipe.
+        thread::sleep(PRODUCER_CONNECTION_REUSE_WINDOW + Duration::from_millis(3));
         assert_eq!(
             producer.emit_complete(
                 frame,

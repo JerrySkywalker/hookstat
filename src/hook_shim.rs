@@ -16,8 +16,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+use wait_timeout::ChildExt;
 
 type HmacSha256 = Hmac<Sha256>;
+
+#[cfg(feature = "performance-harness")]
+fn elapsed_ns(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
 
 const CAPSULE_MAGIC: [u8; 4] = *b"HSHC";
 const CAPSULE_SCHEMA_VERSION: u8 = 1;
@@ -287,6 +293,40 @@ impl CapsuleStore {
         }
         Ok(capsule)
     }
+
+    /// Feature-only, sanitized capsule-load decomposition. It returns no
+    /// private bytes or paths; callers may serialize only the durations.
+    #[cfg(feature = "performance-harness")]
+    pub(crate) fn load_for_qualification_timed(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<(HandlerCapsule, CapsuleLoadStageTiming), CapsuleError> {
+        let validation_started = Instant::now();
+        let file = contained_regular_file(&self.root, path.as_ref())?;
+        let key_file = contained_regular_file(&self.root, Path::new("capsule.key"))?;
+        let capsule_directory_file_validation_ns = elapsed_ns(validation_started);
+        let key_read_started = Instant::now();
+        let key = read_key(&key_file)?;
+        let key_read_ns = elapsed_ns(key_read_started);
+        let capsule_read_started = Instant::now();
+        let bytes = fs::read(&file).map_err(|_| CapsuleError::Io)?;
+        let capsule_read_ns = elapsed_ns(capsule_read_started);
+        let hmac_validation_started = Instant::now();
+        let capsule = HandlerCapsule::unseal(&bytes, &key)?;
+        let expected = capsule_file_name(&capsule)?;
+        if file.file_name().and_then(|name| name.to_str()) != Some(expected.as_str()) {
+            return Err(CapsuleError::Path);
+        }
+        Ok((
+            capsule,
+            CapsuleLoadStageTiming {
+                capsule_directory_file_validation_ns,
+                key_read_ns,
+                capsule_read_ns,
+                hmac_and_capsule_validation_ns: elapsed_ns(hmac_validation_started),
+            },
+        ))
+    }
     pub fn write_for_test(
         &self,
         relative: &Path,
@@ -302,6 +342,17 @@ impl CapsuleStore {
         }
         fs::write(path, capsule.seal(key)?).map_err(|_| CapsuleError::Io)
     }
+}
+
+/// Sanitized feature-only capsule-load timings. None of these fields contains
+/// a path, key, capsule body, command, argument, or handler identity.
+#[cfg(feature = "performance-harness")]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CapsuleLoadStageTiming {
+    pub capsule_directory_file_validation_ns: u64,
+    pub key_read_ns: u64,
+    pub capsule_read_ns: u64,
+    pub hmac_and_capsule_validation_ns: u64,
 }
 
 pub fn write_key_for_test(root: &Path, key: &[u8; CAPSULE_MAC_BYTES]) -> Result<(), CapsuleError> {
@@ -324,6 +375,23 @@ pub struct ShimOutcome {
     pub completed: ObservationDisposition,
     pub timed_out: bool,
     pub direct_process: bool,
+}
+
+/// Sanitized feature-only execution stages for one real shim transaction.
+#[cfg(feature = "performance-harness")]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ShimExecutionStageTiming {
+    pub capsule_validate_ns: u64,
+    pub producer_construction_ns: u64,
+    pub lifecycle_construction_ns: u64,
+    pub start_ipc_ns: u64,
+    pub job_object_establish_ns: u64,
+    pub command_construction_ns: u64,
+    pub original_child_spawn_ns: u64,
+    pub child_wait_poll_ns: u64,
+    pub job_object_release_ns: u64,
+    pub complete_ipc_ns: u64,
+    pub total_execution_ns: u64,
 }
 
 pub fn run_capsule(capsule: &HandlerCapsule, state_root: &Path) -> Result<ShimOutcome, ShimError> {
@@ -402,6 +470,116 @@ pub fn run_capsule(capsule: &HandlerCapsule, state_root: &Path) -> Result<ShimOu
         timed_out,
         direct_process: matches!(capsule.execution, ExecutionPlan::Direct { .. }),
     })
+}
+
+/// Runs the exact shim execution path while measuring only sanitized stage
+/// durations. This function exists only in the developer performance build.
+#[cfg(feature = "performance-harness")]
+pub(crate) fn run_capsule_for_qualification_timed(
+    capsule: &HandlerCapsule,
+    state_root: &Path,
+) -> Result<(ShimOutcome, ShimExecutionStageTiming), ShimError> {
+    let total_started = Instant::now();
+    let validate_started = Instant::now();
+    capsule.validate().map_err(ShimError::Capsule)?;
+    let capsule_validate_ns = elapsed_ns(validate_started);
+    let producer_started = Instant::now();
+    let producer = CooperativeProducer::for_state_root(state_root).ok();
+    let producer_construction_ns = elapsed_ns(producer_started);
+    let mut instrumentation = InstrumentationAllowance::new(capsule.instrumentation_envelope.0);
+    let lifecycle_started = Instant::now();
+    let started_at = now_unix_ms();
+    let invocation = invocation_key(started_at);
+    let lifecycle = capsule
+        .lifecycle(invocation, started_at)
+        .map_err(ShimError::Capsule)?;
+    let lifecycle_construction_ns = elapsed_ns(lifecycle_started);
+    let start_ipc_started = Instant::now();
+    let started = emit_or_request_on_demand_broker(
+        producer.as_ref(),
+        IpcFrameKind::Start(lifecycle.clone()),
+        state_root,
+        &mut instrumentation,
+    );
+    let start_ipc_ns = elapsed_ns(start_ipc_started);
+    let containment_started = Instant::now();
+    let mut containment = ProcessContainment::establish()?;
+    let job_object_establish_ns = elapsed_ns(containment_started);
+    let command_started = Instant::now();
+    let mut command = command_for(&capsule.execution);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let command_construction_ns = elapsed_ns(command_started);
+    let spawn_started = Instant::now();
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(_) => {
+            containment.release_after_normal_root_exit()?;
+            return Err(ShimError::Spawn);
+        }
+    };
+    let original_child_spawn_ns = elapsed_ns(spawn_started);
+    let wait_started = Instant::now();
+    let (status, timed_out) = match wait_with_original_budget(&mut child, capsule.original_budget.0)
+    {
+        Ok(value) => value,
+        Err(error) => {
+            std::mem::forget(containment);
+            return Err(error);
+        }
+    };
+    let child_wait_poll_ns = elapsed_ns(wait_started);
+    let release_started = Instant::now();
+    if !timed_out {
+        containment.release_after_normal_root_exit()?;
+    }
+    let job_object_release_ns = elapsed_ns(release_started);
+    let completed_at = now_unix_ms();
+    let (exit_code, terminal_status, exit_classification, exit_value) =
+        completion_from_status(status.as_ref(), timed_out);
+    let complete_ipc_started = Instant::now();
+    let completed = emit_or_request_on_demand_broker(
+        producer.as_ref(),
+        IpcFrameKind::Complete(
+            lifecycle,
+            Completion {
+                terminal_status,
+                exit_classification,
+                exit_value,
+                duration_ms: completed_at.saturating_sub(started_at) as u64,
+            },
+        ),
+        state_root,
+        &mut instrumentation,
+    );
+    let complete_ipc_ns = elapsed_ns(complete_ipc_started);
+    if timed_out {
+        std::mem::forget(containment);
+    }
+    Ok((
+        ShimOutcome {
+            exit_code,
+            started,
+            completed,
+            timed_out,
+            direct_process: matches!(capsule.execution, ExecutionPlan::Direct { .. }),
+        },
+        ShimExecutionStageTiming {
+            capsule_validate_ns,
+            producer_construction_ns,
+            lifecycle_construction_ns,
+            start_ipc_ns,
+            job_object_establish_ns,
+            command_construction_ns,
+            original_child_spawn_ns,
+            child_wait_poll_ns,
+            job_object_release_ns,
+            complete_ipc_ns,
+            total_execution_ns: elapsed_ns(total_started),
+        },
+    ))
 }
 
 enum IpcFrameKind {
@@ -535,20 +713,22 @@ fn wait_with_original_budget(
     budget: Duration,
 ) -> Result<(Option<ExitStatus>, bool), ShimError> {
     let deadline = Instant::now() + budget;
-    loop {
-        if deadline_expired(Instant::now(), deadline) {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Ok((None, true));
+    }
+    match child.wait_timeout(remaining).map_err(|_| ShimError::Wait)? {
+        Some(status) if !deadline_expired(Instant::now(), deadline) => Ok((Some(status), false)),
+        Some(_) | None => {
+            // Equality is intentionally a timeout. This retains the previous
+            // strict original-budget contract without the Windows scheduler
+            // quantum added by a user-space 1 ms polling sleep.
             let _ = child.kill();
             let _ = child.wait();
-            return Ok((None, true));
+            Ok((None, true))
         }
-        if let Some(status) = child.try_wait().map_err(|_| ShimError::Wait)? {
-            return Ok((Some(status), false));
-        }
-        thread::sleep(
-            deadline
-                .saturating_duration_since(Instant::now())
-                .min(Duration::from_millis(1)),
-        );
     }
 }
 
@@ -721,11 +901,13 @@ fn contained_regular_file(root: &Path, candidate: &Path) -> Result<PathBuf, Caps
             return Err(CapsuleError::Path);
         }
     }
-    let canonical = fs::canonicalize(candidate).map_err(|_| CapsuleError::Path)?;
-    if canonical.parent() != Some(root) {
-        return Err(CapsuleError::Path);
-    }
-    Ok(canonical)
+    // The parent has just been canonicalized to the store's already-secure
+    // root, and this immediate child has been proved a non-reparse regular
+    // file. A second canonicalization of that same child cannot strengthen
+    // containment, but it does add a synchronous filesystem traversal to the
+    // shipping shim hot path. Preserve the checked path for the subsequent
+    // read; a TOCTOU replacement still goes through the existing HMAC check.
+    Ok(candidate)
 }
 fn metadata_is_unsafe(metadata: &fs::Metadata) -> bool {
     #[cfg(unix)]

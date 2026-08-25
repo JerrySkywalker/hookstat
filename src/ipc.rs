@@ -25,15 +25,21 @@ pub use crate::ipc_client::{
     BrokerAcknowledgement, BrokerStartup, Completion, ExitClassification, IpcClient, IpcFrame,
     LifecycleFrame, LocalEndpoint, TerminalOutcome,
 };
+#[cfg(feature = "performance-harness")]
+pub(crate) use crate::ipc_client::{
+    CooperativeProducer, QualificationClientStageSample, QualificationSendFailure,
+};
 pub use crate::ipc_client::{
     IPC_MAGIC, IPC_PROTOCOL_VERSION, IpcError, MAX_IPC_FRAME_BYTES, MAX_IPC_REFERENCE_BYTES,
 };
-#[cfg(feature = "performance-harness")]
-pub(crate) use crate::ipc_client::{QualificationClientStageSample, QualificationSendFailure};
 
 pub const WAL_MAGIC: [u8; 4] = *b"HSWL";
 pub const WAL_VERSION: u8 = 1;
 pub const MAX_WAL_BYTES: u64 = 64 * 1024 * 1024;
+// A producer may reuse a connection for at most 25 ms. This 50 ms broker-side
+// release remains bounded while allowing the common START -> short Hook ->
+// COMPLETE path to avoid a second connection.
+const CONNECTION_IDLE_READ_WINDOW: Duration = Duration::from_millis(50);
 const WAL_HEADER_BYTES: usize = 12;
 
 #[cfg(feature = "performance-harness")]
@@ -1429,7 +1435,7 @@ fn connection_loop(
     while !stopping.load(Ordering::Acquire) {
         #[cfg(feature = "performance-harness")]
         let read_started = stage_collector.as_ref().map(|_| Instant::now());
-        match read_frame_bounded(&mut stream, Duration::from_millis(10)) {
+        match read_frame_bounded(&mut stream, CONNECTION_IDLE_READ_WINDOW) {
             Ok(frame) if frame.is_lifecycle() => {
                 #[cfg(feature = "performance-harness")]
                 let timing = stage_collector
@@ -1475,12 +1481,11 @@ fn connection_loop(
                 }
             }
             Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::TimedOut => {
-                // G36 producers close each bounded frame connection after its
-                // ACK. Windows can still surface the peer close as a read
-                // timeout instead of EOF, so retaining this stream would
-                // consume one of the finite connection slots. The client
-                // reconnects for a later lifecycle frame; it never holds an
-                // observed handler's business timeout open.
+                // The producer never reuses an acknowledged connection past
+                // 25 ms. A peer that has disappeared can still surface as a
+                // timeout on Windows, so release this bounded 50 ms server
+                // slot and let a later lifecycle frame reconnect. No original
+                // Hook lifetime is retained by the broker.
                 break;
             }
             Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof => break,

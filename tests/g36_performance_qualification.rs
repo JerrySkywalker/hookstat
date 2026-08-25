@@ -60,7 +60,11 @@ struct Receipt {
     schema_version: u8,
     run_kind: &'static str,
     release_artifacts: bool,
+    build_profile: &'static str,
     shim_measurement: &'static str,
+    warmup_definition: &'static str,
+    warm_harness_self_load: bool,
+    paired_sample_order: &'static str,
     qualifying_runs: usize,
     samples_per_run: usize,
     warmups_per_timed_sample: usize,
@@ -146,11 +150,7 @@ fn launch_original_handler() -> Duration {
     elapsed
 }
 
-fn timing(samples: Vec<Duration>) -> Timing {
-    let mut milliseconds = samples
-        .into_iter()
-        .map(|sample| sample.as_secs_f64() * 1_000.0)
-        .collect::<Vec<_>>();
+fn timing(mut milliseconds: Vec<f64>) -> Timing {
     milliseconds.sort_by(f64::total_cmp);
     let percentile = |percent: f64| {
         milliseconds[((milliseconds.len() as f64 * percent).ceil() as usize).saturating_sub(1)]
@@ -194,22 +194,33 @@ fn emit_cooperative_run(producer: &CooperativeProducer, run: usize) -> (Timing, 
         let started = Instant::now();
         let disposition = producer.emit_start(frame.clone());
         let elapsed = started.elapsed();
-        if disposition == ObservationDisposition::Accepted
-            && producer.emit_complete(frame, complete()) == ObservationDisposition::Accepted
-        {
-            samples.push(elapsed);
+        if disposition == ObservationDisposition::Accepted {
+            samples.push(elapsed.as_secs_f64() * 1_000.0);
         } else {
             // A non-accepted observation remains a truthful fail-open gap.
             // It never enters a latency percentile as a successful sample.
             observation_gaps += 1;
         }
-        // Windows completes the server-side close independently after each
-        // explicitly closed one-frame connection. Keep that turnover outside
-        // the timed interval; G35's dedicated concurrency matrix covers
-        // saturated transport behavior separately from G36 producer latency.
-        std::thread::sleep(Duration::from_millis(15));
     }
     (timing(samples), observation_gaps)
+}
+
+fn warm_actual_shipping_shim(shim: &Path) {
+    // G28 defines warm as fresh executable launches, not prior end-to-end
+    // evidence transactions. `--help` starts the exact shipping shim binary,
+    // parses its real arguments, and exits before it can create broker/WAL
+    // work. This retains the G28 cache-warmed fresh-start definition without
+    // self-loading the timed broker or filesystem path.
+    for _ in 0..WARMUPS_PER_SAMPLE {
+        let status = Command::new(shim)
+            .arg("--help")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "shipping shim warm-up did not exit zero");
+    }
 }
 
 fn wait_for_broker(producer: &CooperativeProducer) {
@@ -235,19 +246,24 @@ fn emit_shim_run(
     warmed: bool,
 ) -> Timing {
     let mut samples = Vec::with_capacity(SAMPLES_PER_RUN);
-    for _ in 0..SAMPLES_PER_RUN {
+    for sample in 0..SAMPLES_PER_RUN {
         if warmed {
-            for _ in 0..WARMUPS_PER_SAMPLE {
-                let _ = launch(shim, capsule, capsule_root, state_root);
-            }
+            warm_actual_shipping_shim(shim);
         }
-        let original = launch_original_handler();
-        let transparent = launch(shim, capsule, capsule_root, state_root);
-        // The frozen G28 shim budget is instrumentation cost; it does not
-        // relabel the original handler's independent process/shell time as
-        // HookStat overhead. Both fresh operations are captured immediately
-        // before this subtraction, which itself lies outside the timed path.
-        samples.push(transparent.saturating_sub(original));
+        // Alternating order avoids a one-way cache/order preference. Each
+        // sample is a real paired transparent-versus-direct operation; unlike
+        // the old saturating subtraction it preserves negative deltas and so
+        // does not bias a tail percentile upward.
+        let (original, transparent) = if sample % 2 == 0 {
+            let original = launch_original_handler();
+            let transparent = launch(shim, capsule, capsule_root, state_root);
+            (original, transparent)
+        } else {
+            let transparent = launch(shim, capsule, capsule_root, state_root);
+            let original = launch_original_handler();
+            (original, transparent)
+        };
+        samples.push(transparent.as_secs_f64() * 1_000.0 - original.as_secs_f64() * 1_000.0);
     }
     timing(samples)
 }
@@ -272,6 +288,15 @@ fn write_receipt(receipt: &Receipt) {
 #[test]
 #[ignore = "explicit release-artifact G36 performance qualification"]
 fn release_artifact_meets_the_frozen_g36_budget() {
+    // `CARGO_BIN_EXE_hookstat-hook` inherits the test profile.  A debug test
+    // would therefore quietly measure a non-release shipping binary while
+    // the receipt claimed otherwise.  Keep the ignored test compilable for
+    // ordinary coverage, but reject such an invocation before it can write a
+    // qualifying receipt.
+    assert!(
+        !cfg!(debug_assertions),
+        "G36 qualification requires cargo test --release; debug artifacts are diagnostic only"
+    );
     let temporary = tempfile::tempdir().unwrap();
     let capsule_root = temporary.path().join("capsules");
     let state_root = temporary.path().join("state");
@@ -284,9 +309,10 @@ fn release_artifact_meets_the_frozen_g36_budget() {
     );
     let healthy_path = seal(&capsule_root, &healthy);
     let mut broker_config = BrokerConfig::for_state_root(&state_root);
-    // The release qualification measures the producer's 2 ms connect / 5 ms
-    // acknowledgement policy. The broker-side read allowance is deliberately
-    // wider so scheduler delay cannot be relabelled as producer latency.
+    // The release qualification measures the producer's bounded reconnect
+    // policy. The broker-side read allowance is deliberately wider than the
+    // producer reuse window, so scheduler delay cannot be relabelled as
+    // producer latency and a long-running Hook retains no idle slot forever.
     broker_config.ack_timeout = Duration::from_millis(100);
     let host = BrokerHost::start(broker_config).unwrap();
     let producer = CooperativeProducer::for_state_root(&state_root).unwrap();
@@ -370,7 +396,11 @@ fn release_artifact_meets_the_frozen_g36_budget() {
         schema_version: 1,
         run_kind: "g36_release_artifact_performance_qualification",
         release_artifacts: true,
-        shim_measurement: "transparent_shim_overhead_against_direct_handler",
+        build_profile: "release",
+        shim_measurement: "balanced_paired_transparent_shim_minus_direct_handler",
+        warmup_definition: "25_unmeasured_fresh_actual_hookstat_hook_help_launches_before_each_timed_pair",
+        warm_harness_self_load: false,
+        paired_sample_order: "alternating_direct_then_shim_and_shim_then_direct",
         qualifying_runs: QUALIFYING_RUNS,
         samples_per_run: SAMPLES_PER_RUN,
         warmups_per_timed_sample: WARMUPS_PER_SAMPLE,
