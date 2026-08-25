@@ -12,9 +12,7 @@ use interprocess::local_socket::ConnectOptions;
 use interprocess::local_socket::GenericNamespaced;
 #[cfg(windows)]
 use interprocess::local_socket::tokio::Stream as TokioStream;
-use interprocess::local_socket::{
-    ListenerNonblockingMode, ListenerOptions, prelude::*,
-};
+use interprocess::local_socket::{ListenerNonblockingMode, ListenerOptions, prelude::*};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -882,8 +880,8 @@ impl IpcClient {
             ))
             .map_err(QualificationSendFailure::Write)?;
         #[cfg(unix)]
-        let acknowledgement = read_frame_until(&mut self.stream, deadline)
-            .map_err(QualificationSendFailure::Read)?;
+        let acknowledgement =
+            read_frame_until(&mut self.stream, deadline).map_err(QualificationSendFailure::Read)?;
         #[cfg(windows)]
         let acknowledgement = self
             .runtime
@@ -925,8 +923,8 @@ impl IpcClient {
         let client_write_ns = elapsed_nanos(write_started);
         let read_started = Instant::now();
         #[cfg(unix)]
-        let acknowledgement = read_frame_until(&mut self.stream, deadline)
-            .map_err(QualificationSendFailure::Read)?;
+        let acknowledgement =
+            read_frame_until(&mut self.stream, deadline).map_err(QualificationSendFailure::Read)?;
         #[cfg(windows)]
         let acknowledgement = self
             .runtime
