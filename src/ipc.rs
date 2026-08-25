@@ -1475,7 +1475,13 @@ fn connection_loop(
                 }
             }
             Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::TimedOut => {
-                thread::sleep(Duration::from_millis(1));
+                // G36 producers close each bounded frame connection after its
+                // ACK. Windows can still surface the peer close as a read
+                // timeout instead of EOF, so retaining this stream would
+                // consume one of the finite connection slots. The client
+                // reconnects for a later lifecycle frame; it never holds an
+                // observed handler's business timeout open.
+                break;
             }
             Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof => break,
             Ok(_) | Err(_) => {

@@ -16,6 +16,8 @@ use interprocess::local_socket::{ListenerNonblockingMode, ListenerOptions, prelu
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::io::{self, Read, Write};
+#[cfg(windows)]
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -756,7 +758,7 @@ pub struct IpcClient {
     #[cfg(windows)]
     stream: TokioStream,
     #[cfg(windows)]
-    runtime: tokio::runtime::Runtime,
+    runtime: Arc<tokio::runtime::Runtime>,
     timeout: Duration,
 }
 
@@ -806,18 +808,39 @@ impl IpcClient {
         }
         #[cfg(windows)]
         {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_io()
-                .enable_time()
-                .build()
-                .map_err(IpcError::Io)?;
-            let stream = runtime.block_on(endpoint.connect_tokio_stream(connect_timeout))?;
-            Ok(Self {
-                stream,
-                runtime,
-                timeout: acknowledgement_timeout,
-            })
+            let runtime = Arc::new(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_io()
+                    .enable_time()
+                    .build()
+                    .map_err(IpcError::Io)?,
+            );
+            Self::connect_with_runtime(endpoint, connect_timeout, acknowledgement_timeout, runtime)
         }
+    }
+
+    #[cfg(windows)]
+    fn connect_with_runtime(
+        endpoint: &LocalEndpoint,
+        connect_timeout: Duration,
+        acknowledgement_timeout: Duration,
+        runtime: Arc<tokio::runtime::Runtime>,
+    ) -> Result<Self, IpcError> {
+        let stream = runtime.block_on(endpoint.connect_tokio_stream(connect_timeout))?;
+        Ok(Self {
+            stream,
+            runtime,
+            timeout: acknowledgement_timeout,
+        })
+    }
+
+    #[cfg(windows)]
+    fn close_after_ack(&mut self) -> Result<(), IpcError> {
+        use tokio::io::AsyncWriteExt;
+
+        self.runtime
+            .block_on(self.stream.shutdown())
+            .map_err(IpcError::Io)
     }
     pub fn send(&mut self, frame: &IpcFrame) -> Result<BrokerAcknowledgement, IpcError> {
         self.send_with_timeout(frame, self.timeout)
@@ -973,10 +996,16 @@ pub enum ObservationDisposition {
 
 /// Tiny, runtime-neutral START/COMPLETE producer. Every failure mode is an
 /// observation result: callers must not convert it into a Hook failure.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CooperativeProducer {
     endpoint: LocalEndpoint,
     policy: ProducerPolicy,
+    // The overlapped-I/O runtime is built once per producer, rather than once
+    // per lifecycle frame. Frames still use independently closed connections:
+    // a long-running handler can publish COMPLETE after the broker's bounded
+    // connection-read window and a one-frame producer releases its slot.
+    #[cfg(windows)]
+    runtime: Arc<tokio::runtime::Runtime>,
 }
 
 impl CooperativeProducer {
@@ -984,7 +1013,20 @@ impl CooperativeProducer {
         if policy.connect_timeout.is_zero() || policy.acknowledgement_timeout.is_zero() {
             return Err(IpcError::Invalid("producer_policy"));
         }
-        Ok(Self { endpoint, policy })
+        #[cfg(windows)]
+        let runtime = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .enable_time()
+                .build()
+                .map_err(IpcError::Io)?,
+        );
+        Ok(Self {
+            endpoint,
+            policy,
+            #[cfg(windows)]
+            runtime,
+        })
     }
     pub fn for_state_root(root: impl AsRef<std::path::Path>) -> Result<Self, IpcError> {
         Self::new(
@@ -1031,11 +1073,20 @@ impl CooperativeProducer {
         if connect_timeout.is_zero() {
             return ObservationDisposition::BudgetExhausted;
         }
-        let Ok(mut client) = IpcClient::connect_with_timeouts(
+        #[cfg(unix)]
+        let connected = IpcClient::connect_with_timeouts(
             &self.endpoint,
             connect_timeout,
             self.policy.acknowledgement_timeout,
-        ) else {
+        );
+        #[cfg(windows)]
+        let connected = IpcClient::connect_with_runtime(
+            &self.endpoint,
+            connect_timeout,
+            self.policy.acknowledgement_timeout,
+            Arc::clone(&self.runtime),
+        );
+        let Ok(mut client) = connected else {
             return ObservationDisposition::Unavailable;
         };
         let acknowledgement_timeout = self
@@ -1045,7 +1096,10 @@ impl CooperativeProducer {
         if acknowledgement_timeout.is_zero() {
             return ObservationDisposition::BudgetExhausted;
         }
-        match client.send_with_timeout(&frame, acknowledgement_timeout) {
+        let result = client.send_with_timeout(&frame, acknowledgement_timeout);
+        #[cfg(windows)]
+        let _ = client.close_after_ack();
+        match result {
             Ok(value) => observation_from_ack(value),
             Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::TimedOut => {
                 ObservationDisposition::BudgetExhausted
@@ -1056,14 +1110,26 @@ impl CooperativeProducer {
     }
 
     fn emit_unbounded(&self, frame: IpcFrame) -> ObservationDisposition {
-        let Ok(mut client) = IpcClient::connect_with_timeouts(
+        #[cfg(unix)]
+        let connected = IpcClient::connect_with_timeouts(
             &self.endpoint,
             self.policy.connect_timeout,
             self.policy.acknowledgement_timeout,
-        ) else {
+        );
+        #[cfg(windows)]
+        let connected = IpcClient::connect_with_runtime(
+            &self.endpoint,
+            self.policy.connect_timeout,
+            self.policy.acknowledgement_timeout,
+            Arc::clone(&self.runtime),
+        );
+        let Ok(mut client) = connected else {
             return ObservationDisposition::Unavailable;
         };
-        match client.send(&frame) {
+        let result = client.send(&frame);
+        #[cfg(windows)]
+        let _ = client.close_after_ack();
+        match result {
             Ok(value) => observation_from_ack(value),
             Err(IpcError::Io(_)) => ObservationDisposition::Unavailable,
             Err(_) => ObservationDisposition::Rejected,
@@ -1456,6 +1522,65 @@ mod tests {
             ObservationDisposition::Accepted
         );
         hold_ack_tx.send(()).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn producer_closes_each_lifecycle_frame_connection() {
+        let temp = tempfile::tempdir().unwrap();
+        let endpoint = LocalEndpoint::from_state_root(temp.path()).unwrap();
+        let listener = endpoint.bind().unwrap();
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            for expected in [true, false] {
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok(stream) => break stream,
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "producer did not connect");
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                        Err(error) => panic!("listener failed: {error}"),
+                    }
+                };
+                let frame = read_frame_bounded(&mut stream, Duration::from_millis(100));
+                assert!(matches!(
+                    (expected, frame),
+                    (true, Ok(IpcFrame::Start(_))) | (false, Ok(IpcFrame::Complete { .. }))
+                ));
+                write_frame_bounded(
+                    &mut stream,
+                    &IpcFrame::Ack(BrokerAcknowledgement::Accepted),
+                    Duration::from_millis(100),
+                )
+                .unwrap();
+            }
+        });
+        let producer = CooperativeProducer::new(
+            endpoint,
+            ProducerPolicy {
+                connect_timeout: Duration::from_millis(100),
+                acknowledgement_timeout: Duration::from_millis(100),
+            },
+        )
+        .unwrap();
+        let frame = lifecycle();
+        assert_eq!(
+            producer.emit_start(frame.clone()),
+            ObservationDisposition::Accepted
+        );
+        assert_eq!(
+            producer.emit_complete(
+                frame,
+                Completion {
+                    terminal_status: TerminalOutcome::Completed,
+                    exit_classification: ExitClassification::ExitCode,
+                    exit_value: Some(0),
+                    duration_ms: 1,
+                }
+            ),
+            ObservationDisposition::Accepted
+        );
         server.join().unwrap();
     }
 }
