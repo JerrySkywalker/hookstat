@@ -1115,6 +1115,16 @@ impl BrokerStartup {
             }
             if let Some(_lease) = StartupLease::try_acquire(&self.endpoint, self.stale_lease_after)?
             {
+                // A follower can miss a healthy Windows pipe while every
+                // current instance is busy, then acquire the lease just after
+                // the original starter releases it. Recheck while elected so
+                // a transiently busy endpoint cannot trigger a second broker.
+                // A genuinely absent pipe returns immediately; the wait is
+                // bounded only for an existing busy endpoint.
+                let recheck_timeout = self.timeout.min(Duration::from_millis(25));
+                if let Ok(client) = IpcClient::connect(&self.endpoint, recheck_timeout) {
+                    return Ok(client);
+                }
                 start()?;
                 loop {
                     if let Ok(client) = IpcClient::connect(&self.endpoint, Duration::from_millis(2))
@@ -1151,8 +1161,28 @@ impl StartupLease {
             .open(&path)
         {
             Ok(_) => Ok(Some(Self { path })),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                let metadata = std::fs::symlink_metadata(&path).map_err(IpcError::Io)?;
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::AlreadyExists | io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                let metadata = match std::fs::symlink_metadata(&path) {
+                    Ok(metadata) => metadata,
+                    Err(metadata_error)
+                        if matches!(
+                            metadata_error.kind(),
+                            io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                        ) =>
+                    {
+                        // The current lease can disappear between create-new
+                        // and inspection. Windows can also report a live lease
+                        // as access denied. Neither state grants ownership;
+                        // the caller retries under its startup deadline.
+                        return Ok(None);
+                    }
+                    Err(metadata_error) => return Err(IpcError::Io(metadata_error)),
+                };
                 if metadata.file_type().is_symlink() || !metadata.is_file() {
                     return Err(IpcError::UnsafeStateObject);
                 }
@@ -1162,7 +1192,19 @@ impl StartupLease {
                     .and_then(|value| value.elapsed().ok())
                     .is_some_and(|elapsed| elapsed >= stale_after)
                 {
-                    std::fs::remove_file(&path).map_err(IpcError::Io)?;
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => {}
+                        Err(remove_error)
+                            if matches!(
+                                remove_error.kind(),
+                                io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                            ) =>
+                        {
+                            // Cleanup lost a race or the lease is still in
+                            // transition; ownership remains ungranted.
+                        }
+                        Err(remove_error) => return Err(IpcError::Io(remove_error)),
+                    }
                 }
                 Ok(None)
             }
