@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "run_kind": "g36_idle_helper_frontend_floor",
+  "classification": "DIAGNOSTIC_ONLY",
+  "acceptance_evidence": false,
+  "architecture": "tiny_fresh_frontend_plus_persistent_local_helper",
+  "helper_scope": "per_user_local_prototype",
+  "helper_idle_expiring": true,
+  "evidence_transport_changed": false,
+  "private_control_payload": "fixed_8_byte_probe_only",
+  "samples": 500,
+  "warmups_per_timed_sample": 25,
+  "frontend_process_plus_control_round_trip": {
+    "samples": 500,
+    "p50_ms": 221.42129999999997,
+    "p95_ms": 325.58,
+    "p99_ms": 451.8487,
+    "max_ms": 603.5414
+  },
+  "persistent_client_control_round_trip": {
+    "samples": 1000,
+    "p50_ms": 1.1483999999999999,
+    "p95_ms": 3.2234999999999996,
+    "p99_ms": 5.8826,
+    "max_ms": 10.6523
+  },
+  "frontend_binary_size_bytes": 179200,
+  "helper_binary_size_bytes": 199680,
+  "owner_live_codex_config_mutated": false,
+  "raw_private_content_captured": false
+}

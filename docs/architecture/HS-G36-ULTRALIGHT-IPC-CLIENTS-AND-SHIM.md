@@ -162,22 +162,36 @@ record observation cost was `0.0347/0.0435` ms p95/p99.  The instrumented
 binary was 7,168 bytes larger but slightly faster in that diagnostic; the
 result established one-process viability without claiming acceptance.
 
-The complete qualification retained five 100-sample populations per path and
-compared the complete shipping and instrumented startup envelopes.  Their
-worst p99 values are `16.1891` and `15.3259` ms, so every same-invocation raw
-population receives a conservative `0.8632`-ms shipping-build correction.  The
-corrected result is cooperative `0.1733/0.3467` ms p95/p99, warm transparent
+One complete qualification retained five 100-sample populations per path and
+compared the complete shipping and instrumented startup envelopes. Its
+corrected result was cooperative `0.1733/0.3467` ms p95/p99, warm transparent
 `18.3269/20.5058` ms p95/p99, cold transparent `18.5793` ms p95, zero
-observation gaps, and zero HookStat-induced timeouts.  The oracle record itself
-is `0.0544/0.0870` ms worst p95/p99.  The frozen G28 limits are unchanged.
+observation gaps, and zero HookStat-induced timeouts. That historical exact
+candidate pass is preserved.
+
+Independent review then required correctness and provenance fixes. The clean
+corrected source head's complete qualification passes cooperative at
+`0.1357/0.2187` ms, cold at `20.5353` ms, and the zero-induced-timeout gate,
+but fails warm at `32.6951/245.2032` ms. Four warm populations remain close to
+the budget while one retains a large fresh-process scheduling tail. Another
+unchanged run would be selection rather than an architecture fix.
+
+The subsequent package-excluded helper floor measured a 179-KB fresh frontend
+plus one fixed local exchange at `325.5800/451.8487` ms p95/p99 in the current
+environment. It contains no handler or private material and is diagnostic
+only, but required helper semantics cannot be faster than that floor. The
+architecture decision and option comparison are recorded in
+`docs/adr/HS-G36-TRANSPARENT-SHIM-WARM-ARCHITECTURE.md`.
 
 ```text
 WARM_ACCEPTANCE_METRIC=OTHER_PROVEN_METRIC
 OTHER_PROVEN_METRIC=SAME_INVOCATION_PARENT_LIFETIME_MINUS_CHILD_SPAWN_WAIT
 PAIRED_METHOD_IDENTIFIABLE=false
-ONE_PROCESS_ARCHITECTURE=VIABLE
-HELPER_PROTOTYPE_JUSTIFIED=false
-FINAL_G36_SHIM_ARCHITECTURE=ONE_PROCESS_OPTIMIZED
-G36_PERFORMANCE=PASS
+ONE_PROCESS_ARCHITECTURE=MARGINAL
+HELPER_PROTOTYPE_JUSTIFIED=true
+HELPER_SEMANTIC_PROTOTYPE=NOT_IMPLEMENTED_FLOOR_FAILED
+FINAL_G36_SHIM_ARCHITECTURE=UNRESOLVED_OWNER_DECISION_REQUIRED
+G36_PERFORMANCE=FAIL
+OWNER_ARCHITECTURE_DECISION_REQUIRED=true
 FROZEN_G28_BUDGET_CHANGED=false
 ```
