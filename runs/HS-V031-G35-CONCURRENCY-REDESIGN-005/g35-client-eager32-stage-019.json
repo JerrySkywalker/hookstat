@@ -1,0 +1,131 @@
+{
+  "schema_version": 3,
+  "run_kind": "hs_g35_stage_timing_diagnostic",
+  "acceptance_evidence": false,
+  "collector_model": "per_thread_local_buffers",
+  "client_start_barrier": true,
+  "clients": 16,
+  "samples_per_client": 100,
+  "group_sync_during_measurement": true,
+  "round_trip": {
+    "samples": 1600,
+    "p50_ms": 0.1015,
+    "p95_ms": 0.3937,
+    "p99_ms": 0.793,
+    "max_ms": 1.0964
+  },
+  "client_write": {
+    "samples": 1600,
+    "p50_ms": 0.0034,
+    "p95_ms": 0.0111,
+    "p99_ms": 0.0316,
+    "max_ms": 0.1217
+  },
+  "broker_read_decode": {
+    "samples": 1600,
+    "p50_ms": 0.0651,
+    "p95_ms": 0.2466,
+    "p99_ms": 0.8606,
+    "max_ms": 1.6851
+  },
+  "activity_bookkeeping": {
+    "samples": 1600,
+    "p50_ms": 0.0001,
+    "p95_ms": 0.0003,
+    "p99_ms": 0.0003,
+    "max_ms": 0.0105
+  },
+  "acknowledgement_channel_allocation": {
+    "samples": 1600,
+    "p50_ms": 0.0002,
+    "p95_ms": 0.0006,
+    "p99_ms": 0.0078,
+    "max_ms": 0.0334
+  },
+  "queue_submission": {
+    "samples": 1600,
+    "p50_ms": 0.0003,
+    "p95_ms": 0.0031,
+    "p99_ms": 0.0081,
+    "max_ms": 0.021
+  },
+  "queue_wait": {
+    "samples": 1600,
+    "p50_ms": 0.0146,
+    "p95_ms": 0.1997,
+    "p99_ms": 0.5106,
+    "max_ms": 0.7508
+  },
+  "queue_wait_group_sync_overlap": {
+    "samples": 1600,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0448,
+    "p99_ms": 0.5106,
+    "max_ms": 0.7508
+  },
+  "queue_wait_residual_after_group_sync": {
+    "samples": 1600,
+    "p50_ms": 0.0116,
+    "p95_ms": 0.0706,
+    "p99_ms": 0.3337,
+    "max_ms": 0.4122
+  },
+  "worker_dequeue_handoff": {
+    "samples": 1600,
+    "p50_ms": 0.0002,
+    "p95_ms": 0.0049,
+    "p99_ms": 0.0077,
+    "max_ms": 0.0124
+  },
+  "queue_depth_at_dequeue_max": 15,
+  "queue_high_water": 15,
+  "group_sync_attempts": 5,
+  "durability_requests": 25,
+  "durability_requests_coalesced": 19,
+  "durability_flushes_completed": 5,
+  "group_sync_duration": {
+    "samples": 5,
+    "p50_ms": 0.726,
+    "p95_ms": 1.0523,
+    "p99_ms": 1.0523,
+    "max_ms": 1.0523
+  },
+  "queue_wait_sync_correlation": {
+    "samples_overlapping_group_sync": 207,
+    "p95_tail_samples": 81,
+    "p95_tail_samples_overlapping_group_sync": 51,
+    "total_queue_wait_ns": 66790200,
+    "total_group_sync_overlap_ns": 28312800
+  },
+  "wal_append": {
+    "samples": 1600,
+    "p50_ms": 0.0038,
+    "p95_ms": 0.0075,
+    "p99_ms": 0.0685,
+    "max_ms": 0.5735
+  },
+  "worker_acknowledgement_handoff": {
+    "samples": 1600,
+    "p50_ms": 0.0018,
+    "p95_ms": 0.0026,
+    "p99_ms": 0.0034,
+    "max_ms": 0.0053
+  },
+  "broker_ack_write": {
+    "samples": 1600,
+    "p50_ms": 0.0029,
+    "p95_ms": 0.0055,
+    "p99_ms": 0.0091,
+    "max_ms": 0.0941
+  },
+  "client_ack_read": {
+    "samples": 1600,
+    "p50_ms": 0.0961,
+    "p95_ms": 0.3894,
+    "p99_ms": 0.79,
+    "max_ms": 1.0926
+  },
+  "measurement_error_class": null,
+  "owner_live_codex_config_mutated": false,
+  "raw_private_content_captured": false
+}

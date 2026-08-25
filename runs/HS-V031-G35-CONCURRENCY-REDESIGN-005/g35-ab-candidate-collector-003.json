@@ -1,0 +1,66 @@
+{
+  "schema_version": 3,
+  "run_kind": "hs_g35_collector_model_ab_diagnostic",
+  "acceptance_evidence": false,
+  "legacy_capture_order": "ack_completion_then_shared_samples_mutex_then_before_elapsed",
+  "corrected_capture_order": "ack_completion_then_before_elapsed_then_per_thread_collection",
+  "client_start_barrier": true,
+  "observations": [
+    {
+      "collector_model": "legacy_shared_mutex",
+      "series": "single_client_persistent_release",
+      "clients": 1,
+      "samples_per_client": 1000,
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0618,
+        "p95_ms": 0.1235,
+        "p99_ms": 0.5694,
+        "max_ms": 1.2363
+      },
+      "frozen_budget_passed": true,
+      "measurement_error_class": null
+    },
+    {
+      "collector_model": "per_thread_local_buffers",
+      "series": "single_client_persistent_release",
+      "clients": 1,
+      "samples_per_client": 1000,
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0733,
+        "p95_ms": 0.1966,
+        "p99_ms": 0.6223,
+        "max_ms": 1.6284
+      },
+      "frozen_budget_passed": true,
+      "measurement_error_class": null
+    },
+    {
+      "collector_model": "legacy_shared_mutex",
+      "series": "client16_persistent_release",
+      "clients": 16,
+      "samples_per_client": 100,
+      "latency": null,
+      "frozen_budget_passed": null,
+      "measurement_error_class": "read_ack_timeout"
+    },
+    {
+      "collector_model": "per_thread_local_buffers",
+      "series": "client16_persistent_release",
+      "clients": 16,
+      "samples_per_client": 100,
+      "latency": {
+        "samples": 1600,
+        "p50_ms": 0.211,
+        "p95_ms": 1.3048,
+        "p99_ms": 2.4656,
+        "max_ms": 4.0211
+      },
+      "frozen_budget_passed": false,
+      "measurement_error_class": null
+    }
+  ],
+  "owner_live_codex_config_mutated": false,
+  "raw_private_content_captured": false
+}

@@ -117,6 +117,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
 
 [[package]]
+name = "bytes"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+
+[[package]]
 name = "castaway"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -340,6 +346,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "doctest-file"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2db04e74f0a9a93103b50e90b96024c9b2bdca8bce6a632ec71b88736d3d359"
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -555,17 +567,22 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "crossterm",
+ "interprocess",
+ "nix",
  "ratatui",
  "rusqlite",
+ "same-file",
  "serde",
  "serde_json",
  "sha2",
  "sys-locale",
  "tempfile",
  "terminal-ui-contract",
+ "tokio",
  "toml",
  "unicode-segmentation",
  "unicode-width",
+ "widestring",
  "win32job",
 ]
 
@@ -629,6 +646,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "interprocess"
+version = "2.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "798de1433ba514cc6c04c4144c2469af81396e4906195218737c776d47769572"
+dependencies = [
+ "doctest-file",
+ "futures-core",
+ "libc",
+ "recvmsg",
+ "tokio",
+ "widestring",
+ "windows-sys",
 ]
 
 [[package]]
@@ -1209,6 +1241,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "recvmsg"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3edd4d5d42c92f0a659926464d4cce56b562761267ecf0f469d85b7de384175"
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1304,6 +1342,15 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "same-file"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
+dependencies = [
+ "winapi-util",
+]
 
 [[package]]
 name = "scopeguard"
@@ -1434,6 +1481,16 @@ name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+
+[[package]]
+name = "socket2"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
+dependencies = [
+ "libc",
+ "windows-sys",
+]
 
 [[package]]
 name = "sqlite-wasm-rs"
@@ -1681,6 +1738,32 @@ name = "time-core"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
+
+[[package]]
+name = "tokio"
+version = "1.53.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+dependencies = [
+ "bytes",
+ "libc",
+ "mio",
+ "pin-project-lite",
+ "socket2",
+ "tokio-macros",
+ "windows-sys",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "2.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
 
 [[package]]
 name = "toml"
@@ -1934,6 +2017,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "widestring"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
+
+[[package]]
 name = "win32job"
 version = "2.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1958,6 +2047,15 @@ name = "winapi-i686-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+
+[[package]]
+name = "winapi-util"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
+dependencies = [
+ "windows-sys",
+]
 
 [[package]]
 name = "winapi-x86_64-pc-windows-gnu"

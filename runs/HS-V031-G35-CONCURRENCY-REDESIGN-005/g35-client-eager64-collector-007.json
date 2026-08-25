@@ -1,0 +1,72 @@
+{
+  "schema_version": 3,
+  "run_kind": "hs_g35_collector_model_ab_diagnostic",
+  "acceptance_evidence": false,
+  "legacy_capture_order": "ack_completion_then_shared_samples_mutex_then_before_elapsed",
+  "corrected_capture_order": "ack_completion_then_before_elapsed_then_per_thread_collection",
+  "client_start_barrier": true,
+  "observations": [
+    {
+      "collector_model": "legacy_shared_mutex",
+      "series": "single_client_persistent_release",
+      "clients": 1,
+      "samples_per_client": 1000,
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0542,
+        "p95_ms": 0.1162,
+        "p99_ms": 0.2284,
+        "max_ms": 0.4551
+      },
+      "frozen_budget_passed": true,
+      "measurement_error_class": null
+    },
+    {
+      "collector_model": "per_thread_local_buffers",
+      "series": "single_client_persistent_release",
+      "clients": 1,
+      "samples_per_client": 1000,
+      "latency": {
+        "samples": 1000,
+        "p50_ms": 0.0473,
+        "p95_ms": 0.1068,
+        "p99_ms": 0.1986,
+        "max_ms": 1.1202
+      },
+      "frozen_budget_passed": true,
+      "measurement_error_class": null
+    },
+    {
+      "collector_model": "legacy_shared_mutex",
+      "series": "client16_persistent_release",
+      "clients": 16,
+      "samples_per_client": 100,
+      "latency": {
+        "samples": 1600,
+        "p50_ms": 0.0926,
+        "p95_ms": 0.5309,
+        "p99_ms": 1.0951,
+        "max_ms": 1.6887
+      },
+      "frozen_budget_passed": true,
+      "measurement_error_class": null
+    },
+    {
+      "collector_model": "per_thread_local_buffers",
+      "series": "client16_persistent_release",
+      "clients": 16,
+      "samples_per_client": 100,
+      "latency": {
+        "samples": 1600,
+        "p50_ms": 0.0909,
+        "p95_ms": 0.4975,
+        "p99_ms": 0.9024,
+        "max_ms": 1.3268
+      },
+      "frozen_budget_passed": true,
+      "measurement_error_class": null
+    }
+  ],
+  "owner_live_codex_config_mutated": false,
+  "raw_private_content_captured": false
+}

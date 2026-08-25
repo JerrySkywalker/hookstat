@@ -20,6 +20,7 @@ rusqlite = { version = "0.38", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+same-file = "1.0.6"
 toml = "0.9"
 ratatui = "0.30"
 crossterm = "0.29"
@@ -28,13 +29,20 @@ unicode-segmentation = "1"
 unicode-width = "0.2"
 chrono = "0.4"
 sys-locale = "0.3"
+interprocess = "2.4.3"
 
 [dev-dependencies]
 tempfile = "3"
 chrono-tz = "0.10"
 
 [target.'cfg(windows)'.dependencies]
+interprocess = { version = "2.4.3", features = ["tokio"] }
+tokio = { version = "1.36", features = ["io-util", "net", "rt", "time"] }
 win32job = "2.0.3"
+widestring = "1.2.1"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29.0", features = ["socket"] }
 
 [[bin]]
 name = "hookstat-perf"
@@ -53,6 +61,27 @@ bench = false
 [[bin]]
 name = "hookstat-g28-handler-fixture"
 path = "src/bin/hookstat_g28_handler_fixture.rs"
+required-features = ["performance-harness"]
+test = false
+bench = false
+
+[[bin]]
+name = "hookstat-ipc-qualify"
+path = "src/bin/hookstat_ipc_qualify.rs"
+required-features = ["performance-harness"]
+test = false
+bench = false
+
+[[bin]]
+name = "hookstat-ipc-collector-ab"
+path = "src/bin/hookstat_ipc_collector_ab.rs"
+required-features = ["performance-harness"]
+test = false
+bench = false
+
+[[bin]]
+name = "hookstat-ipc-stage-timing"
+path = "src/bin/hookstat_ipc_stage_timing.rs"
 required-features = ["performance-harness"]
 test = false
 bench = false
