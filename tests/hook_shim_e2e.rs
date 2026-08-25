@@ -276,7 +276,11 @@ fn delayed_broker_ack_exhausts_only_observation_budget() {
             executable: "cmd.exe".into(),
             arguments: vec!["/C".into(), "exit /b 0".into()],
         },
-        Duration::from_secs(1),
+        // This fixture isolates the 30-ms observation delay. Give the trivial
+        // original enough business time to remain healthy even when Windows
+        // process creation is temporarily slow; exact deadline behavior is
+        // covered independently by the timeout tests below.
+        Duration::from_secs(5),
     );
     delayed.instrumentation_envelope = InstrumentationEnvelope(Duration::from_millis(50));
     let result = run_capsule(&delayed, &state_root).unwrap();
