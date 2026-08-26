@@ -5,6 +5,8 @@
 //! retains a command, argument list, or parent path.
 
 use crate::domain::HookEvent;
+use serde::{Deserialize, Serialize};
+use std::fmt;
 
 const MAX_DISPLAY_NAME_LEN: usize = 96;
 
@@ -14,8 +16,63 @@ pub enum DisplayIdentitySource {
     ExplicitMetadata,
     ScriptFilename,
     CommandBasename,
+    StableKey,
     EventFallback,
 }
+
+/// HookStat observes an existing definition; it does not become that
+/// definition's owner. The integration value is intentionally not a process
+/// name and contains no command material.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationIntegration {
+    Native,
+    CooperativeIpc,
+    TransparentShimNotAdmitted,
+}
+
+/// Bounded ownership/currentness facts suitable for persistence or sanitized
+/// diagnostics. Private commands and paths have no field in this type.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct HandlerOwnershipProvenance {
+    pub original_handler_owner: String,
+    pub original_definition_identity: String,
+    pub hookstat_observation_integration: ObservationIntegration,
+    pub effective_revision: String,
+}
+
+impl HandlerOwnershipProvenance {
+    pub fn validate(&self) -> Result<(), OwnershipProvenanceError> {
+        if sanitize_display_name(&self.original_handler_owner).as_deref()
+            != Some(self.original_handler_owner.as_str())
+        {
+            return Err(OwnershipProvenanceError("original_handler_owner"));
+        }
+        for (field, value) in [
+            (
+                "original_definition_identity",
+                self.original_definition_identity.as_str(),
+            ),
+            ("effective_revision", self.effective_revision.as_str()),
+        ] {
+            if !safe_opaque_identity(value) {
+                return Err(OwnershipProvenanceError(field));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnershipProvenanceError(&'static str);
+
+impl fmt::Display for OwnershipProvenanceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "invalid ownership provenance field: {}", self.0)
+    }
+}
+
+impl std::error::Error for OwnershipProvenanceError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DisplayName {
@@ -47,6 +104,11 @@ pub fn resolve_display_identity(
         (command_basename, DisplayIdentitySource::CommandBasename),
     ] {
         if let Some(value) = value.and_then(sanitize_display_name) {
+            if source != DisplayIdentitySource::UserAnnotation
+                && instrumentation_process_label(&value)
+            {
+                continue;
+            }
             return ResolvedDisplayIdentity {
                 name: DisplayName::Literal(value),
                 source,
@@ -59,6 +121,38 @@ pub fn resolve_display_identity(
         source: DisplayIdentitySource::EventFallback,
         source_label,
     }
+}
+
+/// Extends the established label priority with a privacy-safe stable key
+/// before the event fallback. Generated HookStat hashes and transport process
+/// names remain presentation-ineligible.
+pub fn resolve_display_identity_with_stable_key(
+    user_annotation: Option<&str>,
+    original_metadata: Option<&str>,
+    runtime_human_label: Option<&str>,
+    stable_key: &str,
+    event: HookEvent,
+    source_label: &'static str,
+) -> ResolvedDisplayIdentity {
+    let resolved = resolve_display_identity(
+        user_annotation,
+        original_metadata,
+        runtime_human_label,
+        None,
+        event,
+        source_label,
+    );
+    if !matches!(resolved.name, DisplayName::EventFallback(_)) {
+        return resolved;
+    }
+    if let Some(stable_key) = safe_stable_display_key(stable_key) {
+        return ResolvedDisplayIdentity {
+            name: DisplayName::Literal(stable_key),
+            source: DisplayIdentitySource::StableKey,
+            source_label,
+        };
+    }
+    resolved
 }
 
 /// Derives one safe display name from a command without storing that command.
@@ -99,7 +193,32 @@ pub fn sanitize_display_name(value: &str) -> Option<String> {
 }
 
 pub fn generated_label(value: &str) -> bool {
-    value.trim().is_empty() || value.starts_with("Codex /") || value.starts_with("hk_")
+    value.trim().is_empty()
+        || value.starts_with("Codex /")
+        || value.starts_with("hk_")
+        || instrumentation_process_label(value)
+}
+
+/// Instrumentation executables are transport details, not Human handler
+/// identity. They may never displace a user alias or original tool metadata.
+pub fn instrumentation_process_label(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "hookstat exe" | "hookstat.exe" | "hookstat-hook" | "hookstat_hook"
+    )
+}
+
+pub fn safe_stable_display_key(value: &str) -> Option<String> {
+    let value = sanitize_display_name(value)?;
+    (!generated_label(&value) && !instrumentation_process_label(&value)).then_some(value)
+}
+
+fn safe_opaque_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.' | ':')
+        })
 }
 
 fn command_tokens(command: &str) -> Vec<String> {

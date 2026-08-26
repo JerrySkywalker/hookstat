@@ -2,13 +2,27 @@
 
 ## Status
 
-IN PROGRESS as a Draft train after G36 merged to `main` at
+IN PROGRESS as an acceptance-candidate train after G36 merged to `main` at
 `d8d00e3da3e24a91cd9405c14d297a12ce33eb23`.
 
-The first checkpoint retains the G36 source router, records Windows Codex
+The acceptance candidate retains the G36 source router, records Windows Codex
 0.149.0 Native L2 as `UPSTREAM_UNAVAILABLE`, and routes each domain to an
 admitted cooperative IPC integration or truthfully to `NOT_ADMITTED`. No
 transparent-shim production activation is in scope.
+
+The additive ledger schema v4 marks pre-G37 rows
+`legacy_v03_proxy`, while new records can be explicitly identified as
+`v031_native` or `v031_cooperative_ipc`. Historical row values, aliases,
+terminal states, and revision epochs are not rewritten. A bounded in-memory
+shadow comparator requires exact invocation presence, handler, revision,
+terminal, duration-semantic, and coverage agreement before it reports an
+eligible promotion decision; neither shadow side has ledger ingress.
+
+Ownership/currentness is represented separately as original handler owner,
+original definition identity, HookStat observation integration, and effective
+revision. Instrumentation executable names are rejected as replacement Human
+metadata when a better original label exists. All migration, restore, and
+drift tests use disposable roots.
 
 ## Objective
 
@@ -134,6 +148,19 @@ revision history
 Do not delete or recategorize old incomplete evidence merely because the new architecture prevents future occurrences.
 
 Legacy v1 receipt files may become read-only compatibility input. New evidence should carry a new source/protocol generation sufficient to distinguish Native/IPC v0.3.1 records from legacy v1 proxy records.
+
+The exact persisted generations are:
+
+```text
+legacy_v03_proxy
+v031_native
+v031_cooperative_ipc
+```
+
+Old rows receive the legacy value through an additive default. Reopening an
+already-migrated ledger is idempotent. Uninterpretable legacy taxonomy is
+counted in a sanitized migration-issues table without modifying the malformed
+row or assigning it a v0.3.1 generation.
 
 ## Ownership/currentness coordination
 

@@ -378,6 +378,190 @@ pub enum CorrelationOutcome {
     Duplicate,
 }
 
+/// The interval represented by a duration is part of the evidence contract;
+/// numerically similar values with different semantics are not a match.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DurationSemantics {
+    OriginalHandlerInterval,
+    EndToEndInvocation,
+    Unavailable,
+}
+
+/// One privacy-bounded observation used only by the G37 shadow gate.
+///
+/// These values are not ledger rows. In particular, a shadow observation has
+/// no ingress method into [`RuntimeNeutralEvidenceCore`], so comparison cannot
+/// alter production counts or failure denominators.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShadowObservation {
+    pub domain: CoverageDomain,
+    pub correlation_key: CorrelationKey,
+    pub handler_ref: RuntimeHandlerRef,
+    pub revision_ref: Option<RevisionRef>,
+    pub terminal_status: TerminalStatus,
+    pub duration_semantics: DurationSemantics,
+    pub source_coverage: SourceCoverage,
+    pub invocation_coverage: InvocationCoverage,
+}
+
+impl ShadowObservation {
+    pub fn validate(&self) -> Result<(), EvidenceError> {
+        if self.domain.runtime != self.correlation_key.runtime {
+            return Err(EvidenceError::Invalid("shadow_runtime"));
+        }
+        validate_opaque_reference("runtime_handler_ref", self.handler_ref.as_str())?;
+        if let Some(revision) = &self.revision_ref {
+            validate_opaque_reference("revision_ref", revision.as_str())?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ShadowSide {
+    Production,
+    Candidate,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ShadowMismatch {
+    DuplicateInvocation {
+        side: ShadowSide,
+        key: CorrelationKey,
+    },
+    ProductionOnly(CorrelationKey),
+    CandidateOnly(CorrelationKey),
+    CoverageDomain(CorrelationKey),
+    HandlerAttribution(CorrelationKey),
+    RevisionAttribution(CorrelationKey),
+    TerminalOutcome(CorrelationKey),
+    DurationSemantics(CorrelationKey),
+    CoverageSemantics(CorrelationKey),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShadowComparisonStatus {
+    Match,
+    Mismatch,
+    InsufficientEvidence,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShadowComparison {
+    pub status: ShadowComparisonStatus,
+    pub mismatches: Vec<ShadowMismatch>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShadowPromotionDecision {
+    Eligible,
+    BlockedMismatch,
+    BlockedInsufficientEvidence,
+}
+
+/// Fixed, predeclared promotion gate. Candidate results cannot alter the rule:
+/// only an exact semantic match is eligible for a later explicit authority
+/// decision; mismatch and missing evidence both block.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ShadowPromotionGate;
+
+impl ShadowPromotionGate {
+    pub fn compare(
+        &self,
+        production: &[ShadowObservation],
+        candidate: &[ShadowObservation],
+    ) -> Result<ShadowComparison, EvidenceError> {
+        for observation in production.iter().chain(candidate) {
+            observation.validate()?;
+        }
+        if production.is_empty() && candidate.is_empty() {
+            return Ok(ShadowComparison {
+                status: ShadowComparisonStatus::InsufficientEvidence,
+                mismatches: Vec::new(),
+            });
+        }
+
+        let mut mismatches = Vec::new();
+        let production = shadow_index(production, ShadowSide::Production, &mut mismatches);
+        let candidate = shadow_index(candidate, ShadowSide::Candidate, &mut mismatches);
+        for (key, authoritative) in &production {
+            let Some(shadow) = candidate.get(key) else {
+                mismatches.push(ShadowMismatch::ProductionOnly(key.clone()));
+                continue;
+            };
+            if authoritative.domain != shadow.domain {
+                mismatches.push(ShadowMismatch::CoverageDomain(key.clone()));
+            }
+            if authoritative.handler_ref != shadow.handler_ref {
+                mismatches.push(ShadowMismatch::HandlerAttribution(key.clone()));
+            }
+            if authoritative.revision_ref != shadow.revision_ref {
+                mismatches.push(ShadowMismatch::RevisionAttribution(key.clone()));
+            }
+            if authoritative.terminal_status != shadow.terminal_status {
+                mismatches.push(ShadowMismatch::TerminalOutcome(key.clone()));
+            }
+            if authoritative.duration_semantics != shadow.duration_semantics {
+                mismatches.push(ShadowMismatch::DurationSemantics(key.clone()));
+            }
+            if authoritative.source_coverage != shadow.source_coverage
+                || authoritative.invocation_coverage != shadow.invocation_coverage
+            {
+                mismatches.push(ShadowMismatch::CoverageSemantics(key.clone()));
+            }
+        }
+        for key in candidate.keys() {
+            if !production.contains_key(key) {
+                mismatches.push(ShadowMismatch::CandidateOnly(key.clone()));
+            }
+        }
+        mismatches.sort();
+        mismatches.dedup();
+        Ok(ShadowComparison {
+            status: if mismatches.is_empty() {
+                ShadowComparisonStatus::Match
+            } else {
+                ShadowComparisonStatus::Mismatch
+            },
+            mismatches,
+        })
+    }
+
+    pub const fn promotion_decision(
+        &self,
+        comparison: &ShadowComparison,
+    ) -> ShadowPromotionDecision {
+        match comparison.status {
+            ShadowComparisonStatus::Match => ShadowPromotionDecision::Eligible,
+            ShadowComparisonStatus::Mismatch => ShadowPromotionDecision::BlockedMismatch,
+            ShadowComparisonStatus::InsufficientEvidence => {
+                ShadowPromotionDecision::BlockedInsufficientEvidence
+            }
+        }
+    }
+}
+
+fn shadow_index<'a>(
+    observations: &'a [ShadowObservation],
+    side: ShadowSide,
+    mismatches: &mut Vec<ShadowMismatch>,
+) -> BTreeMap<CorrelationKey, &'a ShadowObservation> {
+    let mut result = BTreeMap::new();
+    for observation in observations {
+        if result
+            .insert(observation.correlation_key.clone(), observation)
+            .is_some()
+        {
+            mismatches.push(ShadowMismatch::DuplicateInvocation {
+                side,
+                key: observation.correlation_key.clone(),
+            });
+        }
+    }
+    result
+}
+
 #[derive(Clone, Debug, Default)]
 struct LifecyclePair {
     start: Option<CanonicalEvidence>,

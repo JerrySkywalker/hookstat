@@ -440,13 +440,13 @@ runtime
 authoritative evidence source per domain
 Native admission state
 IPC integration admission state
-IPC mode: cooperative/shim
+IPC mode: cooperative
+transparent shim status: qualified_not_admitted_performance (never active)
 broker health
 queue lag
 dropped frames
 WAL flush lag
-IPC p50/p95/p99
-shim incremental overhead p50/p95/p99
+cooperative IPC p50/p95/p99
 ```
 
 Hosted CI checks structural regressions; real Windows performance evidence remains the release gate.
@@ -538,7 +538,9 @@ Acceptance work on the predecessor may proceed in parallel. If the predecessor r
 
 This exception changes scheduling only. It does not weaken Goal acceptance criteria, performance budgets, review requirements, evidence truthfulness, or release gates.
 
-For the current G35/G36 sequence, G36 stacked implementation is permitted only while G35 has no known implementation/correctness blocker and its remaining blockers are external performance qualification and/or independent review. G37 remains blocked until both G35 and G36 are accepted into `main`.
+The historical G35/G36 stacked exception is closed: both Goals are accepted in
+`main`. G37 now runs directly from accepted main and must merge before any G38
+product implementation begins.
 
 ## Mandatory version stop gates
 

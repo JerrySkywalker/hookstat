@@ -6,8 +6,8 @@
 //! while a record is normalized, then reduced to bounded opaque references.
 
 use crate::domain::{
-    EvidenceCoverage, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent, HookInvocation,
-    Runtime, TerminalStatus,
+    EvidenceCoverage, EvidenceGeneration, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent,
+    HookInvocation, Runtime, TerminalStatus,
 };
 use crate::evidence::{
     CanonicalEvidence, CorrelatedEvidence, EventFamily, EvidenceError, EvidenceLifecycle,
@@ -382,6 +382,7 @@ impl CodexNativeIdentityResolver {
             ),
             runtime: Runtime::Codex,
             evidence_kind: EvidenceKind::CodexAppServerLive,
+            evidence_generation: EvidenceGeneration::V031Native,
             coverage: EvidenceCoverage::NotAdmitted,
             handler: HandlerIdentity {
                 key: location_key,

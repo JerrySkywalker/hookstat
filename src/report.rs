@@ -162,6 +162,7 @@ fn synthetic_fixture_invocations(now: i64) -> Vec<HookInvocation> {
         source_record_id: id.into(),
         runtime: Runtime::Codex,
         evidence_kind: EvidenceKind::SyntheticFixture,
+        evidence_generation: crate::domain::EvidenceGeneration::SyntheticFixture,
         coverage: EvidenceCoverage::SyntheticFixture,
         handler,
         occurred_at_unix_ms: now - index as i64 * 60_000,

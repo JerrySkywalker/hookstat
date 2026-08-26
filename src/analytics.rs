@@ -899,7 +899,7 @@ fn percentile(sorted: &[u64], percentile: f64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{EvidenceKind, ExecutionMode, Runtime};
+    use crate::domain::{EvidenceGeneration, EvidenceKind, ExecutionMode, Runtime};
     use chrono::{TimeZone, Timelike};
     use chrono_tz::America::New_York;
 
@@ -922,6 +922,7 @@ mod tests {
             source_record_id: id.into(),
             runtime: Runtime::Codex,
             evidence_kind: EvidenceKind::SyntheticFixture,
+            evidence_generation: EvidenceGeneration::SyntheticFixture,
             coverage: EvidenceCoverage::SyntheticFixture,
             handler: handler(key),
             occurred_at_unix_ms: timestamp,

@@ -1,8 +1,8 @@
 use hookstat::admission::IpcAdmissionState;
 use hookstat::analytics::{TimeWindow, aggregate};
 use hookstat::domain::{
-    EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent, HookInvocation, Runtime,
-    TerminalStatus,
+    EvidenceGeneration, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent, HookInvocation,
+    Runtime, TerminalStatus,
 };
 use hookstat::evidence::{
     AuthorityRouter, CanonicalEvidence, CoreIngestOutcome, CoverageDomain, DomainAuthority,
@@ -128,7 +128,14 @@ fn resolved_invocation(evidence: &hookstat::evidence::CorrelatedEvidence) -> Hoo
         source_key: "synthetic-runtime-evidence".into(),
         source_record_id: ledger_source_record_id(&evidence.correlation_key),
         runtime: Runtime::Codex,
-        evidence_kind: EvidenceKind::SyntheticFixture,
+        evidence_kind: match evidence.evidence_transport {
+            EvidenceTransport::Native => EvidenceKind::CodexAppServerLive,
+            EvidenceTransport::Ipc => EvidenceKind::RuntimeNeutralIpc,
+        },
+        evidence_generation: match evidence.evidence_transport {
+            EvidenceTransport::Native => EvidenceGeneration::V031Native,
+            EvidenceTransport::Ipc => EvidenceGeneration::V031CooperativeIpc,
+        },
         coverage: evidence.legacy_coverage(),
         handler: handler_identity(),
         occurred_at_unix_ms: evidence.occurred_at_unix_ms,

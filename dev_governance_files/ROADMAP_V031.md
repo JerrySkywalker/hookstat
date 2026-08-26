@@ -41,7 +41,7 @@ HS-G35   Runtime-Neutral IPC Broker / WAL
         ↓
 HS-G36   Ultra-Light IPC Clients / Transparent Shim
         ↓
-HS-G37   Codex Evidence Routing / Native L2 / Migration (Draft in progress)
+HS-G37   Codex Evidence Routing / Native L2 / Migration (acceptance candidate)
         ↓
 HS-G38   Performance & Windows Dogfood Hardening
         ↓

@@ -8,6 +8,18 @@ PLANNED after accepted G37.
 
 Prove the v0.3.1 evidence architecture under real Windows Terminal + Codex usage, concurrency, broker recovery, and tail-latency stress. Performance correctness is a release gate.
 
+Production dogfood follows the G36/G37 authority decision exactly:
+
+```text
+Native where admitted
+else cooperative IPC where an integration is admitted
+else NOT_ADMITTED
+```
+
+The transparent shim remains implemented and correctness/security-tested, but
+is `QUALIFIED_NOT_ADMITTED_PERFORMANCE`. It is not production-activated, is not
+a v0.3.1 dogfood path, and is not a v0.3.1 release-performance PASS gate.
+
 ## Required real environment
 
 At minimum qualify on an Owner-controlled Windows 11 environment with:
@@ -63,8 +75,6 @@ Record real candidate values for:
 
 ```text
 cooperative IPC p50/p95/p99
-transparent shim incremental p50/p95/p99
-cold transparent shim p50/p95/p99
 broker queue lag
 WAL flush lag
 broker restart recovery time
@@ -72,7 +82,9 @@ observed HookStat-induced timeouts
 observed HookStat-induced failures
 ```
 
-Compare with the frozen G28 budget.
+Compare cooperative IPC with its frozen G28 budget. Preserve the transparent
+shim's historical 20/25 and 25/30 failures without rerunning or relabeling them
+as v0.3.1 production acceptance.
 
 Any reproducible HookStat-induced timeout/failure in a previously healthy Hook is a release blocker.
 
@@ -106,14 +118,17 @@ Expose sufficient read-only diagnostics to answer, without raw private content:
 runtime
 authoritative evidence source per domain
 Native admission state
-IPC mode: cooperative or shim
+IPC mode: cooperative
+transparent shim admission status (never active in v0.3.1)
 broker state
 queue lag
 dropped evidence/frame count
 WAL flush lag
 recent IPC latency percentiles
-recent shim incremental latency percentiles
 ```
+
+A diagnostic may report `QUALIFIED_NOT_ADMITTED_PERFORMANCE` for the retained
+transparent implementation, but must not imply that it is selected or active.
 
 Self-observability instrumentation itself must be bounded and must not reintroduce hot-path synchronous persistence.
 
@@ -129,6 +144,7 @@ unbounded frame/payload size
 unbounded queue
 extra shell/process layer for simple direct-plan fixtures
 shadow evidence entering denominator
+transparent shim becoming production authority or activation
 ```
 
 ## Privacy and security review
@@ -142,6 +158,7 @@ Re-audit:
 - diagnostics privacy;
 - malformed/oversized local client behavior;
 - process-tree containment;
+- retained transparent-shim correctness/security regressions without activation;
 - trust/config mutation boundaries.
 
 No prompt/tool/stdout/stderr/raw command content may appear in production evidence/WAL/ledger/diagnostics exports.
@@ -151,7 +168,7 @@ No prompt/tool/stdout/stderr/raw command content may appear in production eviden
 Commit:
 
 - sanitized Owner Windows dogfood receipt;
-- exact candidate benchmark comparison to G28 budget;
+- exact cooperative IPC candidate comparison to its G28 budget;
 - concurrency/broker-recovery receipt;
 - privacy/security review receipt;
 - any accepted performance exceptions with evidence and explicit Owner-facing rationale.
@@ -186,6 +203,10 @@ PROCESS_LEAK=0
 
 PERFORMANCE_BUDGET=PASS
 TAIL_LATENCY_ACCEPTED=true
+
+PRODUCTION_DOGFOOD_AUTHORITY=NATIVE|COOPERATIVE_IPC|NOT_ADMITTED
+TRANSPARENT_SHIM_PRODUCTION_ACTIVATION=false
+TRANSPARENT_SHIM_RELEASE_PERFORMANCE_GATE=false
 
 DIAGNOSTICS_EVIDENCE_AUTHORITY=true
 DIAGNOSTICS_NATIVE_ADMISSION=true

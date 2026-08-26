@@ -1795,6 +1795,7 @@ mod tests {
                 source_record_id: format!("change-{id}"),
                 runtime: Runtime::Codex,
                 evidence_kind: EvidenceKind::SyntheticFixture,
+                evidence_generation: crate::domain::EvidenceGeneration::SyntheticFixture,
                 coverage: EvidenceCoverage::Complete,
                 handler: HandlerIdentity {
                     key: "hk_changes".into(),

@@ -349,7 +349,7 @@ fn change_kind_order(kind: ChangeKind) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{EvidenceKind, ExecutionMode, HookEvent, Runtime};
+    use crate::domain::{EvidenceGeneration, EvidenceKind, ExecutionMode, HookEvent, Runtime};
 
     const HOUR: i64 = 60 * 60 * 1_000;
 
@@ -365,6 +365,7 @@ mod tests {
             source_record_id: format!("{key}-{id}"),
             runtime: Runtime::Codex,
             evidence_kind: EvidenceKind::SyntheticFixture,
+            evidence_generation: EvidenceGeneration::SyntheticFixture,
             coverage: EvidenceCoverage::Complete,
             handler: HandlerIdentity {
                 key: key.into(),

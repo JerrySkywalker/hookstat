@@ -2,8 +2,8 @@
 
 use crate::analytics::{PeriodMetrics, RevisionMetrics, TimeBounds, TimeWindow};
 use crate::domain::{
-    EvidenceCoverage, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent, HookInvocation,
-    Runtime, TerminalStatus, ValidationError,
+    EvidenceCoverage, EvidenceGeneration, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent,
+    HookInvocation, Runtime, TerminalStatus, ValidationError,
 };
 use crate::evidence::CORRELATION_CONFLICT_FINGERPRINT;
 use crate::identity::{generated_label, sanitize_display_name};
@@ -12,10 +12,11 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 pub struct Ledger {
     connection: Connection,
+    has_evidence_generation: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -107,8 +108,11 @@ impl Ledger {
     /// Opens an existing ledger without running migrations or creating files.
     /// Diagnostics uses this path so inspecting health cannot mutate state.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, LedgerError> {
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let has_evidence_generation = invocation_column_exists(&connection, "evidence_generation")?;
         Ok(Self {
-            connection: Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?,
+            connection,
+            has_evidence_generation,
         })
     }
 
@@ -117,11 +121,10 @@ impl Ledger {
             "
             PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS hookstat_schema (version INTEGER PRIMARY KEY);
-            INSERT OR IGNORE INTO hookstat_schema (version) VALUES (3);
-            UPDATE hookstat_schema SET version = 3 WHERE version < 3;
             CREATE TABLE IF NOT EXISTS hook_invocations (
                 source_key TEXT NOT NULL, source_record_id TEXT NOT NULL,
-                runtime TEXT NOT NULL, evidence_kind TEXT NOT NULL, coverage TEXT NOT NULL,
+                runtime TEXT NOT NULL, evidence_kind TEXT NOT NULL,
+                evidence_generation TEXT NOT NULL DEFAULT 'legacy_v03_proxy', coverage TEXT NOT NULL,
                 handler_key TEXT NOT NULL, handler_revision TEXT NOT NULL DEFAULT 'legacy',
                 handler_label TEXT NOT NULL, handler_source_kind TEXT NOT NULL DEFAULT 'legacy',
                 handler_event TEXT NOT NULL, handler_matcher_identity TEXT NOT NULL DEFAULT 'legacy',
@@ -158,20 +161,72 @@ impl Ledger {
                 malformed_receipts INTEGER NOT NULL,
                 updated_at_unix_ms INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS hookstat_migration_issues (
+                issue_kind TEXT PRIMARY KEY,
+                rows_affected INTEGER NOT NULL
+            );
             ",
         )?;
-        // Additive migration for an early development ledger. Failures mean the
-        // column already exists, not a change to any runtime-owned data.
-        for statement in [
-            "ALTER TABLE hook_invocations ADD COLUMN handler_revision TEXT NOT NULL DEFAULT 'legacy'",
-            "ALTER TABLE hook_invocations ADD COLUMN handler_source_kind TEXT NOT NULL DEFAULT 'legacy'",
-            "ALTER TABLE hook_invocations ADD COLUMN handler_matcher_identity TEXT NOT NULL DEFAULT 'legacy'",
-            "ALTER TABLE hook_invocations ADD COLUMN handler_structural_identity TEXT NOT NULL DEFAULT 'legacy'",
-            "ALTER TABLE hook_invocations ADD COLUMN handler_execution_mode TEXT NOT NULL DEFAULT 'sync'",
+        // Additive migrations for earlier ledgers. Column presence is checked
+        // explicitly so a real SQLite failure is never mistaken for the
+        // harmless already-migrated case.
+        for (column, statement) in [
+            (
+                "handler_revision",
+                "ALTER TABLE hook_invocations ADD COLUMN handler_revision TEXT NOT NULL DEFAULT 'legacy'",
+            ),
+            (
+                "handler_source_kind",
+                "ALTER TABLE hook_invocations ADD COLUMN handler_source_kind TEXT NOT NULL DEFAULT 'legacy'",
+            ),
+            (
+                "handler_matcher_identity",
+                "ALTER TABLE hook_invocations ADD COLUMN handler_matcher_identity TEXT NOT NULL DEFAULT 'legacy'",
+            ),
+            (
+                "handler_structural_identity",
+                "ALTER TABLE hook_invocations ADD COLUMN handler_structural_identity TEXT NOT NULL DEFAULT 'legacy'",
+            ),
+            (
+                "handler_execution_mode",
+                "ALTER TABLE hook_invocations ADD COLUMN handler_execution_mode TEXT NOT NULL DEFAULT 'sync'",
+            ),
+            (
+                "evidence_generation",
+                "ALTER TABLE hook_invocations ADD COLUMN evidence_generation TEXT NOT NULL DEFAULT 'legacy_v03_proxy'",
+            ),
         ] {
-            let _ = connection.execute(statement, []);
+            if !invocation_column_exists(&connection, column)? {
+                connection.execute(statement, [])?;
+            }
         }
-        Ok(Self { connection })
+        connection.execute(
+            "DELETE FROM hookstat_migration_issues WHERE issue_kind = 'invalid_legacy_taxonomy'",
+            [],
+        )?;
+        connection.execute(
+            "INSERT INTO hookstat_migration_issues (issue_kind, rows_affected)
+             SELECT 'invalid_legacy_taxonomy', count(*) FROM hook_invocations
+             WHERE runtime NOT IN ('codex', 'deepseek_harness', 'opencode')
+                OR evidence_kind NOT IN ('codex_session_jsonl', 'codex_state_database', 'codex_app_server_live', 'codex_instrumented_receipt', 'runtime_neutral_ipc', 'open_telemetry', 'synthetic_fixture')
+                OR evidence_generation NOT IN ('legacy_v03_proxy', 'v031_native', 'v031_cooperative_ipc', 'synthetic_fixture')
+                OR coverage NOT IN ('complete', 'partial', 'sync_only', 'best_effort', 'unknown', 'not_admitted', 'synthetic_fixture')
+                OR terminal_status NOT IN ('completed', 'failed', 'blocked', 'stopped', 'timed_out', 'protocol_failure', 'incomplete', 'unknown')
+             HAVING count(*) > 0
+             ON CONFLICT(issue_kind) DO UPDATE SET rows_affected = excluded.rows_affected",
+            [],
+        )?;
+        // Publish the new schema version only after every additive migration
+        // and validation-index step has completed. A partial open can safely
+        // retry without claiming a schema it did not finish.
+        connection.execute_batch(
+            "DELETE FROM hookstat_schema;
+             INSERT INTO hookstat_schema (version) VALUES (4);",
+        )?;
+        Ok(Self {
+            connection,
+            has_evidence_generation: true,
+        })
     }
 
     /// A duplicate is harmless. A later lifecycle result may refine an
@@ -416,11 +471,11 @@ impl Ledger {
             let prior: Option<String> = transaction.query_row("SELECT terminal_status FROM hook_invocations WHERE source_key = ?1 AND source_record_id = ?2", [&value.source_key, &value.source_record_id], |row| row.get(0)).optional()?;
             let changed = transaction.execute(
                 "INSERT INTO hook_invocations (
-                    source_key, source_record_id, runtime, evidence_kind, coverage,
+                    source_key, source_record_id, runtime, evidence_kind, evidence_generation, coverage,
                     handler_key, handler_revision, handler_label, handler_source_kind, handler_event,
                     handler_matcher_identity, handler_structural_identity, handler_execution_mode,
                     occurred_at_unix_ms, terminal_status, duration_ms, error_fingerprint
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
                 ON CONFLICT(source_key, source_record_id) DO UPDATE SET
                     coverage = excluded.coverage, handler_revision = excluded.handler_revision,
                     handler_label = excluded.handler_label, handler_source_kind = excluded.handler_source_kind,
@@ -431,11 +486,11 @@ impl Ledger {
                     duration_ms = excluded.duration_ms, error_fingerprint = excluded.error_fingerprint
                 WHERE (hook_invocations.terminal_status = 'incomplete' AND excluded.terminal_status != 'incomplete')
                    OR (hook_invocations.coverage = 'best_effort' AND excluded.coverage != 'best_effort')
-                   OR (excluded.error_fingerprint = ?18
+                   OR (excluded.error_fingerprint = ?19
                        AND excluded.terminal_status = 'unknown'
                        AND excluded.coverage = 'unknown')",
                 params![
-                    &value.source_key, &value.source_record_id, value.runtime.as_storage(), value.evidence_kind.as_storage(), value.coverage.as_storage(),
+                    &value.source_key, &value.source_record_id, value.runtime.as_storage(), value.evidence_kind.as_storage(), value.evidence_generation.as_storage(), value.coverage.as_storage(),
                     &value.handler.key, &value.handler.revision, &value.handler.label, &value.handler.source_kind, value.handler.event.as_storage(),
                     &value.handler.matcher_identity, &value.handler.structural_identity, value.handler.execution_mode.as_storage(),
                     value.occurred_at_unix_ms, value.terminal_status.as_storage(), value.duration_ms.map(|duration| duration as i64), &value.error_fingerprint,
@@ -507,6 +562,20 @@ impl Ledger {
             .query_row("SELECT count(*) FROM hook_invocations", [], |row| {
                 row.get::<_, i64>(0)
             })
+            .map(|count| count as u64)
+            .map_err(Into::into)
+    }
+
+    /// Sanitized count of preserved legacy rows whose taxonomy cannot be
+    /// interpreted by the current release. The rows themselves remain
+    /// untouched and never masquerade as v0.3.1 Native or IPC evidence.
+    pub fn migration_issue_count(&self) -> Result<u64, LedgerError> {
+        self.connection
+            .query_row(
+                "SELECT COALESCE(SUM(rows_affected), 0) FROM hookstat_migration_issues",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
             .map(|count| count as u64)
             .map_err(Into::into)
     }
@@ -635,60 +704,68 @@ impl Ledger {
         &self,
         bounds: TimeBounds,
     ) -> Result<Vec<HookInvocation>, LedgerError> {
-        let (sql, parameters): (&str, Vec<i64>) = match bounds.current_start_unix_ms {
+        let generation = if self.has_evidence_generation {
+            "evidence_generation"
+        } else {
+            "'legacy_v03_proxy'"
+        };
+        let (sql, parameters): (String, Vec<i64>) = match bounds.current_start_unix_ms {
             Some(start) => (
-                "SELECT source_key, source_record_id, runtime, evidence_kind, coverage, handler_key, handler_revision,
+                format!("SELECT source_key, source_record_id, runtime, evidence_kind, {generation}, coverage, handler_key, handler_revision,
                         handler_label, handler_source_kind, handler_event, handler_matcher_identity,
                         handler_structural_identity, handler_execution_mode, occurred_at_unix_ms, terminal_status,
                         duration_ms, error_fingerprint FROM hook_invocations
                  WHERE occurred_at_unix_ms >= ?1 AND occurred_at_unix_ms <= ?2
-                 ORDER BY occurred_at_unix_ms, source_key, source_record_id",
+                 ORDER BY occurred_at_unix_ms, source_key, source_record_id"),
                 vec![start, bounds.current_end_unix_ms],
             ),
             None => (
-                "SELECT source_key, source_record_id, runtime, evidence_kind, coverage, handler_key, handler_revision,
+                format!("SELECT source_key, source_record_id, runtime, evidence_kind, {generation}, coverage, handler_key, handler_revision,
                         handler_label, handler_source_kind, handler_event, handler_matcher_identity,
                         handler_structural_identity, handler_execution_mode, occurred_at_unix_ms, terminal_status,
                         duration_ms, error_fingerprint FROM hook_invocations
                  WHERE occurred_at_unix_ms <= ?1
-                 ORDER BY occurred_at_unix_ms, source_key, source_record_id",
+                 ORDER BY occurred_at_unix_ms, source_key, source_record_id"),
                 vec![bounds.current_end_unix_ms],
             ),
         };
-        let mut statement = self.connection.prepare(sql)?;
+        let mut statement = self.connection.prepare(&sql)?;
         let rows = statement.query_map(rusqlite::params_from_iter(parameters), |row| {
             let invalid = || rusqlite::Error::InvalidQuery;
             let runtime = Runtime::from_storage(&row.get::<_, String>(2)?).ok_or_else(invalid)?;
             let evidence_kind =
                 EvidenceKind::from_storage(&row.get::<_, String>(3)?).ok_or_else(invalid)?;
+            let evidence_generation =
+                EvidenceGeneration::from_storage(&row.get::<_, String>(4)?).ok_or_else(invalid)?;
             let coverage =
-                EvidenceCoverage::from_storage(&row.get::<_, String>(4)?).ok_or_else(invalid)?;
-            let event = HookEvent::from_storage(&row.get::<_, String>(9)?).ok_or_else(invalid)?;
+                EvidenceCoverage::from_storage(&row.get::<_, String>(5)?).ok_or_else(invalid)?;
+            let event = HookEvent::from_storage(&row.get::<_, String>(10)?).ok_or_else(invalid)?;
             let execution_mode =
-                ExecutionMode::from_storage(&row.get::<_, String>(12)?).ok_or_else(invalid)?;
+                ExecutionMode::from_storage(&row.get::<_, String>(13)?).ok_or_else(invalid)?;
             let terminal_status =
-                TerminalStatus::from_storage(&row.get::<_, String>(14)?).ok_or_else(invalid)?;
-            let duration: Option<i64> = row.get(15)?;
+                TerminalStatus::from_storage(&row.get::<_, String>(15)?).ok_or_else(invalid)?;
+            let duration: Option<i64> = row.get(16)?;
             Ok(HookInvocation {
                 source_key: row.get(0)?,
                 source_record_id: row.get(1)?,
                 runtime,
                 evidence_kind,
+                evidence_generation,
                 coverage,
                 handler: HandlerIdentity {
-                    key: row.get(5)?,
-                    revision: row.get(6)?,
-                    label: row.get(7)?,
-                    source_kind: row.get(8)?,
+                    key: row.get(6)?,
+                    revision: row.get(7)?,
+                    label: row.get(8)?,
+                    source_kind: row.get(9)?,
                     event,
-                    matcher_identity: row.get(10)?,
-                    structural_identity: row.get(11)?,
+                    matcher_identity: row.get(11)?,
+                    structural_identity: row.get(12)?,
                     execution_mode,
                 },
-                occurred_at_unix_ms: row.get(13)?,
+                occurred_at_unix_ms: row.get(14)?,
                 terminal_status,
                 duration_ms: duration.map(|value| value as u64),
-                error_fingerprint: row.get(16)?,
+                error_fingerprint: row.get(17)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -838,6 +915,17 @@ impl Ledger {
     }
 }
 
+fn invocation_column_exists(connection: &Connection, column: &str) -> Result<bool, LedgerError> {
+    let mut statement = connection.prepare("PRAGMA table_info(hook_invocations)")?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for value in columns {
+        if value? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[derive(Clone, Debug)]
 struct TimelinePoint {
     occurred_at_unix_ms: i64,
@@ -889,6 +977,7 @@ mod tests {
             source_record_id: id.into(),
             runtime: Runtime::Codex,
             evidence_kind: EvidenceKind::SyntheticFixture,
+            evidence_generation: EvidenceGeneration::SyntheticFixture,
             coverage: EvidenceCoverage::SyntheticFixture,
             handler: HandlerIdentity {
                 key: "fixture-handler".into(),
