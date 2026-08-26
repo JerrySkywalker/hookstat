@@ -130,6 +130,26 @@ parent-observed instrumented shim lifetime minus the original-child spawn/wait
 interval observed inside that same invocation. This removes only the original
 business-process interval. The host controls are a separate admission gate.
 
+Because the oracle is compiled only into the developer performance build, the
+shipping-versus-instrumented startup comparison is a prerequisite to that
+metric. It receives its own exact G28 pre/post controls in the same
+qualification session. A rejected comparison window is retained and retried at
+bounded low frequency. A comparison with passing controls may supply its
+complete-envelope correction only when the instrumented build is less than
+`2.0 ms` faster than shipping. The `2.0 ms` stop predates qualification and is
+not derived from a candidate result. An admitted comparison at or above the
+stop is `INVALIDATED_BY_BUILD_PROFILE`; it proves neither product PASS nor
+product FAIL. Host-control values are never added to or subtracted from the
+product metric.
+
+If an instrumented invocation exits before emitting its fixed oracle record,
+the runner retains the terminal class and an observation gap, completes the
+post-control, and applies host-control precedence. With passing controls, an
+independently observed timeout or unexpected terminal result remains
+`FAIL_FROZEN_BUDGET`; an oracle gap with no terminal failure is
+`INVALIDATED_BY_METHOD`. A rejected host window's gap is retained but does not
+count against a later admitted series.
+
 Historical receipts retain their original outcomes. They are not
 retroactively classified as host-substrate rejections unless a contemporaneous
 execution of this predefined G28 control proves that classification.

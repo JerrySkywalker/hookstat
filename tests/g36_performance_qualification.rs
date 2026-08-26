@@ -19,8 +19,10 @@ use hook_shim::{
     capsule_file_name, write_key_for_test,
 };
 use hookstat::g36_host_admission::{
-    HOST_CONTROL_METHODOLOGY, HOST_CONTROL_P95_LIMIT_MS, HOST_CONTROL_P99_LIMIT_MS, TailLatency,
-    WarmWindowDisposition, classify_warm_window_with_health,
+    HOST_CONTROL_METHODOLOGY, HOST_CONTROL_P95_LIMIT_MS, HOST_CONTROL_P99_LIMIT_MS,
+    MAX_COMPARABLE_STARTUP_BIAS_MS, StartupComparabilityDisposition, TailLatency,
+    WarmWindowDisposition, classify_startup_comparability,
+    classify_warm_window_with_health_and_oracle,
 };
 use hookstat::ipc::{BrokerConfig, BrokerHost};
 use interprocess::local_socket::traits::Listener as _;
@@ -44,7 +46,6 @@ const COOPERATIVE_P99_LIMIT_MS: f64 = 2.0;
 const SHIM_WARM_P95_LIMIT_MS: f64 = 20.0;
 const SHIM_WARM_P99_LIMIT_MS: f64 = 25.0;
 const SHIM_COLD_P95_LIMIT_MS: f64 = 50.0;
-const MAX_COMPARABLE_STARTUP_BIAS_MS: f64 = 2.0;
 const DEFAULT_MAX_WARM_WINDOW_ATTEMPTS: usize = 25;
 const DEFAULT_REJECT_RETRY_INTERVAL: Duration = Duration::from_secs(60);
 const ORACLE_ROOT_ENV: &str = "HOOKSTAT_G36_ORACLE_ROOT";
@@ -77,6 +78,42 @@ struct StartupComparisonSeries {
 }
 
 #[derive(Clone, Serialize)]
+struct StartupComparabilityAttempt {
+    attempt: usize,
+    pre_control: Timing,
+    startup_comparison_series: Vec<StartupComparisonSeries>,
+    shipping_startup_worst_p99_ms: f64,
+    instrumented_startup_worst_p99_ms: f64,
+    startup_tail_bias_correction_ms: f64,
+    post_control: Timing,
+    disposition: StartupComparabilityDisposition,
+}
+
+#[derive(Serialize)]
+struct StartupComparabilityReceipt<'a> {
+    schema_version: u8,
+    run_kind: &'static str,
+    source_git_head: &'a str,
+    shipping_binary_size_bytes: u64,
+    instrumented_binary_size_bytes: u64,
+    shipping_binary_sha256: &'a str,
+    instrumented_binary_sha256: &'a str,
+    control_methodology: &'static str,
+    control_fixture: &'static str,
+    control_samples: usize,
+    control_warmups_per_timed_sample: usize,
+    percentile_method: &'static str,
+    control_p95_limit_ms: f64,
+    control_p99_limit_ms: f64,
+    maximum_comparable_startup_bias_ms: f64,
+    comparison_runs: usize,
+    samples_per_build_per_run: usize,
+    comparison: &'a StartupComparabilityAttempt,
+    owner_live_codex_config_mutated: bool,
+    raw_private_content_captured: bool,
+}
+
+#[derive(Clone, Serialize)]
 struct WarmWindow {
     attempt: usize,
     pre_control: Timing,
@@ -84,6 +121,7 @@ struct WarmWindow {
     candidate: Timing,
     candidate_hookstat_induced_timeouts: usize,
     candidate_unexpected_terminal_results: usize,
+    candidate_oracle_observation_gaps: usize,
     post_control: Timing,
     disposition: WarmWindowDisposition,
 }
@@ -93,6 +131,10 @@ struct WarmWindowReceipt<'a> {
     schema_version: u8,
     run_kind: &'static str,
     source_git_head: &'a str,
+    shipping_binary_size_bytes: u64,
+    instrumented_binary_size_bytes: u64,
+    shipping_binary_sha256: &'a str,
+    instrumented_binary_sha256: &'a str,
     control_methodology: &'static str,
     control_fixture: &'static str,
     control_samples: usize,
@@ -102,6 +144,7 @@ struct WarmWindowReceipt<'a> {
     control_p99_limit_ms: f64,
     product_p95_limit_ms: f64,
     product_p99_limit_ms: f64,
+    accepted_startup_comparability_attempt: usize,
     startup_tail_bias_correction_ms: f64,
     window: &'a WarmWindow,
     owner_live_codex_config_mutated: bool,
@@ -143,6 +186,8 @@ struct Receipt {
     instrumented_binary_size_bytes: u64,
     shipping_binary_sha256: String,
     instrumented_binary_sha256: String,
+    startup_comparability_attempts: Vec<StartupComparabilityAttempt>,
+    accepted_startup_comparability_attempt: usize,
     startup_comparison_series: Vec<StartupComparisonSeries>,
     shipping_startup_worst_p99_ms: f64,
     instrumented_startup_worst_p99_ms: f64,
@@ -152,10 +197,13 @@ struct Receipt {
     host_control_rejected_windows: usize,
     warm_admitted_runs: usize,
     admitted_warm_failure_occurred: bool,
+    warm_method_invalidation_occurred: bool,
     admitted_warm_hookstat_induced_timeouts: usize,
     admitted_warm_unexpected_terminal_results: usize,
+    admitted_warm_oracle_observation_gaps: usize,
     cold_hookstat_induced_timeouts: usize,
     cold_unexpected_terminal_results: usize,
+    cold_oracle_observation_gaps: usize,
     raw_oracle_series: Vec<Series>,
     series: Vec<Series>,
     oracle_primary_record_worst_p95_ms: f64,
@@ -168,6 +216,7 @@ struct Receipt {
     healthy_near_timeout_runs: usize,
     hookstat_induced_timeouts_for_healthy_hook: usize,
     unexpected_terminal_results_for_healthy_hook: usize,
+    oracle_observation_gaps: usize,
     outcome: &'static str,
     owner_live_codex_config_mutated: bool,
     raw_private_content_captured: bool,
@@ -180,6 +229,23 @@ struct RawOracleRun {
     oracle_primary_record_ms: Vec<f64>,
     hookstat_induced_timeouts: usize,
     unexpected_terminal_results: usize,
+    oracle_observation_gaps: usize,
+}
+
+enum OracleReceive {
+    Record {
+        child_ns: u64,
+        oracle_primary_record_ns: u64,
+    },
+    MissingRecord(ExitStatus),
+}
+
+struct OracleSample {
+    overhead_ms: Option<f64>,
+    oracle_primary_record_ms: Option<f64>,
+    hookstat_induced_timeouts: usize,
+    unexpected_terminal_results: usize,
+    oracle_observation_gaps: usize,
 }
 
 struct OracleContext<'a> {
@@ -189,6 +255,13 @@ struct OracleContext<'a> {
     state_root: &'a Path,
     oracle_root: &'a Path,
     listener: &'a Listener,
+}
+
+struct QualificationArtifacts<'a> {
+    shipping_shim: &'a Path,
+    instrumented_shim: &'a Path,
+    shipping_binary_sha256: &'a str,
+    instrumented_binary_sha256: &'a str,
 }
 
 fn capsule(plan: ExecutionPlan, budget: Duration) -> HandlerCapsule {
@@ -388,36 +461,49 @@ fn decode_u64(bytes: &[u8]) -> u64 {
     u64::from_le_bytes(bytes.try_into().expect("fixed u64 field"))
 }
 
-fn receive_oracle(listener: &Listener, child: &mut Child) -> (u64, u64) {
+fn bounded_missing_oracle_status(child: &mut Child) -> ExitStatus {
+    if let Some(status) = child.try_wait().expect("query instrumented shim") {
+        return status;
+    }
+    child
+        .kill()
+        .expect("terminate exact owned shim after bounded oracle failure");
+    child
+        .wait()
+        .expect("wait for exact owned shim after bounded oracle failure")
+}
+
+fn receive_oracle(listener: &Listener, child: &mut Child) -> OracleReceive {
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut stream = loop {
         match listener.accept() {
             Ok(stream) => break stream,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(
-                    child.try_wait().expect("query instrumented shim").is_none(),
-                    "instrumented shim exited before its oracle record"
-                );
-                assert!(
-                    Instant::now() < deadline,
-                    "instrumented shim did not connect to the bounded oracle"
-                );
+                if let Some(status) = child.try_wait().expect("query instrumented shim") {
+                    return OracleReceive::MissingRecord(status);
+                }
+                if Instant::now() >= deadline {
+                    return OracleReceive::MissingRecord(bounded_missing_oracle_status(child));
+                }
                 std::thread::sleep(Duration::from_micros(100));
             }
             Err(error) => panic!("oracle listener failed: {error}"),
         }
     };
     let mut record = [0_u8; ORACLE_RECORD_BYTES];
-    stream
-        .read_exact(&mut record)
-        .expect("read fixed-size oracle record");
+    if stream.read_exact(&mut record).is_err() {
+        return OracleReceive::MissingRecord(bounded_missing_oracle_status(child));
+    }
     assert_eq!(&record[..4], b"HSO1");
     assert_eq!(&record[16..20], b"HSO2");
     assert_eq!(record[4], 1);
     assert_eq!(record[20], 1);
     assert!(record[5..8].iter().all(|byte| *byte == 0));
     assert!(record[21..24].iter().all(|byte| *byte == 0));
-    (decode_u64(&record[8..16]), decode_u64(&record[24..32]))
+    OracleReceive::Record {
+        child_ns: decode_u64(&record[8..16]),
+        oracle_primary_record_ns: decode_u64(&record[24..32]),
+    }
 }
 
 fn candidate_terminal_observation(status: &ExitStatus) -> (usize, usize) {
@@ -430,7 +516,7 @@ fn candidate_terminal_observation(status: &ExitStatus) -> (usize, usize) {
     }
 }
 
-fn launch_with_oracle(context: &OracleContext<'_>) -> (f64, f64, usize, usize) {
+fn launch_with_oracle(context: &OracleContext<'_>) -> OracleSample {
     let started = Instant::now();
     let mut child = Command::new(context.shim)
         .env(ORACLE_ROOT_ENV, context.oracle_root)
@@ -445,21 +531,39 @@ fn launch_with_oracle(context: &OracleContext<'_>) -> (f64, f64, usize, usize) {
         .stderr(Stdio::null())
         .spawn()
         .expect("launch instrumented shim");
-    let (child_ns, oracle_primary_record_ns) = receive_oracle(context.listener, &mut child);
-    let status = child.wait().expect("wait for instrumented shim");
-    let full_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-    let (hookstat_induced_timeouts, unexpected_terminal_results) =
-        candidate_terminal_observation(&status);
-    assert!(
-        child_ns <= full_ns,
-        "child interval exceeded parent lifetime"
-    );
-    (
-        (full_ns - child_ns) as f64 / 1_000_000.0,
-        oracle_primary_record_ns as f64 / 1_000_000.0,
-        hookstat_induced_timeouts,
-        unexpected_terminal_results,
-    )
+    match receive_oracle(context.listener, &mut child) {
+        OracleReceive::Record {
+            child_ns,
+            oracle_primary_record_ns,
+        } => {
+            let status = child.wait().expect("wait for instrumented shim");
+            let full_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            let (hookstat_induced_timeouts, unexpected_terminal_results) =
+                candidate_terminal_observation(&status);
+            assert!(
+                child_ns <= full_ns,
+                "child interval exceeded parent lifetime"
+            );
+            OracleSample {
+                overhead_ms: Some((full_ns - child_ns) as f64 / 1_000_000.0),
+                oracle_primary_record_ms: Some(oracle_primary_record_ns as f64 / 1_000_000.0),
+                hookstat_induced_timeouts,
+                unexpected_terminal_results,
+                oracle_observation_gaps: 0,
+            }
+        }
+        OracleReceive::MissingRecord(status) => {
+            let (hookstat_induced_timeouts, unexpected_terminal_results) =
+                candidate_terminal_observation(&status);
+            OracleSample {
+                overhead_ms: None,
+                oracle_primary_record_ms: None,
+                hookstat_induced_timeouts,
+                unexpected_terminal_results,
+                oracle_observation_gaps: 1,
+            }
+        }
+    }
 }
 
 fn emit_oracle_run(
@@ -472,15 +576,17 @@ fn emit_oracle_run(
     let mut oracle_primary_record_ms = Vec::with_capacity(SAMPLES_PER_RUN);
     let mut hookstat_induced_timeouts = 0;
     let mut unexpected_terminal_results = 0;
+    let mut oracle_observation_gaps = 0;
     for _ in 0..SAMPLES_PER_RUN {
         if warmed {
             warm_actual_shipping_shim(context.shim);
         }
-        let (overhead, oracle_primary, timeouts, unexpected) = launch_with_oracle(context);
-        overhead_ms.push(overhead);
-        oracle_primary_record_ms.push(oracle_primary);
-        hookstat_induced_timeouts += timeouts;
-        unexpected_terminal_results += unexpected;
+        let sample = launch_with_oracle(context);
+        overhead_ms.extend(sample.overhead_ms);
+        oracle_primary_record_ms.extend(sample.oracle_primary_record_ms);
+        hookstat_induced_timeouts += sample.hookstat_induced_timeouts;
+        unexpected_terminal_results += sample.unexpected_terminal_results;
+        oracle_observation_gaps += sample.oracle_observation_gaps;
     }
     RawOracleRun {
         kind,
@@ -489,6 +595,7 @@ fn emit_oracle_run(
         oracle_primary_record_ms,
         hookstat_induced_timeouts,
         unexpected_terminal_results,
+        oracle_observation_gaps,
     }
 }
 
@@ -597,9 +704,53 @@ fn warm_window_output_path(output: &Path, attempt: usize) -> PathBuf {
     output.with_file_name(format!("{stem}-window-{attempt:03}.json"))
 }
 
+fn startup_comparability_output_path(output: &Path, attempt: usize) -> PathBuf {
+    let stem = output
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .expect("qualification output has a Unicode file stem");
+    output.with_file_name(format!("{stem}-startup-comparability-{attempt:03}.json"))
+}
+
+fn write_startup_comparability_receipt(
+    output: &Path,
+    source_git_head: &str,
+    artifacts: &QualificationArtifacts<'_>,
+    comparison: &StartupComparabilityAttempt,
+) {
+    let receipt = StartupComparabilityReceipt {
+        schema_version: 1,
+        run_kind: "g36_startup_build_comparability_admission",
+        source_git_head,
+        shipping_binary_size_bytes: fs::metadata(artifacts.shipping_shim).unwrap().len(),
+        instrumented_binary_size_bytes: fs::metadata(artifacts.instrumented_shim).unwrap().len(),
+        shipping_binary_sha256: artifacts.shipping_binary_sha256,
+        instrumented_binary_sha256: artifacts.instrumented_binary_sha256,
+        control_methodology: HOST_CONTROL_METHODOLOGY,
+        control_fixture: "hookstat-hook-fixture",
+        control_samples: SAMPLES_PER_RUN,
+        control_warmups_per_timed_sample: WARMUPS_PER_SAMPLE,
+        percentile_method: "nearest_rank",
+        control_p95_limit_ms: HOST_CONTROL_P95_LIMIT_MS,
+        control_p99_limit_ms: HOST_CONTROL_P99_LIMIT_MS,
+        maximum_comparable_startup_bias_ms: MAX_COMPARABLE_STARTUP_BIAS_MS,
+        comparison_runs: QUALIFYING_RUNS,
+        samples_per_build_per_run: SAMPLES_PER_RUN,
+        comparison,
+        owner_live_codex_config_mutated: false,
+        raw_private_content_captured: false,
+    };
+    write_json_once(
+        &startup_comparability_output_path(output, comparison.attempt),
+        &receipt,
+    );
+}
+
 fn write_warm_window_receipt(
     output: &Path,
     source_git_head: &str,
+    artifacts: &QualificationArtifacts<'_>,
+    accepted_startup_comparability_attempt: usize,
     startup_tail_bias_correction_ms: f64,
     window: &WarmWindow,
 ) {
@@ -607,6 +758,10 @@ fn write_warm_window_receipt(
         schema_version: 1,
         run_kind: "g36_warm_host_admission_window",
         source_git_head,
+        shipping_binary_size_bytes: fs::metadata(artifacts.shipping_shim).unwrap().len(),
+        instrumented_binary_size_bytes: fs::metadata(artifacts.instrumented_shim).unwrap().len(),
+        shipping_binary_sha256: artifacts.shipping_binary_sha256,
+        instrumented_binary_sha256: artifacts.instrumented_binary_sha256,
         control_methodology: HOST_CONTROL_METHODOLOGY,
         control_fixture: "hookstat-hook-fixture",
         control_samples: SAMPLES_PER_RUN,
@@ -616,6 +771,7 @@ fn write_warm_window_receipt(
         control_p99_limit_ms: HOST_CONTROL_P99_LIMIT_MS,
         product_p95_limit_ms: SHIM_WARM_P95_LIMIT_MS,
         product_p99_limit_ms: SHIM_WARM_P99_LIMIT_MS,
+        accepted_startup_comparability_attempt,
         startup_tail_bias_correction_ms,
         window,
         owner_live_codex_config_mutated: false,
@@ -742,6 +898,12 @@ fn release_artifact_meets_the_frozen_g36_budget() {
     );
     let shipping_binary_sha256 = sha256_file(&shipping_shim);
     let instrumented_binary_sha256 = sha256_file(&shim);
+    let artifacts = QualificationArtifacts {
+        shipping_shim: &shipping_shim,
+        instrumented_shim: &shim,
+        shipping_binary_sha256: &shipping_binary_sha256,
+        instrumented_binary_sha256: &instrumented_binary_sha256,
+    };
     let oracle_endpoint = LocalEndpoint::from_state_root(&oracle_root).unwrap();
     let oracle_listener = oracle_endpoint.bind().unwrap();
     let oracle_context = OracleContext {
@@ -764,26 +926,83 @@ fn release_artifact_meets_the_frozen_g36_budget() {
             observation_gaps,
         });
     }
-    // The product metric uses a feature-gated timing side channel. Retain the
-    // established shipping/instrumented comparability proof before any warm
-    // admission window and conservatively charge a small shipping-tail bias.
-    // This value is never derived from or subtracted from the host control.
-    let startup_comparison_series = (1..=QUALIFYING_RUNS)
-        .map(|run| startup_comparison_run(&shipping_shim, &shim, run))
-        .collect::<Vec<_>>();
-    let (
-        shipping_startup_worst_p99_ms,
-        instrumented_startup_worst_p99_ms,
-        startup_tail_bias_correction_ms,
-    ) = startup_tail_bias(&startup_comparison_series);
-    let startup_bias_material = startup_tail_bias_correction_ms >= MAX_COMPARABLE_STARTUP_BIAS_MS;
+    // The product metric uses a feature-gated timing side channel. Its
+    // shipping/instrumented startup correction is itself admitted under the
+    // exact G28 pre/post host control before it can affect a product window.
+    // This prevents a build comparison observed in a rejected host regime
+    // from being transferred into a later admitted product result.
+    let mut startup_comparability_attempts = Vec::with_capacity(max_warm_window_attempts);
+    let mut accepted_startup_comparability = None;
+    for attempt in 1..=max_warm_window_attempts {
+        let pre_control = host_control_run(&host_control_fixture);
+        let startup_comparison_series = (1..=QUALIFYING_RUNS)
+            .map(|run| startup_comparison_run(&shipping_shim, &shim, run))
+            .collect::<Vec<_>>();
+        let (
+            shipping_startup_worst_p99_ms,
+            instrumented_startup_worst_p99_ms,
+            startup_tail_bias_correction_ms,
+        ) = startup_tail_bias(&startup_comparison_series);
+        let post_control = host_control_run(&host_control_fixture);
+        let disposition = classify_startup_comparability(
+            tail(&pre_control),
+            startup_tail_bias_correction_ms,
+            tail(&post_control),
+        );
+        let comparison = StartupComparabilityAttempt {
+            attempt,
+            pre_control,
+            startup_comparison_series,
+            shipping_startup_worst_p99_ms,
+            instrumented_startup_worst_p99_ms,
+            startup_tail_bias_correction_ms,
+            post_control,
+            disposition,
+        };
+        write_startup_comparability_receipt(
+            &qualification_output,
+            &source_git_head,
+            &artifacts,
+            &comparison,
+        );
+        startup_comparability_attempts.push(comparison.clone());
+        match disposition {
+            StartupComparabilityDisposition::Accepted => {
+                accepted_startup_comparability = Some(comparison);
+                break;
+            }
+            StartupComparabilityDisposition::InvalidatedBuildProfile => {
+                panic!(
+                    "instrumented startup was materially faster in an admitted build-comparability window"
+                );
+            }
+            StartupComparabilityDisposition::RejectedHostSubstrate => {
+                if attempt < max_warm_window_attempts {
+                    std::thread::sleep(reject_retry_interval);
+                }
+            }
+        }
+    }
+    let accepted_startup_comparability = accepted_startup_comparability
+        .expect("no host-admitted startup build-comparability window was observed");
+    let accepted_startup_comparability_attempt = accepted_startup_comparability.attempt;
+    let startup_comparison_series = accepted_startup_comparability.startup_comparison_series;
+    let shipping_startup_worst_p99_ms =
+        accepted_startup_comparability.shipping_startup_worst_p99_ms;
+    let instrumented_startup_worst_p99_ms =
+        accepted_startup_comparability.instrumented_startup_worst_p99_ms;
+    let startup_tail_bias_correction_ms =
+        accepted_startup_comparability.startup_tail_bias_correction_ms;
+    let startup_bias_material = false;
 
     let mut raw_oracle_runs = Vec::with_capacity(max_warm_window_attempts + QUALIFYING_RUNS);
     let mut warm_window_attempts = Vec::with_capacity(max_warm_window_attempts);
     let mut warm_admitted_runs = 0;
     let mut admitted_warm_failure_occurred = false;
+    let mut warm_method_invalidation_occurred = false;
     let mut admitted_warm_hookstat_induced_timeouts = 0;
     let mut admitted_warm_unexpected_terminal_results = 0;
+    let mut admitted_warm_oracle_observation_gaps = 0;
     for attempt in 1..=max_warm_window_attempts {
         let pre_control = host_control_run(&host_control_fixture);
         let raw_run = emit_oracle_run("shim_warm", attempt, &oracle_context, true);
@@ -796,12 +1015,13 @@ fn release_artifact_meets_the_frozen_g36_budget() {
                 .collect(),
         );
         let post_control = host_control_run(&host_control_fixture);
-        let disposition = classify_warm_window_with_health(
+        let disposition = classify_warm_window_with_health_and_oracle(
             tail(&pre_control),
             tail(&candidate),
             tail(&post_control),
             raw_run.hookstat_induced_timeouts,
             raw_run.unexpected_terminal_results,
+            raw_run.oracle_observation_gaps,
         );
         let window = WarmWindow {
             attempt,
@@ -810,19 +1030,25 @@ fn release_artifact_meets_the_frozen_g36_budget() {
             candidate,
             candidate_hookstat_induced_timeouts: raw_run.hookstat_induced_timeouts,
             candidate_unexpected_terminal_results: raw_run.unexpected_terminal_results,
+            candidate_oracle_observation_gaps: raw_run.oracle_observation_gaps,
             post_control,
             disposition,
         };
         write_warm_window_receipt(
             &qualification_output,
             &source_git_head,
+            &artifacts,
+            accepted_startup_comparability_attempt,
             startup_tail_bias_correction_ms,
             &window,
         );
         raw_oracle_runs.push(raw_run);
         warm_window_attempts.push(window.clone());
 
-        if disposition != WarmWindowDisposition::RejectedHostSubstrate {
+        if matches!(
+            disposition,
+            WarmWindowDisposition::AdmittedPass | WarmWindowDisposition::FailFrozenBudget
+        ) {
             admitted_warm_hookstat_induced_timeouts += window.candidate_hookstat_induced_timeouts;
             admitted_warm_unexpected_terminal_results +=
                 window.candidate_unexpected_terminal_results;
@@ -856,6 +1082,17 @@ fn release_artifact_meets_the_frozen_g36_budget() {
                     std::thread::sleep(reject_retry_interval);
                 }
             }
+            WarmWindowDisposition::InvalidatedByMethod => {
+                warm_method_invalidation_occurred = true;
+                admitted_warm_oracle_observation_gaps += window.candidate_oracle_observation_gaps;
+                series.push(Series {
+                    kind: "shim_warm",
+                    run: attempt,
+                    timing: window.candidate,
+                    observation_gaps: window.candidate_oracle_observation_gaps,
+                });
+                break;
+            }
         }
     }
     let host_control_rejected_windows = warm_window_attempts
@@ -865,10 +1102,12 @@ fn release_artifact_meets_the_frozen_g36_budget() {
 
     let mut cold_hookstat_induced_timeouts = 0;
     let mut cold_unexpected_terminal_results = 0;
+    let mut cold_oracle_observation_gaps = 0;
     for run in 1..=QUALIFYING_RUNS {
         let raw_run = emit_oracle_run("shim_cold", run, &oracle_context, false);
         cold_hookstat_induced_timeouts += raw_run.hookstat_induced_timeouts;
         cold_unexpected_terminal_results += raw_run.unexpected_terminal_results;
+        cold_oracle_observation_gaps += raw_run.oracle_observation_gaps;
         series.push(Series {
             kind: "shim_cold",
             run,
@@ -879,7 +1118,7 @@ fn release_artifact_meets_the_frozen_g36_budget() {
                     .map(|value| value + startup_tail_bias_correction_ms)
                     .collect(),
             ),
-            observation_gaps: 0,
+            observation_gaps: raw_run.oracle_observation_gaps,
         });
         raw_oracle_runs.push(raw_run);
     }
@@ -921,6 +1160,8 @@ fn release_artifact_meets_the_frozen_g36_budget() {
     let unexpected_terminal_results_for_healthy_hook = admitted_warm_unexpected_terminal_results
         + cold_unexpected_terminal_results
         + near_timeout_unexpected_terminal_results;
+    let oracle_observation_gaps =
+        admitted_warm_oracle_observation_gaps + cold_oracle_observation_gaps;
 
     let raw_oracle_series = raw_oracle_runs
         .iter()
@@ -932,7 +1173,7 @@ fn release_artifact_meets_the_frozen_g36_budget() {
             },
             run: run.run,
             timing: timing(run.overhead_ms.clone()),
-            observation_gaps: 0,
+            observation_gaps: run.oracle_observation_gaps,
         })
         .collect::<Vec<_>>();
     let oracle_primary_record_series = raw_oracle_runs
@@ -941,7 +1182,7 @@ fn release_artifact_meets_the_frozen_g36_budget() {
             kind: "oracle_primary_record",
             run: run.run,
             timing: timing(run.oracle_primary_record_ms.clone()),
-            observation_gaps: 0,
+            observation_gaps: run.oracle_observation_gaps,
         })
         .collect::<Vec<_>>();
     let cooperative_worst_p95_ms = worst(&series, "cooperative", |value| value.p95_ms);
@@ -963,16 +1204,20 @@ fn release_artifact_meets_the_frozen_g36_budget() {
         && cooperative_worst_p99_ms <= COOPERATIVE_P99_LIMIT_MS
         && warm_admitted_runs == QUALIFYING_RUNS
         && !admitted_warm_failure_occurred
+        && !warm_method_invalidation_occurred
         && shim_warm_worst_p95_ms.is_some_and(|value| value <= SHIM_WARM_P95_LIMIT_MS)
         && shim_warm_worst_p99_ms.is_some_and(|value| value <= SHIM_WARM_P99_LIMIT_MS)
         && shim_cold_worst_p95_ms <= SHIM_COLD_P95_LIMIT_MS
         && !startup_bias_material
         && hookstat_induced_timeouts_for_healthy_hook == 0
-        && unexpected_terminal_results_for_healthy_hook == 0;
+        && unexpected_terminal_results_for_healthy_hook == 0
+        && oracle_observation_gaps == 0;
     let outcome = if passed {
         "PASS"
     } else if admitted_warm_failure_occurred {
         "FAIL_FROZEN_BUDGET"
+    } else if warm_method_invalidation_occurred || oracle_observation_gaps > 0 {
+        "INVALIDATED_BY_METHOD"
     } else if warm_admitted_runs < QUALIFYING_RUNS {
         "INSUFFICIENT_ADMITTED_WINDOWS"
     } else if startup_bias_material {
@@ -1015,6 +1260,8 @@ fn release_artifact_meets_the_frozen_g36_budget() {
         instrumented_binary_size_bytes: fs::metadata(&shim).unwrap().len(),
         shipping_binary_sha256,
         instrumented_binary_sha256,
+        startup_comparability_attempts,
+        accepted_startup_comparability_attempt,
         startup_comparison_series,
         shipping_startup_worst_p99_ms,
         instrumented_startup_worst_p99_ms,
@@ -1024,10 +1271,13 @@ fn release_artifact_meets_the_frozen_g36_budget() {
         host_control_rejected_windows,
         warm_admitted_runs,
         admitted_warm_failure_occurred,
+        warm_method_invalidation_occurred,
         admitted_warm_hookstat_induced_timeouts,
         admitted_warm_unexpected_terminal_results,
+        admitted_warm_oracle_observation_gaps,
         cold_hookstat_induced_timeouts,
         cold_unexpected_terminal_results,
+        cold_oracle_observation_gaps,
         raw_oracle_series,
         series,
         oracle_primary_record_worst_p95_ms,
@@ -1040,6 +1290,7 @@ fn release_artifact_meets_the_frozen_g36_budget() {
         healthy_near_timeout_runs,
         hookstat_induced_timeouts_for_healthy_hook,
         unexpected_terminal_results_for_healthy_hook,
+        oracle_observation_gaps,
         outcome,
         owner_live_codex_config_mutated: false,
         raw_private_content_captured: false,
@@ -1086,4 +1337,19 @@ fn candidate_timeout_is_retained_instead_of_panicking_before_post_control() {
         .status()
         .expect("launch bounded exit fixture");
     assert_eq!(candidate_terminal_observation(&status), (1, 0));
+}
+
+#[test]
+fn pre_oracle_child_exit_is_retained_instead_of_panicking() {
+    let temporary = tempfile::tempdir().unwrap();
+    let endpoint = LocalEndpoint::from_state_root(temporary.path().join("oracle")).unwrap();
+    let listener = endpoint.bind().unwrap();
+    let mut child = Command::new("cmd.exe")
+        .args(["/D", "/C", "exit /b 7"])
+        .spawn()
+        .expect("launch bounded pre-oracle exit fixture");
+    match receive_oracle(&listener, &mut child) {
+        OracleReceive::MissingRecord(status) => assert_eq!(status.code(), Some(7)),
+        OracleReceive::Record { .. } => panic!("exit fixture unexpectedly emitted an oracle"),
+    }
 }

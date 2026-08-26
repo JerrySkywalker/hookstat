@@ -13,6 +13,7 @@ pub const HOST_CONTROL_P95_LIMIT_MS: f64 = 20.0;
 pub const HOST_CONTROL_P99_LIMIT_MS: f64 = 25.0;
 pub const PRODUCT_WARM_P95_LIMIT_MS: f64 = 20.0;
 pub const PRODUCT_WARM_P99_LIMIT_MS: f64 = 25.0;
+pub const MAX_COMPARABLE_STARTUP_BIAS_MS: f64 = 2.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct TailLatency {
@@ -32,6 +33,15 @@ pub enum WarmWindowDisposition {
     AdmittedPass,
     FailFrozenBudget,
     RejectedHostSubstrate,
+    InvalidatedByMethod,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StartupComparabilityDisposition {
+    Accepted,
+    RejectedHostSubstrate,
+    InvalidatedBuildProfile,
 }
 
 impl WarmWindowDisposition {
@@ -40,6 +50,7 @@ impl WarmWindowDisposition {
             Self::AdmittedPass => "ADMITTED_PASS",
             Self::FailFrozenBudget => "FAIL_FROZEN_BUDGET",
             Self::RejectedHostSubstrate => "REJECTED_HOST_SUBSTRATE",
+            Self::InvalidatedByMethod => "INVALIDATED_BY_METHOD",
         }
     }
 }
@@ -52,12 +63,26 @@ pub fn product_passes(product: TailLatency) -> bool {
     product.p95_ms <= PRODUCT_WARM_P95_LIMIT_MS && product.p99_ms <= PRODUCT_WARM_P99_LIMIT_MS
 }
 
+pub fn classify_startup_comparability(
+    pre_control: TailLatency,
+    startup_tail_bias_correction_ms: f64,
+    post_control: TailLatency,
+) -> StartupComparabilityDisposition {
+    if !control_passes(pre_control) || !control_passes(post_control) {
+        StartupComparabilityDisposition::RejectedHostSubstrate
+    } else if startup_tail_bias_correction_ms >= MAX_COMPARABLE_STARTUP_BIAS_MS {
+        StartupComparabilityDisposition::InvalidatedBuildProfile
+    } else {
+        StartupComparabilityDisposition::Accepted
+    }
+}
+
 pub fn classify_warm_window(
     pre_control: TailLatency,
     product: TailLatency,
     post_control: TailLatency,
 ) -> WarmWindowDisposition {
-    classify_warm_window_with_health(pre_control, product, post_control, 0, 0)
+    classify_warm_window_with_health_and_oracle(pre_control, product, post_control, 0, 0, 0)
 }
 
 pub fn classify_warm_window_with_health(
@@ -67,12 +92,31 @@ pub fn classify_warm_window_with_health(
     product_healthy_timeouts: usize,
     product_unexpected_terminal_results: usize,
 ) -> WarmWindowDisposition {
+    classify_warm_window_with_health_and_oracle(
+        pre_control,
+        product,
+        post_control,
+        product_healthy_timeouts,
+        product_unexpected_terminal_results,
+        0,
+    )
+}
+
+pub fn classify_warm_window_with_health_and_oracle(
+    pre_control: TailLatency,
+    product: TailLatency,
+    post_control: TailLatency,
+    product_healthy_timeouts: usize,
+    product_unexpected_terminal_results: usize,
+    oracle_observation_gaps: usize,
+) -> WarmWindowDisposition {
     if !control_passes(pre_control) || !control_passes(post_control) {
         WarmWindowDisposition::RejectedHostSubstrate
-    } else if product_passes(product)
-        && product_healthy_timeouts == 0
-        && product_unexpected_terminal_results == 0
-    {
+    } else if product_healthy_timeouts > 0 || product_unexpected_terminal_results > 0 {
+        WarmWindowDisposition::FailFrozenBudget
+    } else if oracle_observation_gaps > 0 {
+        WarmWindowDisposition::InvalidatedByMethod
+    } else if product_passes(product) {
         WarmWindowDisposition::AdmittedPass
     } else {
         WarmWindowDisposition::FailFrozenBudget
@@ -148,6 +192,46 @@ mod tests {
         assert_eq!(
             classify_warm_window_with_health(FAIL_P95, PASS, PASS, 1, 0),
             WarmWindowDisposition::RejectedHostSubstrate
+        );
+    }
+
+    #[test]
+    fn an_oracle_gap_invalidates_only_an_otherwise_admitted_window() {
+        assert_eq!(
+            classify_warm_window_with_health_and_oracle(PASS, PASS, PASS, 0, 0, 1),
+            WarmWindowDisposition::InvalidatedByMethod
+        );
+        assert_eq!(
+            classify_warm_window_with_health_and_oracle(FAIL_P95, PASS, PASS, 0, 0, 1),
+            WarmWindowDisposition::RejectedHostSubstrate
+        );
+        assert_eq!(
+            classify_warm_window_with_health_and_oracle(PASS, PASS, PASS, 1, 0, 1),
+            WarmWindowDisposition::FailFrozenBudget
+        );
+    }
+
+    #[test]
+    fn startup_comparability_requires_passing_pre_and_post_controls() {
+        assert_eq!(
+            classify_startup_comparability(FAIL_P95, 0.0, PASS),
+            StartupComparabilityDisposition::RejectedHostSubstrate
+        );
+        assert_eq!(
+            classify_startup_comparability(PASS, 0.0, FAIL_P99),
+            StartupComparabilityDisposition::RejectedHostSubstrate
+        );
+    }
+
+    #[test]
+    fn admitted_startup_comparability_uses_the_preexisting_fixed_stop() {
+        assert_eq!(
+            classify_startup_comparability(PASS, MAX_COMPARABLE_STARTUP_BIAS_MS, PASS),
+            StartupComparabilityDisposition::InvalidatedBuildProfile
+        );
+        assert_eq!(
+            classify_startup_comparability(PASS, MAX_COMPARABLE_STARTUP_BIAS_MS - 0.000_1, PASS,),
+            StartupComparabilityDisposition::Accepted
         );
     }
 }

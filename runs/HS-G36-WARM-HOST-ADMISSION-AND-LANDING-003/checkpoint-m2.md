@@ -14,6 +14,22 @@ Each attempted warm window executes:
 100-sample POST control
 ```
 
+The feature-gated oracle also requires an exact shipping-versus-instrumented
+startup comparison. Before any comparison can supply a correction, the runner
+executes and atomically retains a separate envelope:
+
+```text
+100-sample PRE control
+5 x 100-sample shipping/instrumented startup comparison
+100-sample POST control
+```
+
+Failed controls retain `REJECTED_HOST_SUBSTRATE` and retry at the same bounded
+low frequency. Passing controls admit the pre-existing fixed `2.0 ms`
+build-comparability stop. A correction at or above that value is
+`INVALIDATED_BUILD_PROFILE` and stops before product qualification; it is not
+converted into a product pass or failure.
+
 Every timed control sample receives 25 unmeasured fresh minimal-fixture
 launches. The release-profile harness uses Rust's `Instant` and nearest-rank
 p50/p95/p99/max. Thresholds are compile-time constants: p95 `20 ms` and p99
@@ -41,5 +57,8 @@ HOST_CONTROL_P95_LIMIT_MS=20
 HOST_CONTROL_P99_LIMIT_MS=25
 HOST_CONTROL_SUBTRACTED_FROM_PRODUCT=false
 REJECTED_WINDOW_RECEIPT_ATOMIC=true
+BUILD_COMPARABILITY_HOST_ADMITTED=true
+BUILD_COMPARABILITY_MAX_BIAS_MS=2
+PRE_ORACLE_EXIT_RETAINED=true
 HELPER_ARCHITECTURE_SHIPPED=false
 ```

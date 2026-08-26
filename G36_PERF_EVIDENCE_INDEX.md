@@ -83,6 +83,15 @@ instrumented-versus-shipping comparability stop remains independent: a
 materially faster instrumented build invalidates the product metric rather than
 proving either release PASS or FAIL.
 
+Prospective build comparability is itself bracketed by the same predefined G28
+pre/post controls before its correction can affect any warm product window.
+This prevents a comparison observed in a rejected host regime from being
+transferred into a later admitted product result. A pre-oracle exit is retained
+as an observation gap and terminal class; it cannot abort before the
+post-control or silently reduce an accepted sample population. An independently
+observed non-success terminal result remains a product failure when both
+controls pass.
+
 The exact `08f83bc...` receipt and every earlier G36 receipt predate this
 prospective envelope. None contains the predefined contemporaneous pre and
 post G28 controls. Therefore:
