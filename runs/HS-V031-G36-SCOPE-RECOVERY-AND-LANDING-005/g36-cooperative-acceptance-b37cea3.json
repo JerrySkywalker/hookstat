@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "run_kind": "g36_v031_cooperative_ipc_acceptance",
+  "build_profile": "release",
+  "source_git_head": "b37cea32c9500d198a0aa1e1b8defa8e73caaf12",
+  "source_tracked_worktree_clean": true,
+  "qualifying_runs": 5,
+  "samples_per_run": 100,
+  "percentile_method": "nearest_rank",
+  "p95_limit_ms": 1.0,
+  "p99_limit_ms": 2.0,
+  "series": [
+    {
+      "kind": "cooperative",
+      "run": 1,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 0.0636,
+        "p95_ms": 0.1688,
+        "p99_ms": 0.253,
+        "max_ms": 0.2696
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "cooperative",
+      "run": 2,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 0.048,
+        "p95_ms": 0.1091,
+        "p99_ms": 0.1483,
+        "max_ms": 0.5828
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "cooperative",
+      "run": 3,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 0.0636,
+        "p95_ms": 0.179,
+        "p99_ms": 0.3036,
+        "max_ms": 0.4445
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "cooperative",
+      "run": 4,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 0.0422,
+        "p95_ms": 0.1064,
+        "p99_ms": 0.1281,
+        "max_ms": 0.1591
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "cooperative",
+      "run": 5,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 0.0443,
+        "p95_ms": 0.0881,
+        "p99_ms": 0.1196,
+        "max_ms": 0.1318
+      },
+      "observation_gaps": 0
+    }
+  ],
+  "worst_p95_ms": 0.179,
+  "worst_p99_ms": 0.3036,
+  "observation_gaps": 0,
+  "outcome": "PASS",
+  "owner_live_codex_config_mutated": false,
+  "raw_private_content_captured": false
+}

@@ -88,6 +88,10 @@ This is a release-scope decision, not a new evidence taxonomy and not a
 transparent performance PASS. Every historical row above retains its original
 classification.
 
+| Evidence | Classification | Why | Current use |
+| --- | --- | --- | --- |
+| `runs/HS-V031-G36-SCOPE-RECOVERY-AND-LANDING-005/g36-cooperative-acceptance-b37cea3.json` | `FULL_ACCEPTANCE_PASS` | Tracked-clean exact source `b37cea3...`, release profile, five independent 100-sample cooperative series, nearest-rank percentiles, and zero observation gaps. | Cooperative worst p95/p99 is `0.1790/0.3036` ms, passing the unchanged `1/2`-ms production contract. This receipt proves cooperative admission only; it does not reclassify transparent performance. |
+
 The current `FULL_ACCEPTANCE_PASS` is the deterministic reduction of one
 complete release qualification, not a rerun or selected subset.  The two
 corrected-method debug receipts remain `INVALIDATED_BY_BUILD_PROFILE`; the two
