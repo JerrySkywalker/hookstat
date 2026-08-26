@@ -2,9 +2,13 @@
 
 ## Status
 
-DRAFT FOUNDATION after accepted G37. Read-only diagnostics and disposable-root
-recovery/concurrency guards are implemented; real Owner Windows dogfood remains
-required and has not run.
+BLOCKED_G38_SAFE_ACTIVATION after the M1 Owner Windows preflight recorded in
+[`../runs/HS-V031-G38-OWNER-WINDOWS-DOGFOOD-ACCEPTANCE-007/checkpoint-m1-blocked-safe-activation.md`](../runs/HS-V031-G38-OWNER-WINDOWS-DOGFOOD-ACCEPTANCE-007/checkpoint-m1-blocked-safe-activation.md).
+The exact-head Draft foundation remains green, but the installed/current
+TabBeacon 0.5.2 baseline has no packaged HSIP v1 producer. The retained G36
+TabBeacon proof is explicitly test-only, unpublished, and unpackaged. Real
+Owner dogfood therefore did not start; no live configuration was mutated and
+no transparent-shim or third-path substitution was admitted.
 
 ## Objective
 
