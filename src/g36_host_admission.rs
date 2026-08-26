@@ -57,9 +57,22 @@ pub fn classify_warm_window(
     product: TailLatency,
     post_control: TailLatency,
 ) -> WarmWindowDisposition {
+    classify_warm_window_with_health(pre_control, product, post_control, 0, 0)
+}
+
+pub fn classify_warm_window_with_health(
+    pre_control: TailLatency,
+    product: TailLatency,
+    post_control: TailLatency,
+    product_healthy_timeouts: usize,
+    product_unexpected_terminal_results: usize,
+) -> WarmWindowDisposition {
     if !control_passes(pre_control) || !control_passes(post_control) {
         WarmWindowDisposition::RejectedHostSubstrate
-    } else if product_passes(product) {
+    } else if product_passes(product)
+        && product_healthy_timeouts == 0
+        && product_unexpected_terminal_results == 0
+    {
         WarmWindowDisposition::AdmittedPass
     } else {
         WarmWindowDisposition::FailFrozenBudget
@@ -114,6 +127,26 @@ mod tests {
     fn a_failed_control_takes_precedence_over_product_failure() {
         assert_eq!(
             classify_warm_window(FAIL_P95, FAIL_P99, PASS),
+            WarmWindowDisposition::RejectedHostSubstrate
+        );
+    }
+
+    #[test]
+    fn passing_controls_make_a_healthy_timeout_a_product_failure() {
+        assert_eq!(
+            classify_warm_window_with_health(PASS, PASS, PASS, 1, 0),
+            WarmWindowDisposition::FailFrozenBudget
+        );
+        assert_eq!(
+            classify_warm_window_with_health(PASS, PASS, PASS, 0, 1),
+            WarmWindowDisposition::FailFrozenBudget
+        );
+    }
+
+    #[test]
+    fn failed_control_rejects_even_when_candidate_timed_out() {
+        assert_eq!(
+            classify_warm_window_with_health(FAIL_P95, PASS, PASS, 1, 0),
             WarmWindowDisposition::RejectedHostSubstrate
         );
     }
