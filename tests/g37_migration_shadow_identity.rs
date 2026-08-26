@@ -1,4 +1,5 @@
 use hookstat::admission::IpcAdmissionState;
+use hookstat::analytics::TimeWindow;
 use hookstat::domain::{
     EvidenceCoverage, EvidenceGeneration, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent,
     HookInvocation, Runtime, TerminalStatus,
@@ -266,9 +267,38 @@ fn malformed_legacy_taxonomy_is_preserved_and_isolated() {
     create_v03_ledger(&path, true);
     let ledger = Ledger::open_path(&path).unwrap();
     assert_eq!(ledger.migration_issue_count().unwrap(), 1);
+    let canonical = ledger.invocations().unwrap();
+    assert_eq!(canonical.len(), 3);
+    assert!(
+        canonical
+            .iter()
+            .all(|value| value.handler.key == "hk_tabbeacon")
+    );
+    assert_eq!(ledger.invocation_count().unwrap(), 3);
+    let reliability = ledger
+        .invocations_for_reliability(10_000, TimeWindow::All)
+        .unwrap();
+    assert_eq!(reliability.rows_materialized, 3);
+    assert_eq!(reliability.invocations, canonical);
+    let all_time = ledger.all_time_period_metrics(10_000).unwrap();
+    assert_eq!(all_time.len(), 1);
+    assert_eq!(all_time["hk_tabbeacon"].runs, 3);
+    let revision_metrics = ledger
+        .revision_epoch_metrics(&["hk_tabbeacon".into(), "hk_malformed".into()])
+        .unwrap();
+    assert!(revision_metrics.contains_key("hk_tabbeacon"));
+    assert!(!revision_metrics.contains_key("hk_malformed"));
     drop(ledger);
 
     let connection = Connection::open(&path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT count(*) FROM hook_invocations", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        4
+    );
     let terminal: String = connection
         .query_row(
             "SELECT terminal_status FROM hook_invocations WHERE source_record_id = 'malformed'",
