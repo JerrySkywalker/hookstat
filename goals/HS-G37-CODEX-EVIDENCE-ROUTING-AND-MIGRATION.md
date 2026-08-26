@@ -2,7 +2,13 @@
 
 ## Status
 
-PLANNED after accepted G36.
+IN PROGRESS as a Draft train after G36 merged to `main` at
+`d8d00e3da3e24a91cd9405c14d297a12ce33eb23`.
+
+The first checkpoint retains the G36 source router, records Windows Codex
+0.149.0 Native L2 as `UPSTREAM_UNAVAILABLE`, and routes each domain to an
+admitted cooperative IPC integration or truthfully to `NOT_ADMITTED`. No
+transparent-shim production activation is in scope.
 
 ## Objective
 
