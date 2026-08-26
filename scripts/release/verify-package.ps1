@@ -90,7 +90,7 @@ try {
     foreach ($binary in 'hookstat', 'hookstat-hook', 'hookstat-ipc-broker') {
         $candidate = Join-Path $installRoot ("bin/{0}{1}" -f $binary, $extension)
         if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
-            throw "required production binary missing from fresh install: $binary"
+            throw "required packaged binary missing from fresh install: $binary"
         }
     }
     $fixture = Join-Path $installRoot ("bin/hookstat-shim-fixture{0}" -f $extension)
@@ -98,8 +98,18 @@ try {
         throw 'test-only shim fixture leaked into ordinary fresh installation'
     }
 
+    $shim = Join-Path $installRoot ("bin/hookstat-hook{0}" -f $extension)
+    $shimAdmission = @(& $shim --admission-status)
+    if ($LASTEXITCODE -ne 0 -or
+        ($shimAdmission -join "`n").Trim() -ne
+        'transparent_shim=qualified_not_admitted_performance production_admitted=false') {
+        throw 'fresh-installed transparent shim did not report its non-production admission'
+    }
+
     'PACKAGE_ARCHIVE_SELF_CONTAINED=true'
-    'FRESH_INSTALL_REQUIRED_BINARIES=true'
+    'FRESH_INSTALL_REQUIRED_PACKAGED_BINARIES=true'
+    'FRESH_INSTALL_TRANSPARENT_SHIM_ADMISSION=qualified_not_admitted_performance'
+    'FRESH_INSTALL_TRANSPARENT_SHIM_PRODUCTION_ADMITTED=false'
     "PACKAGE_SOURCE_GIT_HEAD=$sourceHead"
     "PACKAGE_ARCHIVE_SHA256=$crateSha256"
     foreach ($binary in 'hookstat', 'hookstat-hook', 'hookstat-ipc-broker') {
