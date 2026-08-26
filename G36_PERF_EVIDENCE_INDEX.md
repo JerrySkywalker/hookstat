@@ -63,6 +63,33 @@ older committed full receipts each retain an independently valid cooperative
 failure while their warm shim submeasurement remains
 `INVALIDATED_BY_METHOD`.
 
+## Owner-approved prospective warm admission overlay
+
+The retained taxonomy above describes each receipt under the methodology in
+force when it was produced. It is not rewritten by the later Owner decision.
+For v0.3.1 landing, each new warm series must be bracketed in the same session
+by pre and post executions of the exact G28 cache-warmed minimal-shim
+process-start control. Each control uses 25 unmeasured launches before every
+one of at least 100 measured launches and nearest-rank percentiles. The
+predefined control limits are p95 `20 ms` and p99 `25 ms`.
+
+Both controls must pass to admit the product series. A control failure produces
+`REJECTED_HOST_SUBSTRATE`, not product PASS or FAIL. If both pass, the
+same-invocation product metric is evaluated unadjusted against the frozen
+`20/25`-ms limits. No host-control subtraction or post-hoc threshold is
+permitted, and five independently admitted passing warm runs are required.
+
+The exact `08f83bc...` receipt and every earlier G36 receipt predate this
+prospective envelope. None contains the predefined contemporaneous pre and
+post G28 controls. Therefore:
+
+```text
+RAW_RECEIPT_OUTCOME_08F83BC=FAIL
+RELEASE_ACCEPTANCE_CLASSIFICATION_08F83BC=NOT_RETROACTIVELY_CLASSIFIED
+NON_ADMITTED_HOST_SUBSTRATE_08F83BC=UNPROVEN_NO_CONTEMPORANEOUS_CONTROL
+FROZEN_G28_BUDGET_CHANGED=false
+```
+
 ## Why the checkpoint values differ
 
 The checkpoint's `1.9582 / 2.1502`, `26.0996 / 36.3580`, and `29.0213` are

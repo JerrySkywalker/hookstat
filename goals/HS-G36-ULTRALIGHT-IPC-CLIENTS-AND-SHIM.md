@@ -2,7 +2,10 @@
 
 ## Status
 
-PLANNED after accepted G35.
+IN PROGRESS after accepted G35. The Owner selected the optimized one-process
+transparent shim for v0.3.1. Warm landing evidence requires the prospective
+G28 minimal-shim host-substrate admission defined in
+`docs/performance/HS-G28-HOT-PATH-METHODOLOGY.md`.
 
 ## Objective
 
@@ -209,6 +212,10 @@ TABBEACON_COOPERATIVE_PROOF=PASS
 PERFORMANCE_BUDGET=PASS
 SECURITY_REVIEW=PASS
 CODE_CI=PASS
+
+FINAL_G36_SHIM_ARCHITECTURE=OPTIMIZED_ONE_PROCESS
+WARM_HOST_ADMISSION_POLICY=PASS_REVIEWED
+WARM_ADMITTED_RUNS=5/5
 ```
 
 ## Estimated effort

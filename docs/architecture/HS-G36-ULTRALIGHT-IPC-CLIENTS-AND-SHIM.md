@@ -170,11 +170,13 @@ observation gaps, and zero HookStat-induced timeouts. That historical exact
 candidate pass is preserved.
 
 Independent review then required correctness and provenance fixes. The clean
-corrected source head's complete qualification passes cooperative at
+corrected source head's historical complete qualification passes cooperative at
 `0.1357/0.2187` ms, cold at `20.5353` ms, and the zero-induced-timeout gate,
 but fails warm at `32.6951/245.2032` ms. Four warm populations remain close to
-the budget while one retains a large fresh-process scheduling tail. Another
-unchanged run would be selection rather than an architecture fix.
+the budget while one retains a large fresh-process scheduling tail. That
+receipt predates the Owner-approved G28 minimal-shim pre/post control and has no
+contemporaneous control result, so its raw failure is preserved without a
+retroactive host-substrate classification.
 
 The subsequent package-excluded helper floor measured a 179-KB fresh frontend
 plus one fixed local exchange at `325.5800/451.8487` ms p95/p99 in the current
@@ -183,15 +185,26 @@ only, but required helper semantics cannot be faster than that floor. The
 architecture decision and option comparison are recorded in
 `docs/adr/HS-G36-TRANSPARENT-SHIM-WARM-ARCHITECTURE.md`.
 
+The Owner selected the optimized one-process shim for v0.3.1. Each prospective
+warm candidate series is now bracketed by the exact G28 cache-warmed
+minimal-shim process-start control. Both controls must pass `20/25` ms before
+the candidate window is admitted. A rejected window is retained and is neither
+a product pass nor a product fail. In an admitted window, the same-invocation
+product metric must itself satisfy `20/25` ms; control values are never
+subtracted from it. Five independently admitted passing windows are required.
+Option C remains deferred and no helper architecture is shipped.
+
 ```text
 WARM_ACCEPTANCE_METRIC=OTHER_PROVEN_METRIC
 OTHER_PROVEN_METRIC=SAME_INVOCATION_PARENT_LIFETIME_MINUS_CHILD_SPAWN_WAIT
 PAIRED_METHOD_IDENTIFIABLE=false
 ONE_PROCESS_ARCHITECTURE=MARGINAL
-HELPER_PROTOTYPE_JUSTIFIED=true
 HELPER_SEMANTIC_PROTOTYPE=NOT_IMPLEMENTED_FLOOR_FAILED
-FINAL_G36_SHIM_ARCHITECTURE=UNRESOLVED_OWNER_DECISION_REQUIRED
-G36_PERFORMANCE=FAIL
-OWNER_ARCHITECTURE_DECISION_REQUIRED=true
+FINAL_G36_SHIM_ARCHITECTURE=OPTIMIZED_ONE_PROCESS
+WARM_HOST_ADMISSION_POLICY=G28_CACHE_WARMED_MINIMAL_SHIM_PRE_AND_POST
+WARM_ADMITTED_RUNS_REQUIRED=5
+HELPER_ARCHITECTURE_SHIPPED=false
+G36_PERFORMANCE=PENDING_HOST_ADMITTED_QUALIFICATION
+OWNER_ARCHITECTURE_DECISION_REQUIRED=false
 FROZEN_G28_BUDGET_CHANGED=false
 ```

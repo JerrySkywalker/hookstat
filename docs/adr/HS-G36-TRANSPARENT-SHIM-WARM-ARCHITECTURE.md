@@ -1,6 +1,6 @@
 # ADR — G36 transparent-shim warm architecture
 
-Status: Owner decision required after bounded implementation experiments
+Status: Accepted by Owner for v0.3.1
 
 ## Context
 
@@ -79,26 +79,34 @@ enter G35 IPC, WAL, ledger, diagnostics, or public receipts.
 
 ## Decision
 
-No option is selected for landing in this train.
+The Owner selects Option A, the optimized repeated-fresh one-process shim, for
+v0.3.1. It is the only semantics-complete implementation and preserves the
+smallest process, control-channel, packaging, privacy, timeout, and containment
+surface.
 
-Option A is the only semantics-complete implementation, but the exact-head
-series proves insufficient repeatable warm-tail margin. Options B and C share
-a measured fresh-frontend/control lower bound that already exceeds the frozen
-budget by an order of magnitude in the current environment. Option B also
-introduces unresolved standard-handle transfer and helper-death truth. Option C
-is the safer helper shape for any future bounded investigation because it
-retains child execution, streams, timeout, and Job ownership in the frontend;
-the current floor nevertheless blocks implementing it as a G36 candidate.
+G36 warm qualification now has a prospective process-substrate admission gate
+using the exact G28 cache-warmed minimal-shim fixture. Every candidate warm
+series is bracketed by predefined pre and post controls. A failed control
+retains the complete window as `REJECTED_HOST_SUBSTRATE`; when both controls
+pass, the unadjusted product metric must independently pass the unchanged
+`20/25`-ms limits. The controls are never subtracted from the product result.
 
-Selecting a different host-admission rule, changing the warm contract, or
-authorizing another architectural boundary is an Owner decision. This ADR
-does not make any of those changes.
+The historical `08f83bc...` failure has no contemporaneous execution of that
+predefined control. Its raw `FAIL` is preserved and it is not retroactively
+relabelled as a host rejection.
+
+Option B is rejected for v0.3.1. Option C remains documented only as a
+deferred future architecture; it is not a G36 landing dependency. No helper
+frontend, private helper protocol, or helper runtime is shipped by this
+decision.
 
 ```text
-FINAL_G36_SHIM_ARCHITECTURE=UNRESOLVED_OWNER_DECISION_REQUIRED
+FINAL_G36_SHIM_ARCHITECTURE=OPTIMIZED_ONE_PROCESS
 ONE_PROCESS_ARCHITECTURE=MARGINAL
 HELPER_SEMANTIC_PROTOTYPE=NOT_IMPLEMENTED_FLOOR_FAILED
-OWNER_ARCHITECTURE_DECISION_REQUIRED=true
+OWNER_ARCHITECTURE_DECISION_REQUIRED=false
+WARM_HOST_ADMISSION_POLICY=G28_CACHE_WARMED_MINIMAL_SHIM_PRE_AND_POST
+HELPER_ARCHITECTURE_SHIPPED=false
 FROZEN_G28_BUDGET_CHANGED=false
 NATIVE_ADMISSION_CHANGED=false
 G37_STARTED=false

@@ -95,3 +95,41 @@ future warm IPC producer timings. Receipt and journal numbers expose the
 current persistence components, while Named Pipe timings establish whether G35
 has a credible local low-latency transport basis. The frozen v0.3.1 budget is
 recorded separately after the full Windows receipt is reviewed.
+
+## G36 warm host-substrate admission
+
+The Owner-approved G36 landing methodology uses the exact existing
+`hookstat-hook-fixture` cache-warmed process-start operation as a prospective
+admission control. This changes whether a Windows qualification window is
+admitted; it does not change or subtract from any frozen product limit.
+
+Each candidate warm series is measured in one release-mode Rust 1.97.1
+qualification session as:
+
+```text
+PRE G28 cache-warmed minimal-shim process-start control
+G36 warm same-invocation product series
+POST G28 cache-warmed minimal-shim process-start control
+```
+
+Every control performs 25 unmeasured fresh launches of the unchanged G28
+minimal-shim fixture before each of at least 100 measured fresh launches.
+Percentiles use the same nearest-rank calculation as G28. No destructive cache
+manipulation, host scheduling intervention, dynamic threshold, or threshold
+derived from the candidate result is permitted.
+
+The predefined control limits are `20 ms` p95 and `25 ms` p99. Both controls
+must pass. If either control fails, the complete pre/product/post observation
+is retained as `REJECTED_HOST_SUBSTRATE`; it is neither a product pass nor a
+product failure. When both controls pass, the reported G36 product metric must
+independently satisfy `20 ms` p95 and `25 ms` p99. No control value is
+subtracted from, used to correct, or used to relax that product metric.
+
+The G36 product metric remains the already-audited same-invocation quantity:
+parent-observed instrumented shim lifetime minus the original-child spawn/wait
+interval observed inside that same invocation. This removes only the original
+business-process interval. The host controls are a separate admission gate.
+
+Historical receipts retain their original outcomes. They are not
+retroactively classified as host-substrate rejections unless a contemporaneous
+execution of this predefined G28 control proves that classification.
