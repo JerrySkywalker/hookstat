@@ -1,7 +1,7 @@
 use hookstat::admission::IpcAdmissionState;
 use hookstat::domain::{
-    EvidenceCoverage, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent, HookInvocation,
-    Runtime, TerminalStatus,
+    EvidenceCoverage, EvidenceGeneration, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent,
+    HookInvocation, Runtime, TerminalStatus,
 };
 use hookstat::evidence::{
     AuthorityRouter, CoverageDomain, DomainAuthority, NativeAdmissionState,
@@ -272,7 +272,8 @@ fn replay_enters_g29_core_idempotently_then_resolves_outside_the_broker() {
         source_key: "synthetic_ipc_v1".into(),
         source_record_id: correlated.correlation_key.invocation_key.as_str().into(),
         runtime: Runtime::OpenCode,
-        evidence_kind: EvidenceKind::SyntheticFixture,
+        evidence_kind: EvidenceKind::RuntimeNeutralIpc,
+        evidence_generation: EvidenceGeneration::V031CooperativeIpc,
         coverage: correlated.legacy_coverage(),
         handler: HandlerIdentity {
             key: "resolved-synthetic-handler".into(),

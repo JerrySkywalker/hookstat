@@ -1,8 +1,8 @@
 //! CLI diagnostics contract: read-only, JSON-safe, and explicitly exported.
 
 use hookstat::domain::{
-    EvidenceCoverage, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent, HookInvocation,
-    Runtime, TerminalStatus,
+    EvidenceCoverage, EvidenceGeneration, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent,
+    HookInvocation, Runtime, TerminalStatus,
 };
 use hookstat::ledger::Ledger;
 use serde_json::Value;
@@ -99,6 +99,7 @@ fn read_only_report_projects_existing_ledger_without_creating_a_receipt_spool() 
             source_record_id: "one".into(),
             runtime: Runtime::Codex,
             evidence_kind: EvidenceKind::SyntheticFixture,
+            evidence_generation: EvidenceGeneration::SyntheticFixture,
             coverage: EvidenceCoverage::SyntheticFixture,
             handler: HandlerIdentity {
                 key: "hk_fixture".into(),

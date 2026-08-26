@@ -61,8 +61,46 @@ pub enum EvidenceKind {
     CodexStateDatabase,
     CodexAppServerLive,
     CodexInstrumentedReceipt,
+    RuntimeNeutralIpc,
     OpenTelemetry,
     SyntheticFixture,
+}
+
+/// Release generation of one durable evidence row.
+///
+/// This is deliberately additive to `EvidenceKind`: historical v0.3 proxy
+/// receipts and v0.3.1 IPC records share an instrumented source class, but
+/// must never be made to look like the same production authority generation.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceGeneration {
+    /// Default for every row written before the v0.3.1 migration.
+    #[default]
+    LegacyV03Proxy,
+    V031Native,
+    V031CooperativeIpc,
+    SyntheticFixture,
+}
+
+impl EvidenceGeneration {
+    pub const fn as_storage(self) -> &'static str {
+        match self {
+            Self::LegacyV03Proxy => "legacy_v03_proxy",
+            Self::V031Native => "v031_native",
+            Self::V031CooperativeIpc => "v031_cooperative_ipc",
+            Self::SyntheticFixture => "synthetic_fixture",
+        }
+    }
+
+    pub fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "legacy_v03_proxy" => Some(Self::LegacyV03Proxy),
+            "v031_native" => Some(Self::V031Native),
+            "v031_cooperative_ipc" => Some(Self::V031CooperativeIpc),
+            "synthetic_fixture" => Some(Self::SyntheticFixture),
+            _ => None,
+        }
+    }
 }
 
 impl EvidenceKind {
@@ -72,6 +110,7 @@ impl EvidenceKind {
             Self::CodexStateDatabase => "codex_state_database",
             Self::CodexAppServerLive => "codex_app_server_live",
             Self::CodexInstrumentedReceipt => "codex_instrumented_receipt",
+            Self::RuntimeNeutralIpc => "runtime_neutral_ipc",
             Self::OpenTelemetry => "open_telemetry",
             Self::SyntheticFixture => "synthetic_fixture",
         }
@@ -83,6 +122,7 @@ impl EvidenceKind {
             "codex_state_database" => Some(Self::CodexStateDatabase),
             "codex_app_server_live" => Some(Self::CodexAppServerLive),
             "codex_instrumented_receipt" => Some(Self::CodexInstrumentedReceipt),
+            "runtime_neutral_ipc" => Some(Self::RuntimeNeutralIpc),
             "open_telemetry" => Some(Self::OpenTelemetry),
             "synthetic_fixture" => Some(Self::SyntheticFixture),
             _ => None,
@@ -95,7 +135,9 @@ impl EvidenceKind {
             | Self::CodexStateDatabase
             | Self::CodexAppServerLive
             | Self::OpenTelemetry => EvidenceSourceClass::Passive,
-            Self::CodexInstrumentedReceipt => EvidenceSourceClass::Instrumented,
+            Self::CodexInstrumentedReceipt | Self::RuntimeNeutralIpc => {
+                EvidenceSourceClass::Instrumented
+            }
             Self::SyntheticFixture => EvidenceSourceClass::SyntheticFixture,
         }
     }
@@ -364,6 +406,8 @@ pub struct HookInvocation {
     pub source_record_id: String,
     pub runtime: Runtime,
     pub evidence_kind: EvidenceKind,
+    #[serde(default)]
+    pub evidence_generation: EvidenceGeneration,
     pub coverage: EvidenceCoverage,
     pub handler: HandlerIdentity,
     pub occurred_at_unix_ms: i64,

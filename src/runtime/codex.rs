@@ -6,8 +6,8 @@
 //! while a record is normalized, then reduced to bounded opaque references.
 
 use crate::domain::{
-    EvidenceCoverage, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent, HookInvocation,
-    Runtime, TerminalStatus,
+    EvidenceCoverage, EvidenceGeneration, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent,
+    HookInvocation, Runtime, TerminalStatus,
 };
 use crate::evidence::{
     CanonicalEvidence, CorrelatedEvidence, EventFamily, EvidenceError, EvidenceLifecycle,
@@ -27,6 +27,51 @@ use std::fmt;
 pub const CODEX_TESTED_CLI_VERSION: &str = "0.149.0";
 /// Peeled `rust-v0.149.0` source commit exercised by the qualification.
 pub const CODEX_TESTED_SOURCE_COMMIT: &str = "758ef40f50c1a458425c7cfbf1eb12cbc07af0b0";
+
+/// Host family relevant to ordinary-session Native L2 acquisition.
+///
+/// This is explicit rather than inferred inside the qualification method so
+/// cross-platform tests can prove the Windows release decision on every CI
+/// host.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CodexHostPlatform {
+    Windows,
+    Unix,
+    Other,
+}
+
+impl CodexHostPlatform {
+    pub const fn current() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else if cfg!(unix) {
+            Self::Unix
+        } else {
+            Self::Other
+        }
+    }
+}
+
+/// Result of qualifying Native acquisition from an ordinary user-launched
+/// `codex` process. This is separate from Native L1 protocol qualification:
+/// observing lifecycle fields in a controlled App Server does not prove that
+/// an external observer can attach to an ordinary session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CodexNativeL2Status {
+    Admitted,
+    UpstreamUnavailable,
+    NotQualified,
+}
+
+impl CodexNativeL2Status {
+    /// Only an explicitly admitted L2 result may become Native authority.
+    pub const fn native_admission(self) -> NativeAdmissionState {
+        match self {
+            Self::Admitted => NativeAdmissionState::Admitted,
+            Self::UpstreamUnavailable | Self::NotQualified => NativeAdmissionState::Unavailable,
+        }
+    }
+}
 
 /// A version/source pair must be pinned before Native facts can be reused.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -54,6 +99,30 @@ impl CodexProtocolVersion {
 /// Facts qualified against one exact Codex App Server protocol baseline.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CodexNativeCapabilityProbe;
+
+impl CodexNativeCapabilityProbe {
+    /// Returns the ordinary-session attach result for the exact qualified
+    /// protocol pin and host family.
+    ///
+    /// In Codex 0.149.0 the shared app-server daemon is Unix-only and the TUI's
+    /// non-Unix default-daemon probe returns no endpoint, so an ordinary
+    /// Windows `codex` process keeps an embedded App Server that HookStat cannot
+    /// passively attach to. Other versions and host families remain
+    /// `NotQualified` until their own acquisition proof exists.
+    pub fn ordinary_session_attach(
+        &self,
+        version: &CodexProtocolVersion,
+        platform: CodexHostPlatform,
+    ) -> CodexNativeL2Status {
+        if version != &CodexProtocolVersion::tested() {
+            return CodexNativeL2Status::NotQualified;
+        }
+        match platform {
+            CodexHostPlatform::Windows => CodexNativeL2Status::UpstreamUnavailable,
+            CodexHostPlatform::Unix | CodexHostPlatform::Other => CodexNativeL2Status::NotQualified,
+        }
+    }
+}
 
 impl NativeCapabilityProbe for CodexNativeCapabilityProbe {
     type Version = CodexProtocolVersion;
@@ -313,6 +382,7 @@ impl CodexNativeIdentityResolver {
             ),
             runtime: Runtime::Codex,
             evidence_kind: EvidenceKind::CodexAppServerLive,
+            evidence_generation: EvidenceGeneration::V031Native,
             coverage: EvidenceCoverage::NotAdmitted,
             handler: HandlerIdentity {
                 key: location_key,

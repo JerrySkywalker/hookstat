@@ -747,13 +747,16 @@ fn resolve_display_identity(aggregate: &HandlerAggregate) -> DisplayIdentity {
 fn resolve_display_identity_from_handler(handler: &HandlerIdentity) -> DisplayIdentity {
     let label = handler.label.trim();
     let short_identity = handler.key.strip_prefix("hk_").unwrap_or(&handler.key);
-    let generated = label.is_empty()
+    let generated = crate::identity::generated_label(label)
         || label == handler.key
         || label.contains(&handler.key)
         || (!short_identity.is_empty() && label.contains(short_identity))
         || label.starts_with("Codex /");
     if generated {
-        DisplayIdentity::EventFallback(handler.event)
+        crate::identity::safe_stable_display_key(&handler.key).map_or(
+            DisplayIdentity::EventFallback(handler.event),
+            DisplayIdentity::ExistingMetadata,
+        )
     } else {
         DisplayIdentity::ExistingMetadata(label.to_owned())
     }
@@ -784,7 +787,8 @@ mod tests {
     use super::*;
     use crate::analytics::TimeWindow;
     use crate::domain::{
-        EvidenceCoverage, EvidenceKind, ExecutionMode, HandlerIdentity, HookInvocation, Runtime,
+        EvidenceCoverage, EvidenceGeneration, EvidenceKind, ExecutionMode, HandlerIdentity,
+        HookInvocation, Runtime,
     };
     use crate::report::{instrumented_report, synthetic_fixture_report};
 
@@ -794,6 +798,7 @@ mod tests {
             source_record_id: "one".into(),
             runtime: Runtime::Codex,
             evidence_kind: EvidenceKind::SyntheticFixture,
+            evidence_generation: EvidenceGeneration::SyntheticFixture,
             coverage: EvidenceCoverage::SyntheticFixture,
             handler: HandlerIdentity {
                 key: "hk_12345678".into(),
@@ -854,19 +859,21 @@ mod tests {
 
     #[test]
     fn generated_handler_labels_use_event_fallback_not_internal_identity() {
-        let view = ReliabilityCenterViewModel::from_report(instrumented_report(
-            &[invocation("Codex / Stop / 12345678")],
-            1_000,
-            TimeWindow::All,
-            0,
-            0,
-        ));
-        let row = &view.hooks.rows[0];
-        assert!(matches!(
-            row.display_identity,
-            DisplayIdentity::EventFallback(HookEvent::Stop)
-        ));
-        assert_eq!(row.internal_ref.handler_key, "hk_12345678");
+        for label in ["Codex / Stop / 12345678", "Hookstat Exe", "hookstat-hook"] {
+            let view = ReliabilityCenterViewModel::from_report(instrumented_report(
+                &[invocation(label)],
+                1_000,
+                TimeWindow::All,
+                0,
+                0,
+            ));
+            let row = &view.hooks.rows[0];
+            assert!(matches!(
+                row.display_identity,
+                DisplayIdentity::EventFallback(HookEvent::Stop)
+            ));
+            assert_eq!(row.internal_ref.handler_key, "hk_12345678");
+        }
     }
 
     #[test]

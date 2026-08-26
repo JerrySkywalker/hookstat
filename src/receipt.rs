@@ -4,7 +4,8 @@
 //! and uses inherited stdout/stderr; no payload bytes can enter this module.
 
 use crate::domain::{
-    EvidenceCoverage, EvidenceKind, HandlerIdentity, HookInvocation, Runtime, TerminalStatus,
+    EvidenceCoverage, EvidenceGeneration, EvidenceKind, HandlerIdentity, HookInvocation, Runtime,
+    TerminalStatus,
 };
 use crate::ledger::{IngestReceipt, Ledger, LedgerError};
 use serde::{Deserialize, Serialize};
@@ -302,6 +303,7 @@ impl ReceiptSpool {
                     source_record_id: id.clone(),
                     runtime: Runtime::Codex,
                     evidence_kind: EvidenceKind::CodexInstrumentedReceipt,
+                    evidence_generation: EvidenceGeneration::LegacyV03Proxy,
                     coverage: EvidenceCoverage::Unknown,
                     handler: start.handler.clone(),
                     occurred_at_unix_ms: start.started_at_unix_ms,
@@ -480,6 +482,7 @@ impl ReceiptSpool {
                 source_record_id: invocation_id.to_owned(),
                 runtime: Runtime::Codex,
                 evidence_kind: EvidenceKind::CodexInstrumentedReceipt,
+                evidence_generation: EvidenceGeneration::LegacyV03Proxy,
                 coverage: EvidenceCoverage::Unknown,
                 handler: start.handler,
                 occurred_at_unix_ms: start.started_at_unix_ms,
@@ -572,6 +575,7 @@ impl ReceiptCompletion {
             source_record_id: self.invocation_id.clone(),
             runtime: Runtime::Codex,
             evidence_kind: EvidenceKind::CodexInstrumentedReceipt,
+            evidence_generation: EvidenceGeneration::LegacyV03Proxy,
             coverage: self.coverage,
             handler: self.handler.clone(),
             occurred_at_unix_ms: self.started_at_unix_ms,
