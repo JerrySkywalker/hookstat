@@ -5,8 +5,8 @@
 ```text
 START_MAIN=d8d00e3da3e24a91cd9405c14d297a12ce33eb23
 G37_START_HEAD=fea26f818849dc27d1d134f5b9de160b51e9e069
-G37_SOURCE_HEAD=4680ff7af3424a6f6647b205e2f93a8c1092cee4
-G37_SOURCE_TREE=11612cd1b9facf39bb8f317bd8f92b6df038ab49
+G37_SOURCE_HEAD=ddd0cec03d7aaf95566edf2ac65fe1ff6a8d8e0a
+G37_SOURCE_TREE=8ea180fc71a26592ed06352b99659f13f51fd820
 G37_MODE=ACCEPTANCE_CANDIDATE
 ```
 
@@ -35,6 +35,16 @@ failed, incomplete/start-only, aliases, adjacent revisions, and mixed legacy +
 v0.3.1 evidence. The migration adds a generation column with a legacy default;
 it does not rewrite the preserved row taxonomy. A sanitized issue count records
 uninterpretable legacy taxonomy without copying the malformed value.
+
+The first independent review of candidate
+`e34a307be9a040f613e26f2846d0e7c4fc33a66f` returned
+`CHANGES_REQUIRED`: malformed taxonomy was counted but could still make the
+canonical reader fail. `G37_SOURCE_HEAD` is the bounded correction. Every
+canonical invocation, reliability, all-time, revision, and incomplete-receipt
+query now applies the same explicit taxonomy predicate. The disposable fixture
+proves three valid legacy rows remain readable and counted while the fourth
+malformed row remains physically present and byte-preserved, is reported only
+through its sanitized issue count, and cannot enter a reliability denominator.
 
 ## M2 — shadow mismatch gate
 
