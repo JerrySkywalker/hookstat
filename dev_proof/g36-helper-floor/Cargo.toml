@@ -1,0 +1,25 @@
+[package]
+name = "hookstat-g36-helper-floor"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+interprocess = "2.4.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+codegen-units = 1
+
+[[bin]]
+name = "hookstat-g36-helper-floor-server"
+path = "src/bin/server.rs"
+
+[[bin]]
+name = "hookstat-g36-helper-floor-frontend"
+path = "src/bin/frontend.rs"
+
+[[bin]]
+name = "hookstat-g36-helper-floor-benchmark"
+path = "src/bin/benchmark.rs"

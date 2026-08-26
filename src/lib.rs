@@ -5,14 +5,21 @@
 //! instrumented receipt source while keeping passive evidence preferred for
 //! future runtimes.
 
+pub mod admission;
 pub mod analytics;
 pub mod codex;
 pub mod diagnostics;
 pub mod domain;
 pub mod evidence;
+#[cfg(feature = "performance-harness")]
+pub mod g36_host_admission;
+#[allow(dead_code)]
+mod hook_shim;
 pub mod identity;
 pub mod interface_preferences;
 pub mod ipc;
+#[allow(dead_code)]
+mod ipc_client;
 pub mod ledger;
 pub mod native;
 pub mod observability;

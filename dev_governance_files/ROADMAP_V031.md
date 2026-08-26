@@ -2,7 +2,11 @@
 
 ## Status
 
-PLANNED from public v0.3.0 baseline `a33a3be56982c6ca00699019883a047a1aca748b`.
+IN PROGRESS from public v0.3.0 baseline
+`a33a3be56982c6ca00699019883a047a1aca748b`. G36 release-scope recovery admits
+cooperative IPC for v0.3.1 while retaining the transparent shim as
+correctness-qualified but not production-admitted after both governed warm
+contracts failed.
 
 This file is the compact long-train entrypoint for v0.3.1. Product intent, architecture, invariants, performance correctness, release boundaries, and future-runtime constraints are defined in [`../goals/HS-V031-NATIVE-IPC-HIGH-PERFORMANCE-EVIDENCE-RUNTIME.md`](../goals/HS-V031-NATIVE-IPC-HIGH-PERFORMANCE-EVIDENCE-RUNTIME.md). Each numbered Goal owns its exact implementation and exit gates.
 
@@ -11,7 +15,13 @@ This file is the compact long-train entrypoint for v0.3.1. Product intent, archi
 **v0.3.1 — Runtime-Neutral Native & IPC High-Performance Evidence Runtime** keeps Codex as the only production runtime while replacing the v0.3 instrumentation-centric hot path with two and only two evidence paths:
 
 1. **Runtime-native evidence, preferred:** consume authoritative Hook lifecycle evidence produced and owned by the coding-agent runtime without proxying the observed Hook.
-2. **Runtime-neutral local IPC, fallback:** when a coverage domain lacks admitted native evidence, obtain start/result evidence through a minimal local IPC path.
+2. **Runtime-neutral local IPC, conditional fallback:** when a coverage domain
+   lacks admitted native evidence, use IPC only if a concrete IPC integration
+   for that domain is itself admitted. Otherwise the domain is `NOT_ADMITTED`.
+
+For v0.3.1 cooperative IPC is admitted. The transparent shim is implemented and
+correctness-qualified but is not performance-admitted or production-activated;
+its rearchitecture is deferred to G36T for v0.3.2 or later.
 
 The release is Codex-first and Codex-only. The architecture must nevertheless allow future OpenCode, DeepSeek Harness, Claude Code, Agy, or another runtime to add a runtime integration without rewriting the evidence core, broker, ledger, analytics, workbench, or TUI.
 
@@ -91,7 +101,8 @@ For the current G35/G36 sequence, G36 stacked implementation is permitted only w
 | G29 | `CanonicalEvidence`, runtime-neutral correlator, authority domains, coverage/admission semantics | 8–12 h |
 | G34 | Runtime-neutral Native contracts and controlled Codex HookStarted/HookCompleted qualification | 8–12 h |
 | G35 | Versioned binary IPC, Windows Named Pipe / Unix Domain Socket, bounded broker, append WAL, group durability | 9–14 h |
-| G36 | Cooperative IPC producer, dedicated minimal transparent shim, handler capsule, direct process fast path, timeout correctness | 10–16 h |
+| G36 | Production-admitted cooperative IPC plus retained, correctness-qualified, non-admitted transparent shim | 10–16 h |
+| G36T | Deferred transparent-shim rearchitecture; v0.3.2 or later, not a v0.3.1 dependency | Deferred |
 | G37 | Codex Native/IPC authority routing, ordinary `codex` Native L2 qualification, shadow proof, v0.3 legacy migration | 8–12 h |
 | G38 | Real Windows concurrency/dogfood, tail latency, broker recovery, diagnostics/self-observability, privacy/security review | 7–11 h |
 | G38R | v0.3.1 release freeze, upgrade/fresh-install proof, public release closure | 4–6 h |
@@ -118,8 +129,9 @@ RUNTIME_NEUTRAL_IPC=true
 BINARY_IPC_PROTOCOL=true
 EPHEMERAL_BROKER=true
 COMPACT_APPEND_WAL=true
-COOPERATIVE_IPC=true
-TRANSPARENT_IPC_SHIM=true
+COOPERATIVE_IPC=PRODUCTION_ADMITTED
+TRANSPARENT_IPC_SHIM=QUALIFIED_NOT_ADMITTED_PERFORMANCE
+TRANSPARENT_SHIM_PRODUCTION_ACTIVATION=false
 
 FULL_CLI_HOT_PATH=false
 PER_RECORD_FSYNC_HOT_PATH=false
@@ -138,8 +150,9 @@ DEEPSEEK_PRODUCTION_ADAPTER=false
 
 ```text
 NATIVE_FIRST=true
-IPC_ONLY_FALLBACK=true
+IPC_ADMITTED_INTEGRATION_ONLY_FALLBACK=true
 NO_THIRD_EVIDENCE_PATH=true
+NOT_ADMITTED_IS_EVIDENCE_PATH=false
 
 NATIVE_MEANS_RUNTIME_OWNED_EVIDENCE=true
 NATIVE_TRANSPORT_OPAQUE_TO_CORE=true
@@ -150,6 +163,7 @@ IPC_INTEGRATION_RUNTIME_SPECIFIC=true
 ONE_AUTHORITY_PER_COVERAGE_DOMAIN=true
 NO_DOUBLE_COUNTING=true
 SHADOW_EVIDENCE_IN_DENOMINATOR=false
+MISSING_EVIDENCE_NEVER_BECOMES_SUCCESS=true
 
 CANONICAL_EVIDENCE_BEFORE_HOOK_INVOCATION=true
 CORRELATION_RUNTIME_NEUTRAL=true
@@ -179,16 +193,20 @@ A local on-demand, idle-expiring per-user broker is permitted. It is not a manda
 
 G28 is the only Goal allowed to calibrate the provisional numeric targets below. Once G28 records real Owner Windows measurements, the accepted budget becomes release-governing for G36–G38R.
 
-Provisional targets:
+Current governed targets and retained results:
 
 ```text
 NATIVE_ADDED_SYNCHRONOUS_LATENCY_MS=0
 COOPERATIVE_IPC_P95_MS<=1
 COOPERATIVE_IPC_P99_MS<=2
-TRANSPARENT_SHIM_WARM_P95_MS<=15
-TRANSPARENT_SHIM_WARM_P99_MS<=25
+G28_REFERENCE_TRANSPARENT_WARM_P95_P99_MS=20/25
+ONE_TIME_V031_TRANSPARENT_WARM_P95_P99_MS=25/30
+TRANSPARENT_SHIM_20_25=FAIL
+TRANSPARENT_SHIM_25_30=FAIL
+TRANSPARENT_SHIM_PRODUCTION_ADMISSION=false
 TRANSPARENT_SHIM_COLD_P95_MS<=50
 HOOKSTAT_INDUCED_TIMEOUTS_FOR_HEALTHY_HOOK=0
+FURTHER_BUDGET_RELAXATION=false
 ```
 
 Hosted CI may detect structural performance regressions but does not replace the real Windows p50/p95/p99 release gate.
@@ -236,7 +254,11 @@ If the chosen local IPC transport cannot satisfy a credible low-latency hot-path
 
 ### Gate B — during G34/G37 Native qualification
 
-If ordinary `codex` offers no supported external attach path for authoritative HookStarted/HookCompleted evidence, record Native L2 as upstream-unavailable and continue with IPC as production authority. Do not introduce a HookStat launcher wrapper to force Native support.
+If ordinary `codex` offers no supported external attach path for authoritative
+HookStarted/HookCompleted evidence, record Native L2 as upstream-unavailable.
+Use IPC only for domains with an admitted cooperative integration; otherwise
+route the domain to `NOT_ADMITTED`. Do not introduce a HookStat launcher or the
+non-admitted transparent shim to force coverage.
 
 ### Gate C — before G38R
 

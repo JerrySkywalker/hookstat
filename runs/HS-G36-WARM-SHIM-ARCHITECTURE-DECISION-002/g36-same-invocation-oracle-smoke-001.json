@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "run_kind": "hs_g36_same_invocation_transparent_overhead_oracle",
+  "classification": "DIAGNOSTIC_ONLY",
+  "acceptance_evidence": false,
+  "samples": 10,
+  "warmups_per_timed_sample": 25,
+  "warmup_definition": "25_unmeasured_fresh_help_launches_before_each_timed_sample",
+  "oracle_metric": "parent_observed_full_shim_lifetime_minus_same_invocation_child_spawn_wait",
+  "oracle_transport": "feature_gated_local_fixed_32_byte_timing_side_channel",
+  "oracle_record_bytes": 32,
+  "observed_overhead_includes_oracle_side_channel": true,
+  "shipping_binary_size_bytes": 550400,
+  "instrumented_binary_size_bytes": 557568,
+  "shipping_startup": {
+    "samples": 10,
+    "p50_ms": 11.328,
+    "p95_ms": 25.7895,
+    "p99_ms": 25.7895,
+    "max_ms": 25.7895
+  },
+  "instrumented_startup": {
+    "samples": 10,
+    "p50_ms": 12.6259,
+    "p95_ms": 39.2291,
+    "p99_ms": 39.2291,
+    "max_ms": 39.2291
+  },
+  "instrumented_minus_shipping_startup_p95_ms": 13.439600000000002,
+  "instrumented_startup_not_faster_than_shipping": true,
+  "full_transparent_invocation": {
+    "samples": 10,
+    "p50_ms": 47.3018,
+    "p95_ms": 221.776,
+    "p99_ms": 221.776,
+    "max_ms": 221.776
+  },
+  "same_invocation_original_child_spawn_wait": {
+    "samples": 10,
+    "p50_ms": 27.6301,
+    "p95_ms": 202.8349,
+    "p99_ms": 202.8349,
+    "max_ms": 202.8349
+  },
+  "same_invocation_observed_overhead": {
+    "samples": 10,
+    "p50_ms": 18.1365,
+    "p95_ms": 68.4197,
+    "p99_ms": 68.4197,
+    "max_ms": 68.4197
+  },
+  "oracle_primary_record_observation": {
+    "samples": 10,
+    "p50_ms": 0.0309,
+    "p95_ms": 0.0412,
+    "p99_ms": 0.0412,
+    "max_ms": 0.0412
+  },
+  "owner_live_codex_config_mutated": false,
+  "raw_private_content_captured": false
+}

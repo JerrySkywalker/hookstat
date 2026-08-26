@@ -1,0 +1,431 @@
+{
+  "schema_version": 1,
+  "run_kind": "g36_release_artifact_performance_qualification",
+  "release_artifacts": true,
+  "build_profile": "release",
+  "shim_measurement": "same_invocation_parent_lifetime_minus_child_spawn_wait_with_conservative_shipping_startup_tail_correction",
+  "paired_method_identifiable": false,
+  "same_invocation_oracle": true,
+  "oracle_transport": "feature_gated_local_fixed_32_byte_timing_side_channel",
+  "oracle_record_bytes": 32,
+  "observed_overhead_includes_oracle_side_channel": true,
+  "warmup_definition": "25_unmeasured_fresh_actual_instrumented_hookstat_hook_help_launches_before_each_timed_invocation",
+  "warm_harness_self_load": false,
+  "qualifying_runs": 5,
+  "samples_per_run": 100,
+  "warmups_per_timed_sample": 25,
+  "collector_model": "per_thread_local_samples",
+  "elapsed_capture": "immediately_after_operation",
+  "shipping_binary_size_bytes": 550400,
+  "instrumented_binary_size_bytes": 557568,
+  "startup_comparison_series": [
+    {
+      "run": 1,
+      "shipping": {
+        "samples": 100,
+        "p50_ms": 10.072700000000001,
+        "p95_ms": 12.1895,
+        "p99_ms": 13.4711,
+        "max_ms": 16.0358
+      },
+      "instrumented": {
+        "samples": 100,
+        "p50_ms": 9.9604,
+        "p95_ms": 11.6671,
+        "p99_ms": 13.4585,
+        "max_ms": 14.4282
+      },
+      "shipping_minus_instrumented_p99_ms": 0.012599999999999056
+    },
+    {
+      "run": 2,
+      "shipping": {
+        "samples": 100,
+        "p50_ms": 10.0348,
+        "p95_ms": 12.1683,
+        "p99_ms": 15.454600000000001,
+        "max_ms": 16.1582
+      },
+      "instrumented": {
+        "samples": 100,
+        "p50_ms": 9.9233,
+        "p95_ms": 12.2325,
+        "p99_ms": 15.3259,
+        "max_ms": 15.952399999999999
+      },
+      "shipping_minus_instrumented_p99_ms": 0.12870000000000026
+    },
+    {
+      "run": 3,
+      "shipping": {
+        "samples": 100,
+        "p50_ms": 10.196200000000001,
+        "p95_ms": 11.901200000000001,
+        "p99_ms": 12.4124,
+        "max_ms": 14.0639
+      },
+      "instrumented": {
+        "samples": 100,
+        "p50_ms": 10.003,
+        "p95_ms": 12.1654,
+        "p99_ms": 14.579500000000001,
+        "max_ms": 15.5841
+      },
+      "shipping_minus_instrumented_p99_ms": 0.0
+    },
+    {
+      "run": 4,
+      "shipping": {
+        "samples": 100,
+        "p50_ms": 10.0225,
+        "p95_ms": 12.988299999999999,
+        "p99_ms": 16.1891,
+        "max_ms": 31.614900000000002
+      },
+      "instrumented": {
+        "samples": 100,
+        "p50_ms": 10.060400000000001,
+        "p95_ms": 12.069099999999999,
+        "p99_ms": 13.9797,
+        "max_ms": 14.706
+      },
+      "shipping_minus_instrumented_p99_ms": 2.2094000000000005
+    },
+    {
+      "run": 5,
+      "shipping": {
+        "samples": 100,
+        "p50_ms": 9.6708,
+        "p95_ms": 12.1898,
+        "p99_ms": 13.776399999999999,
+        "max_ms": 16.5242
+      },
+      "instrumented": {
+        "samples": 100,
+        "p50_ms": 9.742799999999999,
+        "p95_ms": 11.5869,
+        "p99_ms": 13.2878,
+        "max_ms": 13.6524
+      },
+      "shipping_minus_instrumented_p99_ms": 0.48859999999999815
+    }
+  ],
+  "startup_tail_bias_correction_ms": 2.2094000000000005,
+  "startup_bias_material": true,
+  "raw_oracle_series": [
+    {
+      "kind": "shim_warm_raw_oracle",
+      "run": 1,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 13.7738,
+        "p95_ms": 16.5631,
+        "p99_ms": 19.6426,
+        "max_ms": 19.8915
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm_raw_oracle",
+      "run": 2,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 13.1468,
+        "p95_ms": 15.4418,
+        "p99_ms": 15.9892,
+        "max_ms": 16.0658
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm_raw_oracle",
+      "run": 3,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 13.5395,
+        "p95_ms": 16.3873,
+        "p99_ms": 18.5461,
+        "max_ms": 18.653
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm_raw_oracle",
+      "run": 4,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 13.9107,
+        "p95_ms": 17.4637,
+        "p99_ms": 19.4907,
+        "max_ms": 20.14
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm_raw_oracle",
+      "run": 5,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 13.6334,
+        "p95_ms": 17.1314,
+        "p99_ms": 18.966,
+        "max_ms": 20.8224
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold_raw_oracle",
+      "run": 1,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 13.7582,
+        "p95_ms": 16.8606,
+        "p99_ms": 19.4656,
+        "max_ms": 25.3268
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold_raw_oracle",
+      "run": 2,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 13.8647,
+        "p95_ms": 17.7161,
+        "p99_ms": 20.1682,
+        "max_ms": 32.9365
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold_raw_oracle",
+      "run": 3,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 13.2676,
+        "p95_ms": 16.1094,
+        "p99_ms": 17.1314,
+        "max_ms": 18.7909
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold_raw_oracle",
+      "run": 4,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 12.7916,
+        "p95_ms": 15.1061,
+        "p99_ms": 16.6081,
+        "max_ms": 19.3616
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold_raw_oracle",
+      "run": 5,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 13.1455,
+        "p95_ms": 15.7796,
+        "p99_ms": 18.8191,
+        "max_ms": 25.6004
+      },
+      "observation_gaps": 0
+    }
+  ],
+  "series": [
+    {
+      "kind": "cooperative",
+      "run": 1,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 0.0444,
+        "p95_ms": 0.1371,
+        "p99_ms": 0.27530000000000004,
+        "max_ms": 0.41819999999999996
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "cooperative",
+      "run": 2,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 0.0379,
+        "p95_ms": 0.09280000000000001,
+        "p99_ms": 0.1369,
+        "max_ms": 0.2628
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "cooperative",
+      "run": 3,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 0.036699999999999997,
+        "p95_ms": 0.056799999999999996,
+        "p99_ms": 0.1067,
+        "max_ms": 0.16540000000000002
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "cooperative",
+      "run": 4,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 0.07880000000000001,
+        "p95_ms": 0.1733,
+        "p99_ms": 0.2044,
+        "max_ms": 0.5569999999999999
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "cooperative",
+      "run": 5,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 0.046,
+        "p95_ms": 0.1403,
+        "p99_ms": 0.3467,
+        "max_ms": 0.4077
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm",
+      "run": 1,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 15.9832,
+        "p95_ms": 18.7725,
+        "p99_ms": 21.852000000000004,
+        "max_ms": 22.100900000000003
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm",
+      "run": 2,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 15.356200000000001,
+        "p95_ms": 17.651200000000003,
+        "p99_ms": 18.1986,
+        "max_ms": 18.275199999999998
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm",
+      "run": 3,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 15.7489,
+        "p95_ms": 18.5967,
+        "p99_ms": 20.755499999999998,
+        "max_ms": 20.8624
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm",
+      "run": 4,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 16.1201,
+        "p95_ms": 19.673099999999998,
+        "p99_ms": 21.7001,
+        "max_ms": 22.349400000000003
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm",
+      "run": 5,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 15.8428,
+        "p95_ms": 19.3408,
+        "p99_ms": 21.175400000000003,
+        "max_ms": 23.031799999999997
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold",
+      "run": 1,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 15.967600000000001,
+        "p95_ms": 19.07,
+        "p99_ms": 21.674999999999997,
+        "max_ms": 27.5362
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold",
+      "run": 2,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 16.0741,
+        "p95_ms": 19.9255,
+        "p99_ms": 22.3776,
+        "max_ms": 35.145900000000005
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold",
+      "run": 3,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 15.477,
+        "p95_ms": 18.318800000000003,
+        "p99_ms": 19.3408,
+        "max_ms": 21.000300000000003
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold",
+      "run": 4,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 15.001000000000001,
+        "p95_ms": 17.3155,
+        "p99_ms": 18.817500000000003,
+        "max_ms": 21.570999999999998
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold",
+      "run": 5,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 15.3549,
+        "p95_ms": 17.989,
+        "p99_ms": 21.0285,
+        "max_ms": 27.809800000000003
+      },
+      "observation_gaps": 0
+    }
+  ],
+  "oracle_primary_record_worst_p95_ms": 0.0544,
+  "oracle_primary_record_worst_p99_ms": 0.087,
+  "cooperative_worst_p95_ms": 0.1733,
+  "cooperative_worst_p99_ms": 0.3467,
+  "shim_warm_worst_p95_ms": 19.673099999999998,
+  "shim_warm_worst_p99_ms": 21.852000000000004,
+  "shim_cold_worst_p95_ms": 19.9255,
+  "healthy_near_timeout_runs": 5,
+  "hookstat_induced_timeouts_for_healthy_hook": 0,
+  "outcome": "FAIL",
+  "owner_live_codex_config_mutated": false,
+  "raw_private_content_captured": false
+}

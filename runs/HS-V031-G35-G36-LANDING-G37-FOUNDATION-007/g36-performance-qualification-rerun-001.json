@@ -1,0 +1,203 @@
+{
+  "schema_version": 1,
+  "run_kind": "g36_release_artifact_performance_qualification",
+  "release_artifacts": true,
+  "shim_measurement": "transparent_shim_overhead_against_direct_handler",
+  "qualifying_runs": 5,
+  "samples_per_run": 100,
+  "warmups_per_timed_sample": 25,
+  "collector_model": "per_thread_local_samples",
+  "elapsed_capture": "immediately_after_operation",
+  "series": [
+    {
+      "kind": "cooperative",
+      "run": 1,
+      "timing": {
+        "samples": 78,
+        "p50_ms": 2.2559,
+        "p95_ms": 12.0197,
+        "p99_ms": 14.3508,
+        "max_ms": 14.3508
+      },
+      "observation_gaps": 22
+    },
+    {
+      "kind": "cooperative",
+      "run": 2,
+      "timing": {
+        "samples": 75,
+        "p50_ms": 5.2064,
+        "p95_ms": 13.664000000000001,
+        "p99_ms": 17.55,
+        "max_ms": 17.55
+      },
+      "observation_gaps": 25
+    },
+    {
+      "kind": "cooperative",
+      "run": 3,
+      "timing": {
+        "samples": 60,
+        "p50_ms": 6.2555,
+        "p95_ms": 13.9968,
+        "p99_ms": 19.630399999999998,
+        "max_ms": 19.630399999999998
+      },
+      "observation_gaps": 40
+    },
+    {
+      "kind": "cooperative",
+      "run": 4,
+      "timing": {
+        "samples": 59,
+        "p50_ms": 5.4111,
+        "p95_ms": 15.619,
+        "p99_ms": 17.2445,
+        "max_ms": 17.2445
+      },
+      "observation_gaps": 41
+    },
+    {
+      "kind": "cooperative",
+      "run": 5,
+      "timing": {
+        "samples": 60,
+        "p50_ms": 5.0038,
+        "p95_ms": 14.545300000000001,
+        "p99_ms": 15.654499999999999,
+        "max_ms": 15.654499999999999
+      },
+      "observation_gaps": 40
+    },
+    {
+      "kind": "shim_warm",
+      "run": 1,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 19.7659,
+        "p95_ms": 23.5194,
+        "p99_ms": 27.292199999999998,
+        "max_ms": 50.9723
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm",
+      "run": 2,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 19.6585,
+        "p95_ms": 25.247700000000002,
+        "p99_ms": 28.7048,
+        "max_ms": 36.9641
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm",
+      "run": 3,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 21.3476,
+        "p95_ms": 28.432599999999997,
+        "p99_ms": 36.7188,
+        "max_ms": 58.9417
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm",
+      "run": 4,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 22.0207,
+        "p95_ms": 30.8591,
+        "p99_ms": 52.9004,
+        "max_ms": 87.8869
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_warm",
+      "run": 5,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 24.4189,
+        "p95_ms": 63.44279999999999,
+        "p99_ms": 130.5096,
+        "max_ms": 143.2863
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold",
+      "run": 1,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 23.0836,
+        "p95_ms": 40.6802,
+        "p99_ms": 60.267599999999995,
+        "max_ms": 65.99770000000001
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold",
+      "run": 2,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 22.576,
+        "p95_ms": 29.4829,
+        "p99_ms": 44.5531,
+        "max_ms": 47.8513
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold",
+      "run": 3,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 21.633200000000002,
+        "p95_ms": 29.7935,
+        "p99_ms": 47.0585,
+        "max_ms": 57.3508
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold",
+      "run": 4,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 22.7802,
+        "p95_ms": 29.655,
+        "p99_ms": 44.9856,
+        "max_ms": 54.2383
+      },
+      "observation_gaps": 0
+    },
+    {
+      "kind": "shim_cold",
+      "run": 5,
+      "timing": {
+        "samples": 100,
+        "p50_ms": 23.0479,
+        "p95_ms": 33.8875,
+        "p99_ms": 44.13,
+        "max_ms": 65.2661
+      },
+      "observation_gaps": 0
+    }
+  ],
+  "cooperative_worst_p95_ms": 15.619,
+  "cooperative_worst_p99_ms": 19.630399999999998,
+  "shim_warm_worst_p95_ms": 63.44279999999999,
+  "shim_warm_worst_p99_ms": 130.5096,
+  "shim_cold_worst_p95_ms": 40.6802,
+  "healthy_near_timeout_runs": 5,
+  "hookstat_induced_timeouts_for_healthy_hook": 0,
+  "outcome": "FAIL",
+  "owner_live_codex_config_mutated": false,
+  "raw_private_content_captured": false
+}

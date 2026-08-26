@@ -14,8 +14,10 @@ cooperative client, transparent shim, handler capsule, or a `hookstat codex`
 launcher.
 
 `Native` remains `Qualified` but not `Admitted` for the G34 Codex L1 result.
-Nothing in this broker changes that fact. An authority table continues to select
-`Ipc` for a non-admitted coverage domain before replay enters G29.
+Nothing in this broker changes that fact. The later scope-recovered authority
+table selects `Ipc` only when an IPC integration for the domain is itself
+admitted; otherwise replay is retained outside the production denominator as
+`NOT_ADMITTED`.
 
 ## Protocol v1
 

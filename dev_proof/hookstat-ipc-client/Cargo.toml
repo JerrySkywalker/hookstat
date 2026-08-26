@@ -1,0 +1,31 @@
+[package]
+name = "hookstat-ipc-client-proof"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+
+[features]
+performance-harness = []
+
+[lib]
+path = "../../src/ipc_client.rs"
+
+[dependencies]
+interprocess = "2.4.3"
+sha2 = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+interprocess = { version = "2.4.3", features = ["tokio"] }
+tokio = { version = "1.36", features = ["io-util", "net", "rt", "time"] }
+widestring = "1.2.1"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29.0", features = ["socket"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+dead_code = "allow"
+
+[lints.clippy]
+all = "warn"

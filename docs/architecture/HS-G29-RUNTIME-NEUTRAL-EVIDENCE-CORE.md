@@ -52,6 +52,19 @@ result from the denominator rather than preserving a false success or failure.
 
 ## Exactly one authority per domain
 
+The v0.3.1 scope-recovery clarification makes admission explicit on both paths:
+
+```text
+Native admitted -> Native authority
+else IPC integration admitted -> IPC authority
+else -> NOT_ADMITTED
+```
+
+`NOT_ADMITTED` is a coverage state, not an evidence transport. Its records do
+not enter correlation or the production denominator. `EvidenceTransport`
+remains exhaustively Native or IPC, shadow evidence remains non-authoritative,
+and missing evidence never becomes success.
+
 `CoverageDomain` is:
 
 ```text

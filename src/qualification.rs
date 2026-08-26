@@ -6,9 +6,9 @@
 //! prompts, payloads, power settings, process priority, or affinity.
 
 use crate::ipc::{
-    BrokerAcknowledgement, BrokerConfig, BrokerHost, GroupDurabilityPolicy, IpcClient, IpcError,
-    IpcFrame, LifecycleFrame, QualificationBrokerStageSample, QualificationClientStageSample,
-    QualificationSendFailure,
+    BrokerAcknowledgement, BrokerConfig, BrokerHost, CooperativeProducer, GroupDurabilityPolicy,
+    IpcClient, IpcError, IpcFrame, LifecycleFrame, QualificationBrokerStageSample,
+    QualificationClientStageSample, QualificationSendFailure,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -180,6 +180,51 @@ pub struct StageTimingConfig {
     /// Feature-only causal probe. `false` keeps the frozen production policy
     /// out of the measured window without changing broker production defaults.
     pub group_sync_during_measurement: bool,
+}
+
+/// G36-only causal probe for the producer connection lifecycle. It measures
+/// synthetic metadata frames in disposable state and is never acceptance data.
+#[derive(Clone, Debug)]
+pub struct G36CooperativeStageTimingConfig {
+    pub samples: usize,
+}
+
+impl Default for G36CooperativeStageTimingConfig {
+    fn default() -> Self {
+        Self { samples: 100 }
+    }
+}
+
+/// Sanitized G36 producer stage receipt. No frame contents, paths, commands,
+/// process details, or environment data are serialized.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct G36CooperativeStageTimingReceipt {
+    pub schema_version: u8,
+    pub run_kind: String,
+    pub acceptance_evidence: bool,
+    pub samples_per_mode: usize,
+    pub fresh_one_frame_connection: G36CooperativeStageMeasurement,
+    pub persistent_ipc_client_connection: G36CooperativeStageMeasurement,
+    pub current_cooperative_producer: G36CooperativeStageMeasurement,
+    pub owner_live_codex_config_mutated: bool,
+    pub raw_private_content_captured: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct G36CooperativeStageMeasurement {
+    pub mode: String,
+    pub successful_samples: usize,
+    pub observation_gaps: usize,
+    pub endpoint_producer_prework: Option<LatencyStatistics>,
+    pub connection_acquisition: Option<LatencyStatistics>,
+    pub frame_encode: Option<LatencyStatistics>,
+    pub frame_write: Option<LatencyStatistics>,
+    pub broker_processing: Option<LatencyStatistics>,
+    pub broker_ack_write: Option<LatencyStatistics>,
+    pub acknowledgement_read: Option<LatencyStatistics>,
+    pub client_shutdown_or_drop: Option<LatencyStatistics>,
+    pub other_bounded_remainder: Option<LatencyStatistics>,
+    pub total_emit: Option<LatencyStatistics>,
 }
 
 impl Default for StageTimingConfig {
@@ -583,6 +628,228 @@ pub fn run_stage_timing_diagnostic(
             raw_private_content_captured: false,
         }),
     }
+}
+
+/// Runs the G36 producer A/B without touching a user state root. The first
+/// current-producer frame establishes its one reusable connection outside the
+/// timed set; the receipt therefore compares steady-state producer work with a
+/// fresh-per-frame client and a directly persistent `IpcClient`.
+pub fn run_g36_cooperative_stage_timing_diagnostic(
+    config: &G36CooperativeStageTimingConfig,
+) -> Result<G36CooperativeStageTimingReceipt, QualificationError> {
+    if !(100..=10_000).contains(&config.samples) {
+        return Err(QualificationError::Invalid("g36_cooperative_stage_config"));
+    }
+    Ok(G36CooperativeStageTimingReceipt {
+        schema_version: 1,
+        run_kind: "hs_g36_cooperative_connection_lifecycle_diagnostic".into(),
+        acceptance_evidence: false,
+        samples_per_mode: config.samples,
+        fresh_one_frame_connection: measure_g36_fresh_connection(config.samples)?,
+        persistent_ipc_client_connection: measure_g36_persistent_client(config.samples)?,
+        current_cooperative_producer: measure_g36_current_producer(config.samples)?,
+        owner_live_codex_config_mutated: false,
+        raw_private_content_captured: false,
+    })
+}
+
+fn measure_g36_fresh_connection(
+    samples: usize,
+) -> Result<G36CooperativeStageMeasurement, QualificationError> {
+    let root = DisposableStateRoot::create()?;
+    let host = BrokerHost::start_with_qualification_stage_timing(BrokerConfig::for_state_root(
+        root.path(),
+    ))?;
+    let mut connection = Vec::with_capacity(samples);
+    let mut client = Vec::with_capacity(samples);
+    let mut drop_times = Vec::with_capacity(samples);
+    let mut total = Vec::with_capacity(samples);
+    for sequence in 0..samples {
+        let total_started = Instant::now();
+        let connect_started = Instant::now();
+        let mut ipc = IpcClient::connect_with_timeouts(
+            host.endpoint(),
+            Duration::from_millis(2),
+            Duration::from_millis(5),
+        )?;
+        connection.push(elapsed_ns(connect_started));
+        let (_, stages) = ipc
+            .send_for_qualification_timed(&frame(91, sequence))
+            .map_err(|_| QualificationError::Invalid("g36_fresh_send"))?;
+        client.push(stages);
+        let drop_started = Instant::now();
+        drop(ipc);
+        drop_times.push(elapsed_ns(drop_started));
+        total.push(elapsed_ns(total_started));
+    }
+    let broker = host.qualification_stage_samples();
+    host.stop();
+    g36_measurement(
+        "fresh_one_frame_connection",
+        samples,
+        0,
+        Vec::new(),
+        connection,
+        client,
+        broker,
+        drop_times,
+        total,
+        Vec::new(),
+    )
+}
+
+fn measure_g36_persistent_client(
+    samples: usize,
+) -> Result<G36CooperativeStageMeasurement, QualificationError> {
+    let root = DisposableStateRoot::create()?;
+    let host = BrokerHost::start_with_qualification_stage_timing(BrokerConfig::for_state_root(
+        root.path(),
+    ))?;
+    let mut ipc = IpcClient::connect_with_timeouts(
+        host.endpoint(),
+        Duration::from_millis(2),
+        Duration::from_millis(5),
+    )?;
+    let mut client = Vec::with_capacity(samples);
+    let mut total = Vec::with_capacity(samples);
+    for sequence in 0..samples {
+        let total_started = Instant::now();
+        let (_, stages) = ipc
+            .send_for_qualification_timed(&frame(92, sequence))
+            .map_err(|_| QualificationError::Invalid("g36_persistent_send"))?;
+        client.push(stages);
+        total.push(elapsed_ns(total_started));
+    }
+    drop(ipc);
+    let broker = host.qualification_stage_samples();
+    host.stop();
+    g36_measurement(
+        "persistent_ipc_client_connection",
+        samples,
+        0,
+        Vec::new(),
+        Vec::new(),
+        client,
+        broker,
+        Vec::new(),
+        total,
+        Vec::new(),
+    )
+}
+
+fn measure_g36_current_producer(
+    samples: usize,
+) -> Result<G36CooperativeStageMeasurement, QualificationError> {
+    let root = DisposableStateRoot::create()?;
+    let host = BrokerHost::start_with_qualification_stage_timing(BrokerConfig::for_state_root(
+        root.path(),
+    ))?;
+    let mut prework = Vec::with_capacity(samples);
+    for _ in 0..samples {
+        let started = Instant::now();
+        let _ = CooperativeProducer::for_state_root(root.path())?;
+        prework.push(elapsed_ns(started));
+    }
+    let producer = CooperativeProducer::for_state_root(root.path())?;
+    producer
+        .emit_for_qualification_timed(frame(93, usize::MAX))
+        .map_err(|_| QualificationError::Invalid("g36_producer_warmup"))?;
+    let mut producer_stages = Vec::with_capacity(samples);
+    let mut observation_gaps = 0;
+    for sequence in 0..samples {
+        match producer.emit_for_qualification_timed(frame(93, sequence)) {
+            Ok(stages) => producer_stages.push(stages),
+            Err(_) => observation_gaps += 1,
+        }
+    }
+    let broker = host.qualification_stage_samples();
+    host.stop();
+    let broker = broker.into_iter().skip(1).collect::<Vec<_>>();
+    let client = producer_stages
+        .iter()
+        .map(|value| QualificationClientStageSample {
+            client_frame_encode_ns: value.frame_encode_ns,
+            client_write_ns: value.frame_write_ns,
+            client_ack_read_ns: value.acknowledgement_read_ns,
+        })
+        .collect::<Vec<_>>();
+    let connection = producer_stages
+        .iter()
+        .map(|value| value.connection_acquisition_ns)
+        .collect::<Vec<_>>();
+    let total = producer_stages
+        .iter()
+        .map(|value| value.total_ns)
+        .collect::<Vec<_>>();
+    let remainder = producer_stages
+        .iter()
+        .map(|value| value.other_bounded_remainder_ns)
+        .collect::<Vec<_>>();
+    g36_measurement(
+        "current_cooperative_producer_reused_connection",
+        producer_stages.len(),
+        observation_gaps,
+        prework,
+        connection,
+        client,
+        broker,
+        Vec::new(),
+        total,
+        remainder,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn g36_measurement(
+    mode: &str,
+    successful_samples: usize,
+    observation_gaps: usize,
+    prework: Vec<u64>,
+    connection: Vec<u64>,
+    client: Vec<QualificationClientStageSample>,
+    broker: Vec<QualificationBrokerStageSample>,
+    drop_times: Vec<u64>,
+    total: Vec<u64>,
+    remainder: Vec<u64>,
+) -> Result<G36CooperativeStageMeasurement, QualificationError> {
+    if successful_samples == 0
+        || client.len() != successful_samples
+        || broker.len() != successful_samples
+    {
+        return Err(QualificationError::Invalid("g36_cooperative_stage_samples"));
+    }
+    Ok(G36CooperativeStageMeasurement {
+        mode: mode.into(),
+        successful_samples,
+        observation_gaps,
+        endpoint_producer_prework: stage_statistics(prework),
+        connection_acquisition: stage_statistics(connection),
+        frame_encode: stage_statistics(client.iter().map(|value| value.client_frame_encode_ns)),
+        frame_write: stage_statistics(client.iter().map(|value| value.client_write_ns)),
+        broker_processing: stage_statistics(broker.iter().map(g36_broker_processing_ns)),
+        broker_ack_write: stage_statistics(broker.iter().map(|value| value.broker_ack_write_ns)),
+        acknowledgement_read: stage_statistics(client.iter().map(|value| value.client_ack_read_ns)),
+        client_shutdown_or_drop: stage_statistics(drop_times),
+        other_bounded_remainder: stage_statistics(remainder),
+        total_emit: stage_statistics(total),
+    })
+}
+
+fn g36_broker_processing_ns(value: &QualificationBrokerStageSample) -> u64 {
+    value
+        .broker_read_decode_ns
+        .saturating_add(value.activity_bookkeeping_ns)
+        .saturating_add(value.acknowledgement_channel_allocation_ns)
+        .saturating_add(value.queue_submission_ns)
+        .saturating_add(value.queue_wait_ns)
+        .saturating_add(value.worker_dequeue_handoff_ns)
+        .saturating_add(value.wal_append_ns)
+        .saturating_add(value.worker_acknowledgement_handoff_ns)
+        .saturating_add(value.connection_resume_after_ack_ns)
+}
+
+fn elapsed_ns(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
 fn measure_stage_timing(
