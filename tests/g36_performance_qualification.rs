@@ -5,7 +5,7 @@
 //! Codex configuration, and serializes no command, path, payload, or host
 //! identity into its receipt.
 
-#![cfg(windows)]
+#![cfg(all(windows, feature = "performance-harness"))]
 
 #[allow(dead_code)]
 #[path = "../src/hook_shim.rs"]
@@ -19,9 +19,10 @@ use hook_shim::{
     capsule_file_name, write_key_for_test,
 };
 use hookstat::g36_host_admission::{
-    HOST_CONTROL_METHODOLOGY, HOST_CONTROL_P95_LIMIT_MS, HOST_CONTROL_P99_LIMIT_MS,
-    MAX_COMPARABLE_STARTUP_BIAS_MS, StartupComparabilityDisposition, TailLatency,
-    WarmWindowDisposition, classify_startup_comparability,
+    G28_REFERENCE_WARM_P95_MS, G28_REFERENCE_WARM_P99_MS, HOST_CONTROL_METHODOLOGY,
+    HOST_CONTROL_P95_LIMIT_MS, HOST_CONTROL_P99_LIMIT_MS, MAX_COMPARABLE_STARTUP_BIAS_MS,
+    PRODUCT_WARM_P95_LIMIT_MS, PRODUCT_WARM_P99_LIMIT_MS, StartupComparabilityDisposition,
+    TailLatency, WarmWindowDisposition, classify_startup_comparability,
     classify_warm_window_with_health_and_oracle,
 };
 use hookstat::ipc::{BrokerConfig, BrokerHost};
@@ -43,8 +44,6 @@ const SAMPLES_PER_RUN: usize = 100;
 const WARMUPS_PER_SAMPLE: usize = 25;
 const COOPERATIVE_P95_LIMIT_MS: f64 = 1.0;
 const COOPERATIVE_P99_LIMIT_MS: f64 = 2.0;
-const SHIM_WARM_P95_LIMIT_MS: f64 = 20.0;
-const SHIM_WARM_P99_LIMIT_MS: f64 = 25.0;
 const SHIM_COLD_P95_LIMIT_MS: f64 = 50.0;
 const DEFAULT_MAX_WARM_WINDOW_ATTEMPTS: usize = 25;
 const DEFAULT_REJECT_RETRY_INTERVAL: Duration = Duration::from_secs(60);
@@ -142,8 +141,11 @@ struct WarmWindowReceipt<'a> {
     percentile_method: &'static str,
     control_p95_limit_ms: f64,
     control_p99_limit_ms: f64,
+    g28_reference_warm_p95_ms: f64,
+    g28_reference_warm_p99_ms: f64,
     product_p95_limit_ms: f64,
     product_p99_limit_ms: f64,
+    further_automatic_budget_relaxation: bool,
     accepted_startup_comparability_attempt: usize,
     startup_tail_bias_correction_ms: f64,
     window: &'a WarmWindow,
@@ -170,6 +172,11 @@ struct Receipt {
     host_control_percentile_method: &'static str,
     host_control_p95_limit_ms: f64,
     host_control_p99_limit_ms: f64,
+    g28_reference_warm_p95_ms: f64,
+    g28_reference_warm_p99_ms: f64,
+    v031_release_warm_p95_ms: f64,
+    v031_release_warm_p99_ms: f64,
+    further_automatic_budget_relaxation: bool,
     warm_admitted_runs_required: usize,
     max_warm_window_attempts: usize,
     rejected_window_retry_interval_ms: u64,
@@ -196,7 +203,7 @@ struct Receipt {
     warm_window_attempts: Vec<WarmWindow>,
     host_control_rejected_windows: usize,
     warm_admitted_runs: usize,
-    admitted_warm_failure_occurred: bool,
+    admitted_recalibrated_failure_occurred: bool,
     warm_method_invalidation_occurred: bool,
     admitted_warm_hookstat_induced_timeouts: usize,
     admitted_warm_unexpected_terminal_results: usize,
@@ -755,7 +762,7 @@ fn write_warm_window_receipt(
     window: &WarmWindow,
 ) {
     let receipt = WarmWindowReceipt {
-        schema_version: 1,
+        schema_version: 2,
         run_kind: "g36_warm_host_admission_window",
         source_git_head,
         shipping_binary_size_bytes: fs::metadata(artifacts.shipping_shim).unwrap().len(),
@@ -769,8 +776,11 @@ fn write_warm_window_receipt(
         percentile_method: "nearest_rank",
         control_p95_limit_ms: HOST_CONTROL_P95_LIMIT_MS,
         control_p99_limit_ms: HOST_CONTROL_P99_LIMIT_MS,
-        product_p95_limit_ms: SHIM_WARM_P95_LIMIT_MS,
-        product_p99_limit_ms: SHIM_WARM_P99_LIMIT_MS,
+        g28_reference_warm_p95_ms: G28_REFERENCE_WARM_P95_MS,
+        g28_reference_warm_p99_ms: G28_REFERENCE_WARM_P99_MS,
+        product_p95_limit_ms: PRODUCT_WARM_P95_LIMIT_MS,
+        product_p99_limit_ms: PRODUCT_WARM_P99_LIMIT_MS,
+        further_automatic_budget_relaxation: false,
         accepted_startup_comparability_attempt,
         startup_tail_bias_correction_ms,
         window,
@@ -847,7 +857,7 @@ fn require_release_profile() {}
 
 #[test]
 #[ignore = "explicit release-artifact G36 performance qualification"]
-fn release_artifact_meets_the_frozen_g36_budget() {
+fn release_artifact_meets_the_v031_recalibrated_g36_budget() {
     // `CARGO_BIN_EXE_hookstat-hook` inherits the test profile.  A debug test
     // would therefore quietly measure a non-release shipping binary while
     // the receipt claimed otherwise.  Keep the ignored test compilable for
@@ -998,7 +1008,7 @@ fn release_artifact_meets_the_frozen_g36_budget() {
     let mut raw_oracle_runs = Vec::with_capacity(max_warm_window_attempts + QUALIFYING_RUNS);
     let mut warm_window_attempts = Vec::with_capacity(max_warm_window_attempts);
     let mut warm_admitted_runs = 0;
-    let mut admitted_warm_failure_occurred = false;
+    let mut admitted_recalibrated_failure_occurred = false;
     let mut warm_method_invalidation_occurred = false;
     let mut admitted_warm_hookstat_induced_timeouts = 0;
     let mut admitted_warm_unexpected_terminal_results = 0;
@@ -1047,7 +1057,7 @@ fn release_artifact_meets_the_frozen_g36_budget() {
 
         if matches!(
             disposition,
-            WarmWindowDisposition::AdmittedPass | WarmWindowDisposition::FailFrozenBudget
+            WarmWindowDisposition::AdmittedPass | WarmWindowDisposition::FailRecalibratedBudget
         ) {
             admitted_warm_hookstat_induced_timeouts += window.candidate_hookstat_induced_timeouts;
             admitted_warm_unexpected_terminal_results +=
@@ -1067,8 +1077,8 @@ fn release_artifact_meets_the_frozen_g36_budget() {
                     break;
                 }
             }
-            WarmWindowDisposition::FailFrozenBudget => {
-                admitted_warm_failure_occurred = true;
+            WarmWindowDisposition::FailRecalibratedBudget => {
+                admitted_recalibrated_failure_occurred = true;
                 series.push(Series {
                     kind: "shim_warm",
                     run: attempt,
@@ -1203,10 +1213,10 @@ fn release_artifact_meets_the_frozen_g36_budget() {
     let passed = cooperative_worst_p95_ms <= COOPERATIVE_P95_LIMIT_MS
         && cooperative_worst_p99_ms <= COOPERATIVE_P99_LIMIT_MS
         && warm_admitted_runs == QUALIFYING_RUNS
-        && !admitted_warm_failure_occurred
+        && !admitted_recalibrated_failure_occurred
         && !warm_method_invalidation_occurred
-        && shim_warm_worst_p95_ms.is_some_and(|value| value <= SHIM_WARM_P95_LIMIT_MS)
-        && shim_warm_worst_p99_ms.is_some_and(|value| value <= SHIM_WARM_P99_LIMIT_MS)
+        && shim_warm_worst_p95_ms.is_some_and(|value| value <= PRODUCT_WARM_P95_LIMIT_MS)
+        && shim_warm_worst_p99_ms.is_some_and(|value| value <= PRODUCT_WARM_P99_LIMIT_MS)
         && shim_cold_worst_p95_ms <= SHIM_COLD_P95_LIMIT_MS
         && !startup_bias_material
         && hookstat_induced_timeouts_for_healthy_hook == 0
@@ -1214,8 +1224,8 @@ fn release_artifact_meets_the_frozen_g36_budget() {
         && oracle_observation_gaps == 0;
     let outcome = if passed {
         "PASS"
-    } else if admitted_warm_failure_occurred {
-        "FAIL_FROZEN_BUDGET"
+    } else if admitted_recalibrated_failure_occurred {
+        "FAIL_RECALIBRATED_BUDGET"
     } else if warm_method_invalidation_occurred || oracle_observation_gaps > 0 {
         "INVALIDATED_BY_METHOD"
     } else if warm_admitted_runs < QUALIFYING_RUNS {
@@ -1223,10 +1233,10 @@ fn release_artifact_meets_the_frozen_g36_budget() {
     } else if startup_bias_material {
         "INVALIDATED_BUILD_COMPARABILITY"
     } else {
-        "FAIL_FROZEN_BUDGET"
+        "FAIL_RECALIBRATED_BUDGET"
     };
     let receipt = Receipt {
-        schema_version: 1,
+        schema_version: 2,
         run_kind: "g36_release_artifact_performance_qualification",
         release_artifacts: true,
         build_profile: "release",
@@ -1243,6 +1253,11 @@ fn release_artifact_meets_the_frozen_g36_budget() {
         host_control_percentile_method: "nearest_rank",
         host_control_p95_limit_ms: HOST_CONTROL_P95_LIMIT_MS,
         host_control_p99_limit_ms: HOST_CONTROL_P99_LIMIT_MS,
+        g28_reference_warm_p95_ms: G28_REFERENCE_WARM_P95_MS,
+        g28_reference_warm_p99_ms: G28_REFERENCE_WARM_P99_MS,
+        v031_release_warm_p95_ms: PRODUCT_WARM_P95_LIMIT_MS,
+        v031_release_warm_p99_ms: PRODUCT_WARM_P99_LIMIT_MS,
+        further_automatic_budget_relaxation: false,
         warm_admitted_runs_required: QUALIFYING_RUNS,
         max_warm_window_attempts,
         rejected_window_retry_interval_ms: u64::try_from(reject_retry_interval.as_millis())
@@ -1270,7 +1285,7 @@ fn release_artifact_meets_the_frozen_g36_budget() {
         warm_window_attempts,
         host_control_rejected_windows,
         warm_admitted_runs,
-        admitted_warm_failure_occurred,
+        admitted_recalibrated_failure_occurred,
         warm_method_invalidation_occurred,
         admitted_warm_hookstat_induced_timeouts,
         admitted_warm_unexpected_terminal_results,

@@ -8,7 +8,7 @@ sanitized numeric statistics, and methodology observations.  It does not
 contain Owner configuration, commands, capsule contents, paths outside this
 repository, or raw payloads.
 
-The frozen G28 limits remain unchanged:
+The frozen G28 baseline receipt and its reference values remain unchanged:
 
 ```text
 cooperative p95 <= 1 ms; p99 <= 2 ms
@@ -16,6 +16,13 @@ transparent shim warm p95 <= 20 ms; p99 <= 25 ms
 transparent shim cold p95 <= 50 ms
 healthy-hook HookStat-induced timeouts = 0
 ```
+
+For prospective v0.3.1 release qualification, the Owner approved a one-time
+warm product hard-cap recalibration to p95 `25 ms` and p99 `30 ms`. Host
+admission remains p95 `20 ms` and p99 `25 ms`; cooperative, cold, and timeout
+limits are unchanged. The versioned authority and evidence basis are recorded
+in `docs/performance/HS-G36-WARM-BUDGET-RECALIBRATION.md`. Historical receipt
+outcomes and the G28 `20/25`-ms reference target are not rewritten.
 
 ## Evidence taxonomy
 
@@ -57,7 +64,7 @@ receipt's historical `outcome` field.
 | `runs/HS-G36-WARM-SHIM-ARCHITECTURE-DECISION-002/g36-idle-helper-frontend-floor-001.json` | `DIAGNOSTIC_ONLY` | A package-excluded bounded prototype sends only one fixed eight-byte request and response; it has no capsule, handler, containment, evidence, or cold-fallback semantics and explicitly denies acceptance status. | Its 179-KB fresh frontend plus one local helper exchange is 325.5800/451.8487 ms p95/p99 over 500 cache-warmed samples in the observed environment. The helper option cannot improve this strict floor by adding required semantics. |
 | `runs/HS-G36-WARM-HOST-ADMISSION-AND-LANDING-003/g36-host-admitted-qualification-1012a81-001-window-*.json` | `INVALIDATED_BY_BUILD_PROFILE` | The immutable window receipts retain eight raw `REJECTED_HOST_SUBSTRATE` dispositions and one raw `FAIL_FROZEN_BUDGET` disposition. The session's instrumented build was `9.9580 ms` faster than shipping under the complete-envelope reducer, exceeding the pre-existing `2.0 ms` build-comparability stop. The comparator ran before, and outside, the later passing-control window, so its cross-regime correction cannot establish a shipping-binary product tail. | Window 9's controls pass at 12.0442/14.6764 ms pre and 13.3663/15.1660 ms post. Its raw same-invocation oracle is 17.5643/21.0011 ms; adding the invalid 9.9580-ms cross-regime correction produces the receipt's preserved raw 27.5223/30.9591-ms failure disposition. This session proves neither product PASS nor product FAIL for release acceptance and is not relabelled as host rejection. |
 | `runs/HS-G36-WARM-HOST-ADMISSION-AND-LANDING-003/g36-host-admitted-qualification-36173fd-001-startup-comparability-*.json` | `DIAGNOSTIC_ONLY` | Ten exact-head, SHA-bound build-comparability attempts each retain their own pre control, five complete shipping/instrumented startup populations, post control, and raw `REJECTED_HOST_SUBSTRATE` disposition. No attempt had both controls pass, so no build correction was admitted and warm product qualification never began. | Attempts 7 through 10 approached the fixed control gate but still failed at least one phase. This series proves only that the observed 13,651.85-second search had no admitted build-comparability window; it proves neither product PASS nor product FAIL. |
-| `runs/HS-G36-WARM-HOST-ADMISSION-AND-LANDING-003/g36-host-admitted-qualification-93a5a1e-001.json` and its atomic subreceipts | `FULL_ACCEPTANCE_FAIL` | Clean exact source head `93a5a1e...`, exact artifact hashes, an admitted zero-bias build-comparability envelope, and a complete 100-sample warm pre/product/post window are retained. Both warm controls pass, so the predefined policy admits the independent product result. | Warm product p95/p99 is 24.2950/26.5946 ms and fails both frozen limits. Cooperative passes at 0.2118/0.4732 ms with zero gaps, cold passes at 28.9614 ms p95, and induced timeouts, unexpected terminals, and oracle gaps are all zero. This is an admitted product failure and cannot be retried or reclassified as host noise. |
+| `runs/HS-G36-WARM-HOST-ADMISSION-AND-LANDING-003/g36-host-admitted-qualification-93a5a1e-001.json` and its atomic subreceipts | `FULL_ACCEPTANCE_FAIL` | Clean exact source head `93a5a1e...`, exact artifact hashes, an admitted zero-bias build-comparability envelope, and a complete 100-sample warm pre/product/post window are retained. Both warm controls pass, so the predefined policy admits the independent product result. | Warm product p95/p99 is 24.2950/26.5946 ms and fails both then-governing G28 reference limits. Cooperative passes at 0.2118/0.4732 ms with zero gaps, cold passes at 28.9614 ms p95, and induced timeouts, unexpected terminals, and oracle gaps are all zero. Its raw `FAIL_FROZEN_BUDGET` remains immutable. It supplies the shipping evidence for the prospective recalibration but is not itself rewritten as a pass. |
 
 The current `FULL_ACCEPTANCE_PASS` is the deterministic reduction of one
 complete release qualification, not a rerun or selected subset.  The two
@@ -68,22 +75,26 @@ failure while their warm shim submeasurement remains
 
 ## Owner-approved prospective warm admission overlay
 
-The retained taxonomy above describes each receipt under the methodology in
-force when it was produced. It is not rewritten by the later Owner decision.
-For v0.3.1 landing, each new warm series must be bracketed in the same session
-by pre and post executions of the exact G28 cache-warmed minimal-shim
-process-start control. Each control uses 25 unmeasured launches before every
-one of at least 100 measured launches and nearest-rank percentiles. The
-predefined control limits are p95 `20 ms` and p99 `25 ms`.
+The retained taxonomy above describes each receipt under the methodology and
+release contract in force when it was produced. It is not rewritten by either
+later Owner decision. For v0.3.1 landing, each new warm series must be
+bracketed in the same session by pre and post executions of the exact G28
+cache-warmed minimal-shim process-start control. Each control uses 25
+unmeasured launches before every one of at least 100 measured launches and
+nearest-rank percentiles. The predefined control limits remain p95 `20 ms` and
+p99 `25 ms`.
 
 Both controls must pass to admit the product series. A control failure produces
 `REJECTED_HOST_SUBSTRATE`, not product PASS or FAIL. If both pass, the
-same-invocation product metric is evaluated against the frozen `20/25`-ms
-limits. No host-control subtraction or post-hoc threshold is permitted, and
-five independently admitted passing warm runs are required. The already-frozen
-instrumented-versus-shipping comparability stop remains independent: a
-materially faster instrumented build invalidates the product metric rather than
-proving either release PASS or FAIL.
+same-invocation product metric is evaluated against the Owner-approved one-time
+v0.3.1 `25/30`-ms release hard cap. The G28 `20/25`-ms product values remain the
+reference target. No host-control subtraction or post-hoc threshold is
+permitted, and five independently admitted passing warm runs are required. An
+admitted product result above `25/30` ms is
+`FAIL_RECALIBRATED_BUDGET` and stops landing; it cannot authorize a further
+increase. The already-frozen instrumented-versus-shipping comparability stop
+remains independent: a materially faster instrumented build invalidates the
+product metric rather than proving either release PASS or FAIL.
 
 Prospective build comparability is itself bracketed by the same predefined G28
 pre/post controls before its correction can affect any warm product window.
@@ -102,7 +113,11 @@ post G28 controls. Therefore:
 RAW_RECEIPT_OUTCOME_08F83BC=FAIL
 RELEASE_ACCEPTANCE_CLASSIFICATION_08F83BC=NOT_RETROACTIVELY_CLASSIFIED
 NON_ADMITTED_HOST_SUBSTRATE_08F83BC=UNPROVEN_NO_CONTEMPORANEOUS_CONTROL
-FROZEN_G28_BUDGET_CHANGED=false
+G28_REFERENCE_WARM_P95_P99_MS=20/25
+V031_RELEASE_WARM_P95_P99_MS=25/30
+HOST_ADMISSION_P95_P99_MS=20/25
+FURTHER_AUTOMATIC_BUDGET_RELAXATION=false
+FROZEN_G28_HISTORICAL_EVIDENCE_CHANGED=false
 ```
 
 ## Why the checkpoint values differ

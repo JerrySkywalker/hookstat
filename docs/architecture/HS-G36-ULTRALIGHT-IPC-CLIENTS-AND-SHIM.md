@@ -190,9 +190,13 @@ warm candidate series is now bracketed by the exact G28 cache-warmed
 minimal-shim process-start control. Both controls must pass `20/25` ms before
 the candidate window is admitted. A rejected window is retained and is neither
 a product pass nor a product fail. In an admitted window, the same-invocation
-product metric must itself satisfy `20/25` ms; control values are never
-subtracted from it. Five independently admitted passing windows are required.
-Option C remains deferred and no helper architecture is shipped.
+product metric must itself satisfy the one-time v0.3.1 release hard cap of
+`25/30` ms; control values are never subtracted from it. The G28 `20/25`-ms
+values remain the performance reference target. The recalibration authority,
+shipping-evidence basis, and immutable historical outcome are recorded in
+`docs/performance/HS-G36-WARM-BUDGET-RECALIBRATION.md`. Five independently
+admitted passing windows are required. Option C remains deferred and no helper
+architecture is shipped.
 
 ```text
 WARM_ACCEPTANCE_METRIC=OTHER_PROVEN_METRIC
@@ -203,8 +207,12 @@ HELPER_SEMANTIC_PROTOTYPE=NOT_IMPLEMENTED_FLOOR_FAILED
 FINAL_G36_SHIM_ARCHITECTURE=OPTIMIZED_ONE_PROCESS
 WARM_HOST_ADMISSION_POLICY=G28_CACHE_WARMED_MINIMAL_SHIM_PRE_AND_POST
 WARM_ADMITTED_RUNS_REQUIRED=5
+G28_REFERENCE_WARM_P95_P99_MS=20/25
+V031_RELEASE_WARM_P95_P99_MS=25/30
+HOST_ADMISSION_P95_P99_MS=20/25
+FURTHER_AUTOMATIC_BUDGET_RELAXATION=false
 HELPER_ARCHITECTURE_SHIPPED=false
 G36_PERFORMANCE=PENDING_HOST_ADMITTED_QUALIFICATION
 OWNER_ARCHITECTURE_DECISION_REQUIRED=false
-FROZEN_G28_BUDGET_CHANGED=false
+FROZEN_G28_HISTORICAL_EVIDENCE_CHANGED=false
 ```

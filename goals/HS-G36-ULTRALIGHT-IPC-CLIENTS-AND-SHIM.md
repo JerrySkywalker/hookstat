@@ -5,7 +5,11 @@
 IN PROGRESS after accepted G35. The Owner selected the optimized one-process
 transparent shim for v0.3.1. Warm landing evidence requires the prospective
 G28 minimal-shim host-substrate admission defined in
-`docs/performance/HS-G28-HOT-PATH-METHODOLOGY.md`.
+`docs/performance/HS-G28-HOT-PATH-METHODOLOGY.md`. The G28 `20/25`-ms warm
+values remain the reference target; the Owner-approved, one-time v0.3.1
+release hard cap is `25/30` ms as recorded in
+`docs/performance/HS-G36-WARM-BUDGET-RECALIBRATION.md`. Host admission remains
+`20/25` ms.
 
 ## Objective
 
@@ -216,6 +220,10 @@ CODE_CI=PASS
 FINAL_G36_SHIM_ARCHITECTURE=OPTIMIZED_ONE_PROCESS
 WARM_HOST_ADMISSION_POLICY=PASS_REVIEWED
 WARM_ADMITTED_RUNS=5/5
+G28_REFERENCE_WARM_P95_P99_MS=20/25
+V031_RELEASE_WARM_P95_P99_MS=25/30
+HOST_ADMISSION_P95_P99_MS=20/25
+FURTHER_AUTOMATIC_BUDGET_RELAXATION=false
 ```
 
 ## Estimated effort

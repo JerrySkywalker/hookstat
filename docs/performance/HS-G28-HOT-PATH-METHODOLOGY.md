@@ -121,9 +121,12 @@ derived from the candidate result is permitted.
 The predefined control limits are `20 ms` p95 and `25 ms` p99. Both controls
 must pass. If either control fails, the complete pre/product/post observation
 is retained as `REJECTED_HOST_SUBSTRATE`; it is neither a product pass nor a
-product failure. When both controls pass, the reported G36 product metric must
-independently satisfy `20 ms` p95 and `25 ms` p99. No control value is
-subtracted from, used to correct, or used to relax that product metric.
+product failure. The original G28 `20/25`-ms product values remain the
+performance reference target. For new v0.3.1 release evidence, when both
+controls pass, the reported G36 product metric must independently satisfy the
+Owner-approved one-time `25 ms` p95 and `30 ms` p99 hard cap recorded in
+`HS-G36-WARM-BUDGET-RECALIBRATION.md`. No control value is subtracted from,
+used to correct, or used to relax that product metric.
 
 The G36 product metric remains the already-audited same-invocation quantity:
 parent-observed instrumented shim lifetime minus the original-child spawn/wait
@@ -145,10 +148,12 @@ product metric.
 If an instrumented invocation exits before emitting its fixed oracle record,
 the runner retains the terminal class and an observation gap, completes the
 post-control, and applies host-control precedence. With passing controls, an
-independently observed timeout or unexpected terminal result remains
-`FAIL_FROZEN_BUDGET`; an oracle gap with no terminal failure is
+independently observed timeout, unexpected terminal result, or product tail
+above the v0.3.1 `25/30`-ms hard cap is
+`FAIL_RECALIBRATED_BUDGET`; an oracle gap with no terminal failure is
 `INVALIDATED_BY_METHOD`. A rejected host window's gap is retained but does not
-count against a later admitted series.
+count against a later admitted series. No further automatic budget relaxation
+is permitted.
 
 Historical receipts retain their original outcomes. They are not
 retroactively classified as host-substrate rejections unless a contemporaneous

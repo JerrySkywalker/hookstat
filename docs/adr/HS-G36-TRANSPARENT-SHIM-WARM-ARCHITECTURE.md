@@ -4,9 +4,11 @@ Status: Accepted by Owner for v0.3.1
 
 ## Context
 
-G36 must preserve the frozen G28 transparent-shim limits of `20 ms` p95 and
-`25 ms` p99 warm overhead and `50 ms` p95 cold overhead. The accepted warm
-quantity is one-invocation parent-observed shim lifetime minus the shim-observed
+G36 preserves the G28 `20 ms` p95 and `25 ms` p99 warm values as its reference
+performance target and the `50 ms` p95 cold limit as its release limit. After
+the architecture decision, the Owner approved a one-time v0.3.1 warm release
+hard-cap recalibration to `25/30` ms. The accepted warm quantity remains
+one-invocation parent-observed shim lifetime minus the shim-observed
 original-child spawn/wait interval. Adjacent paired subtraction is not
 identifiable at Windows tails.
 
@@ -88,12 +90,23 @@ G36 warm qualification now has a prospective process-substrate admission gate
 using the exact G28 cache-warmed minimal-shim fixture. Every candidate warm
 series is bracketed by predefined pre and post controls. A failed control
 retains the complete window as `REJECTED_HOST_SUBSTRATE`; when both controls
-pass, the unadjusted product metric must independently pass the unchanged
-`20/25`-ms limits. The controls are never subtracted from the product result.
+pass, the unadjusted product metric must independently pass the v0.3.1
+`25/30`-ms release hard cap. The G28 `20/25`-ms values remain the reference
+target and the host-control limits remain `20/25` ms. The controls are never
+subtracted from the product result.
 
 The historical `08f83bc...` failure has no contemporaneous execution of that
 predefined control. Its raw `FAIL` is preserved and it is not retroactively
 relabelled as a host rejection.
+
+The later exact `93a5a1e...` receipt is the first strict host-admitted
+semantics-complete shipping observation: its controls pass and its product
+tail is `24.2950/26.5946` ms. It remains a raw
+`FAIL_FROZEN_BUDGET` under the historical `20/25`-ms contract. It is the
+shipping-evidence basis for the prospective Owner-approved recalibration, not
+a receipt rewritten as a pass. New exact-head evidence must qualify under the
+versioned contract in
+`docs/performance/HS-G36-WARM-BUDGET-RECALIBRATION.md`.
 
 Option B is rejected for v0.3.1. Option C remains documented only as a
 deferred future architecture; it is not a G36 landing dependency. No helper
@@ -107,7 +120,11 @@ HELPER_SEMANTIC_PROTOTYPE=NOT_IMPLEMENTED_FLOOR_FAILED
 OWNER_ARCHITECTURE_DECISION_REQUIRED=false
 WARM_HOST_ADMISSION_POLICY=G28_CACHE_WARMED_MINIMAL_SHIM_PRE_AND_POST
 HELPER_ARCHITECTURE_SHIPPED=false
-FROZEN_G28_BUDGET_CHANGED=false
+G28_REFERENCE_WARM_P95_P99_MS=20/25
+V031_RELEASE_WARM_P95_P99_MS=25/30
+HOST_ADMISSION_P95_P99_MS=20/25
+FURTHER_AUTOMATIC_BUDGET_RELAXATION=false
+FROZEN_G28_HISTORICAL_EVIDENCE_CHANGED=false
 NATIVE_ADMISSION_CHANGED=false
 G37_STARTED=false
 ```
