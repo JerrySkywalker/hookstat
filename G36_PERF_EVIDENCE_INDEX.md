@@ -70,6 +70,24 @@ receipt's historical `outcome` field.
 | `runs/HS-G36-WARM-BUDGET-RECALIBRATION-LANDING-004/g36-host-admitted-qualification-660142c-002-startup-comparability-001.json` and `...-003-startup-comparability-001.json` | `INVALIDATED_BY_BUILD_PROFILE` | Both exact-head comparator sessions had passing pre/post host controls, but shipping-minus-instrumented worst-p99 corrections were `13.6623` and `2.7254` ms, exceeding the fixed `2.0`-ms stop. | Both sessions stopped before product measurement. They prove neither product PASS nor product FAIL and remain visible rather than being selected away. |
 | `runs/HS-G36-WARM-BUDGET-RECALIBRATION-LANDING-004/g36-host-admitted-qualification-660142c-004.json` and its atomic subreceipts | `FULL_ACCEPTANCE_FAIL` | Tracked-clean exact source `660142c...`, exact artifact hashes, an accepted zero-bias comparator, and two independently host-admitted product windows are retained. The first product window passes at `14.6629/15.2830` ms. The second has passing `11.3245/13.9147`-ms pre and `11.2306/20.1710`-ms post controls but product `23.0369/38.1377` ms. | The second admitted product p99 exceeds the one-time v0.3.1 `30`-ms hard cap and is `FAIL_RECALIBRATED_BUDGET`. Qualification stopped with one admitted pass, no product timeouts, unexpected terminals, or warm oracle gaps. No later product window was sought. |
 
+## v0.3.1 scope-recovery classification
+
+The Owner did not change either historical contract or receipt outcome. The
+release scope now consumes the evidence as follows:
+
+```text
+COOPERATIVE_IPC=PRODUCTION_ADMITTED_REQUIRED
+TRANSPARENT_IPC_SHIM=QUALIFIED_NOT_ADMITTED_PERFORMANCE
+TRANSPARENT_SHIM_PRODUCTION_ADMISSION=false
+TRANSPARENT_SHIM_20_25_RESULT=FAIL
+TRANSPARENT_SHIM_25_30_RESULT=FAIL
+FURTHER_AUTOMATIC_BUDGET_RELAXATION=false
+```
+
+This is a release-scope decision, not a new evidence taxonomy and not a
+transparent performance PASS. Every historical row above retains its original
+classification.
+
 The current `FULL_ACCEPTANCE_PASS` is the deterministic reduction of one
 complete release qualification, not a rerun or selected subset.  The two
 corrected-method debug receipts remain `INVALIDATED_BY_BUILD_PROFILE`; the two

@@ -23,11 +23,18 @@ Routing rule:
 ```text
 if Native is Admitted for the domain:
     authority = Native
-else:
+else if an IPC integration is Admitted for the domain:
     authority = IPC
+else:
+    authority = NOT_ADMITTED
 ```
 
 The user should not have to maintain two independent evidence-source configurations.
+
+`NOT_ADMITTED` is a coverage state and is never serialized as an evidence path.
+The only `EvidenceTransport` values remain Native and IPC. Missing or
+non-admitted evidence cannot become success, and shadow evidence never enters a
+production denominator.
 
 ## One-authority rule
 
@@ -64,19 +71,26 @@ If current Codex upstream does not expose a supported attach path, record truthf
 CODEX_NATIVE_L2=UPSTREAM_UNAVAILABLE
 ```
 
-and use IPC as production authority.
+and use IPC as production authority only for a domain with an admitted IPC
+integration. Otherwise route the domain to `NOT_ADMITTED`.
 
 This is not a v0.3.1 release blocker.
 
 ## IPC production integration
 
-For domains without admitted Native evidence, migrate from the v0.3 full proxy to the G36 IPC path.
+For domains without admitted Native evidence, migrate from the v0.3 full proxy
+only when G36 supplies an admitted IPC integration for that domain. In v0.3.1
+that means cooperative IPC. The transparent shim is
+`QUALIFIED_NOT_ADMITTED_PERFORMANCE` and must not be selected, installed, or
+described as production fallback merely because Native is unavailable.
 
 Requirements:
 
 - normal daily command remains `codex`;
-- existing supported user Hook definitions can be moved to the new shim/capsule path safely;
-- cooperative integrations avoid wrapping where proven;
+- cooperative integrations avoid wrapping where proven and use the versioned
+  integration-owned HSIP v1 boundary;
+- a domain without admitted Native or cooperative IPC remains truthfully
+  `NOT_ADMITTED`;
 - trust is never inferred or bypassed merely because HookStat owns instrumentation;
 - restore remains exact and drift-aware;
 - unsupported/managed/plugin sources remain explicit coverage limitations rather than optimistic mutation targets.
@@ -144,12 +158,15 @@ Ensure instrumentation does not degrade Human display identity to `Hookstat Exe`
 ## Required tests
 
 - domain-level Native authority;
-- domain-level IPC fallback;
+- domain-level admitted IPC fallback;
+- domain-level `NOT_ADMITTED` when neither integration is admitted;
 - mixed Native/IPC domains in one Codex runtime;
 - shadow source never changes production denominator;
+- `NOT_ADMITTED` never enters a denominator and never becomes success;
 - Native/IPC mismatch blocks promotion;
 - ordinary Codex Native success path if upstream available;
-- upstream-unavailable Native L2 degrades truthfully to IPC;
+- upstream-unavailable Native L2 uses admitted IPC or degrades truthfully to
+  `NOT_ADMITTED`;
 - v0.3 upgrade preserves legacy evidence counts/history;
 - old incomplete evidence is not silently rewritten;
 - new IPC evidence uses new generation/source identity;
@@ -183,7 +200,14 @@ SHADOW_MISMATCH_GATE=PASS
 
 ORDINARY_CODEX_NATIVE_ATTACH=PASS|UPSTREAM_UNAVAILABLE
 HOOKSTAT_AS_CODEX_LAUNCHER=false
-NATIVE_UNAVAILABLE_FALLBACK_IPC=PASS
+NATIVE_UNAVAILABLE_ADMITTED_IPC_OR_NOT_ADMITTED=PASS
+NOT_ADMITTED_ROUTER_STATE=PASS
+NOT_ADMITTED_IS_EVIDENCE_PATH=false
+SHADOW_EVIDENCE_IN_DENOMINATOR=false
+MISSING_EVIDENCE_NEVER_BECOMES_SUCCESS=true
+
+TRANSPARENT_SHIM_PRODUCTION_ACTIVATION=false
+COOPERATIVE_IPC_ADMISSION=ADMITTED
 
 LEGACY_V1_DATA_PRESERVED=true
 HISTORICAL_INCOMPLETE_REWRITTEN=false

@@ -1,3 +1,4 @@
+use hookstat::admission::IpcAdmissionState;
 use hookstat::analytics::{TimeWindow, aggregate};
 use hookstat::domain::{
     EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent, HookInvocation, Runtime,
@@ -237,6 +238,7 @@ fn synthetic_runtime_a_live_lifecycle_is_ordered_and_idempotent() {
     let mut evidence_core = core(vec![DomainAuthority {
         domain: domain(runtime_name, event_name, scope_name),
         native_admission: NativeAdmissionState::Admitted,
+        ipc_admission: IpcAdmissionState::Unavailable,
     }]);
     let start = started(
         runtime_name,
@@ -282,6 +284,7 @@ fn completion_before_start_upgrades_best_effort_without_fabricating_success() {
     let mut evidence_core = core(vec![DomainAuthority {
         domain: domain(runtime_name, event_name, scope_name),
         native_admission: NativeAdmissionState::Admitted,
+        ipc_admission: IpcAdmissionState::Unavailable,
     }]);
     let best_effort = produced(
         evidence_core
@@ -324,6 +327,7 @@ fn distinct_runtime_instances_with_one_invocation_key_remain_distinct_in_the_led
     let mut evidence_core = core(vec![DomainAuthority {
         domain: domain(runtime_name, event_name, scope_name),
         native_admission: NativeAdmissionState::Admitted,
+        ipc_admission: IpcAdmissionState::Unavailable,
     }]);
     let mut ledger = Ledger::open_in_memory().unwrap();
     for instance_name in ["instance_one", "instance_two"] {
@@ -358,6 +362,7 @@ fn start_only_and_complete_only_preserve_truthful_missing_evidence() {
     let mut evidence_core = core(vec![DomainAuthority {
         domain: domain(runtime_name, event_name, scope_name),
         native_admission: NativeAdmissionState::Admitted,
+        ipc_admission: IpcAdmissionState::Unavailable,
     }]);
     let incomplete = produced(
         evidence_core
@@ -404,6 +409,7 @@ fn conflicting_terminal_duplicates_become_unknown_not_completed() {
     let mut evidence_core = core(vec![DomainAuthority {
         domain: domain(runtime_name, event_name, scope_name),
         native_admission: NativeAdmissionState::Admitted,
+        ipc_admission: IpcAdmissionState::Unavailable,
     }]);
     let first = completed(
         runtime_name,
@@ -431,6 +437,7 @@ fn synthetic_runtime_b_durable_replay_is_idempotent() {
     let authorities = vec![DomainAuthority {
         domain: domain("synthetic_runtime_b", "durable_event", "durable_log"),
         native_admission: NativeAdmissionState::Unavailable,
+        ipc_admission: IpcAdmissionState::Admitted,
     }];
     let fixture = SyntheticDurableFixture {
         records: vec![
@@ -487,6 +494,7 @@ fn native_shadow_and_ipc_authority_do_not_double_count() {
     let mut evidence_core = core(vec![DomainAuthority {
         domain: domain(runtime_name, event_name, scope_name),
         native_admission: NativeAdmissionState::Qualified,
+        ipc_admission: IpcAdmissionState::Admitted,
     }]);
     assert_eq!(
         evidence_core
@@ -526,6 +534,7 @@ fn native_authority_and_ipc_shadow_do_not_double_count() {
     let mut evidence_core = core(vec![DomainAuthority {
         domain: domain(runtime_name, event_name, scope_name),
         native_admission: NativeAdmissionState::Admitted,
+        ipc_admission: IpcAdmissionState::Admitted,
     }]);
     assert_eq!(
         evidence_core
@@ -565,10 +574,12 @@ fn synthetic_runtime_c_routes_mixed_domains_independently() {
         DomainAuthority {
             domain: domain(runtime_name, "native_event", scope_name),
             native_admission: NativeAdmissionState::Admitted,
+            ipc_admission: IpcAdmissionState::Admitted,
         },
         DomainAuthority {
             domain: domain(runtime_name, "fallback_event", scope_name),
             native_admission: NativeAdmissionState::Degraded,
+            ipc_admission: IpcAdmissionState::Admitted,
         },
     ]);
     let mut partial_native_start = started(
@@ -614,21 +625,38 @@ fn synthetic_runtime_c_routes_mixed_domains_independently() {
 }
 
 #[test]
-fn only_admitted_native_is_authority_and_unconfigured_is_rejected() {
+fn authority_requires_an_admitted_native_or_ipc_integration() {
+    use hookstat::evidence::DomainAuthoritySelection;
+
+    let authority = |native_admission, ipc_admission| DomainAuthority {
+        domain: domain("runtime", "event", "scope"),
+        native_admission,
+        ipc_admission,
+    };
+    assert_eq!(
+        authority(NativeAdmissionState::Admitted, IpcAdmissionState::Admitted)
+            .production_authority(),
+        DomainAuthoritySelection::Native
+    );
+    assert_eq!(
+        authority(NativeAdmissionState::Qualified, IpcAdmissionState::Admitted)
+            .production_authority(),
+        DomainAuthoritySelection::Ipc
+    );
     for state in [
-        NativeAdmissionState::Unavailable,
-        NativeAdmissionState::Discovered,
-        NativeAdmissionState::Qualified,
-        NativeAdmissionState::Degraded,
-        NativeAdmissionState::Revoked,
+        IpcAdmissionState::Unavailable,
+        IpcAdmissionState::Qualified,
+        IpcAdmissionState::QualifiedNotAdmittedPerformance,
+        IpcAdmissionState::Degraded,
+        IpcAdmissionState::Revoked,
     ] {
         assert_eq!(
-            DomainAuthority {
-                domain: domain("runtime", "event", "scope"),
-                native_admission: state,
-            }
-            .production_transport(),
-            EvidenceTransport::Ipc
+            authority(NativeAdmissionState::Qualified, state).production_authority(),
+            DomainAuthoritySelection::NotAdmitted
+        );
+        assert_eq!(
+            authority(NativeAdmissionState::Qualified, state).production_transport(),
+            None
         );
     }
     let duplicate = domain("runtime", "event", "scope");
@@ -637,14 +665,37 @@ fn only_admitted_native_is_authority_and_unconfigured_is_rejected() {
             DomainAuthority {
                 domain: duplicate.clone(),
                 native_admission: NativeAdmissionState::Admitted,
+                ipc_admission: IpcAdmissionState::Unavailable,
             },
             DomainAuthority {
                 domain: duplicate,
                 native_admission: NativeAdmissionState::Unavailable,
+                ipc_admission: IpcAdmissionState::Admitted,
             },
         ])
         .is_err()
     );
+
+    let mut evidence_core = core(vec![authority(
+        NativeAdmissionState::Qualified,
+        IpcAdmissionState::QualifiedNotAdmittedPerformance,
+    )]);
+    for transport in [EvidenceTransport::Native, EvidenceTransport::Ipc] {
+        assert_eq!(
+            evidence_core
+                .ingest(started(
+                    "runtime",
+                    "instance",
+                    "invocation",
+                    "event",
+                    "scope",
+                    transport,
+                ))
+                .unwrap(),
+            CoreIngestOutcome::NotAdmitted
+        );
+    }
+
     let mut evidence_core = core(Vec::new());
     assert_eq!(
         evidence_core
@@ -662,6 +713,21 @@ fn only_admitted_native_is_authority_and_unconfigured_is_rejected() {
 }
 
 #[test]
+fn legacy_authority_documents_without_ipc_admission_fail_closed() {
+    let document = serde_json::json!({
+        "domain": {
+            "runtime": "runtime",
+            "event": "event",
+            "source_scope": "scope"
+        },
+        "native_admission": "qualified"
+    });
+    let authority: DomainAuthority = serde_json::from_value(document).unwrap();
+    assert_eq!(authority.ipc_admission, IpcAdmissionState::Unavailable);
+    assert_eq!(authority.production_transport(), None);
+}
+
+#[test]
 fn identity_is_resolved_after_correlation_and_denominator_semantics_stay_stable() {
     let runtime_name = "synthetic_runtime_a";
     let event_name = "tool";
@@ -669,6 +735,7 @@ fn identity_is_resolved_after_correlation_and_denominator_semantics_stay_stable(
     let mut evidence_core = core(vec![DomainAuthority {
         domain: domain(runtime_name, event_name, scope_name),
         native_admission: NativeAdmissionState::Admitted,
+        ipc_admission: IpcAdmissionState::Unavailable,
     }]);
     let start = produced(
         evidence_core
@@ -716,6 +783,7 @@ fn completion_before_start_corrects_legacy_occurrence_time_without_migration() {
     let mut evidence_core = core(vec![DomainAuthority {
         domain: domain(runtime_name, event_name, scope_name),
         native_admission: NativeAdmissionState::Admitted,
+        ipc_admission: IpcAdmissionState::Unavailable,
     }]);
     let completion = produced(
         evidence_core
@@ -762,6 +830,7 @@ fn persisted_terminal_conflict_is_conservatively_removed_from_denominator() {
     let mut evidence_core = core(vec![DomainAuthority {
         domain: domain(runtime_name, event_name, scope_name),
         native_admission: NativeAdmissionState::Admitted,
+        ipc_admission: IpcAdmissionState::Unavailable,
     }]);
     let mut ledger = Ledger::open_in_memory().unwrap();
     let start = produced(
@@ -843,6 +912,7 @@ fn deserialized_opaque_references_are_revalidated_at_core_ingress() {
     let mut evidence_core = core(vec![DomainAuthority {
         domain: domain("synthetic_runtime_a", "event_a", "scope_a"),
         native_admission: NativeAdmissionState::Admitted,
+        ipc_admission: IpcAdmissionState::Unavailable,
     }]);
     assert!(evidence_core.ingest(deserialized).is_err());
 }

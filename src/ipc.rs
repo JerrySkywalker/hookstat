@@ -1539,6 +1539,7 @@ impl BrokerRecovery {
                 CoreIngestOutcome::Produced(_) => result.produced += 1,
                 CoreIngestOutcome::Duplicate => result.duplicates += 1,
                 CoreIngestOutcome::Shadow => result.shadowed += 1,
+                CoreIngestOutcome::NotAdmitted => result.not_admitted += 1,
                 CoreIngestOutcome::Unconfigured => result.unconfigured += 1,
             }
         }
@@ -1551,6 +1552,7 @@ pub struct ReplayIngest {
     pub produced: u64,
     pub duplicates: u64,
     pub shadowed: u64,
+    pub not_admitted: u64,
     pub unconfigured: u64,
 }
 

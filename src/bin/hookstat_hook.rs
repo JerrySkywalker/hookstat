@@ -1,10 +1,14 @@
 #[allow(dead_code)]
+#[path = "../admission.rs"]
+mod admission;
+#[allow(dead_code)]
 #[path = "../hook_shim.rs"]
 mod hook_shim;
 #[allow(dead_code)]
 #[path = "../ipc_client.rs"]
 mod ipc_client;
 
+use admission::V031_TRANSPARENT_SHIM_ADMISSION;
 use hook_shim::{CapsuleStore, run_capsule};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -84,7 +88,15 @@ fn run() -> i32 {
             "--state-root" => &mut state_root,
             "-h" | "--help" => {
                 println!(
-                    "usage: hookstat-hook --capsule <private-file> --capsule-root <private-dir> --state-root <hookstat-state>"
+                    "usage: hookstat-hook --capsule <private-file> --capsule-root <private-dir> --state-root <hookstat-state>\nstatus: internal/experimental; qualified_not_admitted_performance; not production activated for v0.3.1"
+                );
+                return 0;
+            }
+            "--admission-status" => {
+                println!(
+                    "transparent_shim={} production_admitted={}",
+                    V031_TRANSPARENT_SHIM_ADMISSION.state.as_str(),
+                    V031_TRANSPARENT_SHIM_ADMISSION.production_admitted()
                 );
                 return 0;
             }

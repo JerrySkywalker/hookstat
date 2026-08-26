@@ -98,6 +98,29 @@ windows remain evidence and cannot be selected away. Candidate results cannot
 change host admission, thresholds, or build-comparability admission. No
 further automatic warm-budget relaxation is authorized.
 
+## Terminal result and v0.3.1 scope disposition
+
+Exact tracked-clean source `660142c5cba8ff3e3716d6dc04e43d1460d3ed6b`
+obtained an admitted zero-bias comparator and then two host-admitted product
+windows. The first passed at p95/p99 `14.6629/15.2830` ms. The second retained
+passing pre controls `11.3245/13.9147` ms and post controls
+`11.2306/20.1710` ms, but the product measured `23.0369/38.1377` ms. The p99
+exceeded the one-time `30`-ms hard cap, so the immutable outcome is:
+
+```text
+RAW_OUTCOME=FAIL_RECALIBRATED_BUDGET
+TRANSPARENT_SHIM_20_25_RESULT=FAIL
+TRANSPARENT_SHIM_25_30_RESULT=FAIL
+FURTHER_AUTOMATIC_BUDGET_RELAXATION=false
+```
+
+The Owner responded by reducing v0.3.1 release scope, not by reclassifying the
+receipt or increasing a threshold. Cooperative IPC remains subject to its
+unchanged `1/2`-ms p95/p99 contract. The transparent shim implementation and
+correctness evidence remain retained, but its release state is
+`QUALIFIED_NOT_ADMITTED_PERFORMANCE` and production activation is false.
+Rearchitecture is deferred to G36T for v0.3.2 or later.
+
 ```text
 WARM_RECALIBRATION_GOVERNANCE=OWNER_APPROVED
 FINAL_G36_SHIM_ARCHITECTURE=OPTIMIZED_ONE_PROCESS

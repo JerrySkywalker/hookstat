@@ -80,7 +80,7 @@ A fresh user-local installation must be able to:
 ```text
 install HookStat 0.3.1 candidate
 run report/doctor/TUI without prior state
-qualify/configure Codex IPC path where Native is unavailable
+qualify/configure an admitted Codex IPC integration where Native is unavailable
 launch normal `codex`
 collect truthful evidence
 ```
@@ -89,7 +89,11 @@ No HookStat launcher wrapper is admitted.
 
 ## Native release semantics
 
-If ordinary Codex Native L2 is unavailable upstream, release notes and diagnostics must say so explicitly. IPC remains the authoritative production source for affected domains.
+If ordinary Codex Native L2 is unavailable upstream, release notes and
+diagnostics must say so explicitly. IPC is authoritative only for affected
+domains with an admitted cooperative integration; every other domain is
+truthfully `NOT_ADMITTED`. The non-admitted transparent shim is not an implicit
+fallback.
 
 Do not claim zero-overhead Native production merely because controlled App Server L1 qualification passed.
 

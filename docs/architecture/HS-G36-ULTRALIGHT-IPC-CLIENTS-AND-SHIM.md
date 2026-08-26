@@ -20,6 +20,32 @@ cooperative Hook / hookstat-hook
 
 The only evidence transport remains `EvidenceTransport::Ipc`.
 
+## v0.3.1 admission boundary
+
+The Owner changed release scope after the transparent shim failed both its
+original `20/25`-ms and one-time recalibrated `25/30`-ms warm contracts under
+admitted Windows substrate. The implementation and correctness evidence remain;
+the production authority does not.
+
+```text
+COOPERATIVE_IPC=ADMITTED
+TRANSPARENT_SHIM=QUALIFIED_NOT_ADMITTED_PERFORMANCE
+TRANSPARENT_SHIM_PRODUCTION_ADMISSION=false
+NOT_ADMITTED_IS_EVIDENCE_PATH=false
+EVIDENCE_PATHS=2
+```
+
+`src/admission.rs` records the two integration states. G29's existing
+domain-authority router now selects Native when Native is admitted, otherwise
+IPC only when a concrete IPC integration is admitted, otherwise
+`NOT_ADMITTED`. The last state cannot enter the correlator or denominator. It
+does not add an `EvidenceTransport` variant.
+
+The installed `hookstat-hook` can report
+`qualified_not_admitted_performance` through `--admission-status`; its help
+labels it internal/experimental. Ordinary CLI, Codex, proxy, Native, and runtime
+adapter activation sources contain no path that selects the binary.
+
 ## Cooperative producer
 
 `CooperativeProducer` accepts bounded opaque lifecycle metadata and emits
@@ -123,16 +149,20 @@ pushed, released, or applied to Owner configuration.
 ## Distribution boundary
 
 v0.3.1 retains one public Cargo package: `hookstat`. Its package owns the
-ordinary CLI, `hookstat-ipc-broker`, and `hookstat-hook`, so an ordinary
-`cargo install hookstat` supplies every HookStat runtime executable without a
-second hidden install step. The shared protocol/client and shim are internal
-source modules in that package; the shim binary compiles those modules directly
-and does not initialize the product library. In particular, cooperative-
-producer policy and observation types remain package-internal: HookStat does
-not publish a new IPC-client API commitment to external cooperative consumers.
-This preserves one binary protocol source while avoiding a new public
-IPC-client crate. The controlled TabBeacon proof remains a local, unmerged
-consumer proof and is not a v0.3.1 publication requirement.
+ordinary CLI, `hookstat-ipc-broker`, and the explicitly non-admitted
+`hookstat-hook`, so an ordinary `cargo install hookstat` supplies the broker and
+retained experimental executable without a second hidden install step. The
+shared protocol/client and shim are internal source modules in that package;
+the shim binary compiles those modules directly and does not initialize the
+product library.
+
+Cooperative-producer policy and observation types remain package-internal:
+HookStat does not publish a new IPC-client API or crate commitment. A real
+consumer owns a narrow client pinned to the versioned HSIP v1 wire contract,
+without depending on HookStat's CLI/TUI/analytics/SQLite/workbench product
+surface. The controlled TabBeacon proof uses this source boundary and remains
+valid because the exact `src/ipc_client.rs` SHA-256 is unchanged. See
+[`HSIP-V1-COOPERATIVE-INTEGRATION.md`](HSIP-V1-COOPERATIVE-INTEGRATION.md).
 
 ## Performance status
 
@@ -185,7 +215,8 @@ only, but required helper semantics cannot be faster than that floor. The
 architecture decision and option comparison are recorded in
 `docs/adr/HS-G36-TRANSPARENT-SHIM-WARM-ARCHITECTURE.md`.
 
-The Owner selected the optimized one-process shim for v0.3.1. Each prospective
+The Owner selected the optimized one-process shim as the retained
+semantics-complete implementation. Each prospective
 warm candidate series is now bracketed by the exact G28 cache-warmed
 minimal-shim process-start control. Both controls must pass `20/25` ms before
 the candidate window is admitted. A rejected window is retained and is neither
@@ -196,7 +227,11 @@ values remain the performance reference target. The recalibration authority,
 shipping-evidence basis, and immutable historical outcome are recorded in
 `docs/performance/HS-G36-WARM-BUDGET-RECALIBRATION.md`. Five independently
 admitted passing windows are required. Option C remains deferred and no helper
-architecture is shipped.
+architecture is shipped. The later exact `660142c...` session admitted two
+product windows under this policy: `14.6629/15.2830` ms passed, then
+`23.0369/38.1377` ms failed the one-time `25/30` cap with both controls passing.
+Qualification stopped without score-fishing. The Owner declined any further
+relaxation and removed transparent production admission from v0.3.1.
 
 ```text
 WARM_ACCEPTANCE_METRIC=OTHER_PROVEN_METRIC
@@ -212,7 +247,12 @@ V031_RELEASE_WARM_P95_P99_MS=25/30
 HOST_ADMISSION_P95_P99_MS=20/25
 FURTHER_AUTOMATIC_BUDGET_RELAXATION=false
 HELPER_ARCHITECTURE_SHIPPED=false
-G36_PERFORMANCE=PENDING_HOST_ADMITTED_QUALIFICATION
+TRANSPARENT_SHIM_20_25_RESULT=FAIL
+TRANSPARENT_SHIM_25_30_RESULT=FAIL
+TRANSPARENT_SHIM_PRODUCTION_ADMISSION=false
+TRANSPARENT_IPC_SHIM=QUALIFIED_NOT_ADMITTED_PERFORMANCE
+COOPERATIVE_IPC_PRODUCTION_ADMISSION=true
+G36_TRANSPARENT_PERFORMANCE=FAIL_PRESERVED_NOT_RELEASE_GATE
 OWNER_ARCHITECTURE_DECISION_REQUIRED=false
 FROZEN_G28_HISTORICAL_EVIDENCE_CHANGED=false
 ```

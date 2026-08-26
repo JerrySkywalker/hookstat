@@ -11,9 +11,9 @@ keywords = ["hooks", "reliability", "agents", "codex", "tui"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = ["dev_proof/**"]
 
-# G36's shipping shim is a repeated-fresh Windows process. Keep release code
-# generation compact without enabling the Thin LTO configuration whose local
-# stage A/B already regressed startup on the admitted host.
+# G36 retains a repeated-fresh Windows shim as an internal/experimental,
+# non-admitted v0.3.1 executable. Keep its release code generation compact
+# without enabling Thin LTO, whose local stage A/B regressed startup.
 [profile.release]
 codegen-units = 1
 

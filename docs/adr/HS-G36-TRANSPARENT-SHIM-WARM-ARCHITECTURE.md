@@ -1,6 +1,7 @@
 # ADR — G36 transparent-shim warm architecture
 
-Status: Accepted by Owner for v0.3.1
+Status: Accepted implementation choice; production admission deferred from
+v0.3.1 by the Owner scope-recovery decision
 
 ## Context
 
@@ -112,6 +113,32 @@ Option B is rejected for v0.3.1. Option C remains documented only as a
 deferred future architecture; it is not a G36 landing dependency. No helper
 frontend, private helper protocol, or helper runtime is shipped by this
 decision.
+
+## v0.3.1 scope-recovery addendum
+
+The optimized one-process implementation was subsequently measured under the
+Owner-approved one-time `25/30`-ms contract. Exact source `660142c...` produced
+one admitted pass followed by an independently admitted
+`23.0369/38.1377`-ms result. Both pre/post host controls passed; the p99 is a
+real `FAIL_RECALIBRATED_BUDGET`, not a host rejection. The Owner declined any
+further budget relaxation and changed release scope instead.
+
+For v0.3.1 this ADR therefore selects the preserved implementation only. It
+does not grant production admission:
+
+```text
+TRANSPARENT_SHIM_IMPLEMENTED=true
+TRANSPARENT_SHIM_CORRECTNESS_QUALIFIED=true
+TRANSPARENT_SHIM_PRODUCTION_ADMISSION=false
+TRANSPARENT_IPC_SHIM=QUALIFIED_NOT_ADMITTED_PERFORMANCE
+TRANSPARENT_SHIM_20_25_RESULT=FAIL
+TRANSPARENT_SHIM_25_30_RESULT=FAIL
+```
+
+No normal G37 activation path may select `hookstat-hook` while this state is in
+force. The deferred `goals/HS-G36T-TRANSPARENT-SHIM-REARCHITECTURE.md` track is
+v0.3.2 or later and is not a v0.3.1 dependency. This addendum changes neither
+the two-path Native/IPC architecture nor any historical measurement.
 
 ```text
 FINAL_G36_SHIM_ARCHITECTURE=OPTIMIZED_ONE_PROCESS

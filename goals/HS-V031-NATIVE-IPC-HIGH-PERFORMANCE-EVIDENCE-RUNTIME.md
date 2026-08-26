@@ -2,7 +2,10 @@
 
 ## Status
 
-PLANNED after public v0.3.0 baseline `a33a3be56982c6ca00699019883a047a1aca748b`.
+IN PROGRESS after public v0.3.0 baseline
+`a33a3be56982c6ca00699019883a047a1aca748b`. The Owner-approved v0.3.1 scope
+admits cooperative IPC and preserves the transparent shim as implemented and
+correctness-qualified but not performance-admitted or production-activated.
 
 v0.3.1 remains **Codex-only in production**. Future OpenCode, DeepSeek Harness, Claude Code, Agy, or other runtime integrations are not release dependencies. The purpose of this release is to establish the runtime-neutral evidence architecture those future integrations can use without rewriting HookStat Core.
 
@@ -25,7 +28,11 @@ v0.3.1 treats this as an architecture and performance-correctness problem, not a
 Replace the instrumentation-centric evidence model with exactly two production evidence paths:
 
 1. **Runtime-native evidence — preferred.** Consume authoritative Hook lifecycle evidence produced and owned by the coding-agent runtime. HookStat does not proxy the observed Hook and adds zero synchronous Hook latency.
-2. **Runtime-neutral local IPC — fallback.** For a coverage domain without admitted native evidence, obtain start/result evidence using a minimal local IPC producer and broker. Cooperative producers are preferred when the observed Hook can emit HookStat evidence itself; a tiny transparent shim remains the universal third-party fallback within the same IPC path.
+2. **Runtime-neutral local IPC — conditional fallback.** For a coverage domain
+   without admitted Native evidence, use IPC only when a concrete IPC
+   integration for that domain is admitted. Cooperative IPC is admitted for
+   v0.3.1. The transparent shim remains the same IPC evidence path but is not a
+   production fallback in this release.
 
 No third production evidence path is admitted in v0.3.1.
 
@@ -63,8 +70,9 @@ RUNTIME_CORE_NEUTRAL=true
 
 EVIDENCE_PATHS=2
 NATIVE_FIRST=true
-IPC_ONLY_FALLBACK=true
+IPC_ADMITTED_INTEGRATION_ONLY_FALLBACK=true
 NO_THIRD_EVIDENCE_PATH=true
+NOT_ADMITTED_IS_EVIDENCE_PATH=false
 
 NATIVE_MEANS_RUNTIME_OWNED_EVIDENCE=true
 NATIVE_TRANSPORT_OPAQUE_TO_CORE=true
@@ -76,6 +84,11 @@ IPC_INTEGRATION_RUNTIME_SPECIFIC=true
 ONE_AUTHORITY_PER_COVERAGE_DOMAIN=true
 NO_DOUBLE_COUNTING=true
 SHADOW_EVIDENCE_IN_DENOMINATOR=false
+MISSING_EVIDENCE_NEVER_BECOMES_SUCCESS=true
+
+COOPERATIVE_IPC_ADMISSION=ADMITTED
+TRANSPARENT_SHIM_ADMISSION=QUALIFIED_NOT_ADMITTED_PERFORMANCE
+TRANSPARENT_SHIM_PRODUCTION_ACTIVATION=false
 
 CANONICAL_EVIDENCE_BEFORE_HOOK_INVOCATION=true
 CORRELATION_RUNTIME_NEUTRAL=true
@@ -179,7 +192,20 @@ DeepSeekHarness / PreToolUse / bridge-owned -> Native
 DeepSeekHarness / SessionStart / bridge-owned -> IPC
 ```
 
-The production router chooses Native only where that domain is admitted; otherwise it chooses IPC.
+The production router is a three-state authority decision over two evidence
+paths:
+
+```text
+if Native is admitted for the domain:
+    authority = Native
+else if an IPC integration is admitted for the domain:
+    authority = IPC
+else:
+    authority = NOT_ADMITTED
+```
+
+`NOT_ADMITTED` is coverage truth, not an `EvidenceTransport` variant. Evidence
+in that state cannot enter a production denominator or become success.
 
 ## Runtime-neutral canonical evidence
 
@@ -245,7 +271,9 @@ A small `RuntimeIntegration` object may compose these components and report the 
 
 ## IPC architecture
 
-IPC is the only fallback evidence path and is runtime-neutral after integration.
+IPC is the only fallback evidence path and is runtime-neutral after
+integration. Its existence does not imply that an IPC integration is admitted
+for every domain.
 
 ```text
 runtime-specific integration
@@ -277,11 +305,17 @@ Both are the same evidence path:
 1. **Cooperative IPC:** a Hook under our control emits START/COMPLETE directly to HookStat IPC. No HookStat wrapper process is introduced.
 2. **Transparent shim:** a dedicated minimal HookStat shim emits START, executes the original third-party Hook, emits COMPLETE, and forwards the original terminal semantics.
 
-Cooperative IPC is preferred where practical. TabBeacon is the first intended real cooperative dogfood consumer.
+For v0.3.1 cooperative IPC is production-admitted. TabBeacon is the first
+controlled real cooperative proof. `hookstat-hook` remains implemented and
+correctness-qualified but has
+`QualifiedNotAdmittedPerformance` admission and cannot be selected by a
+production activation path. G36T owns any v0.3.2-or-later rearchitecture.
 
 ### Dedicated minimal shim
 
 The v0.3 full `hookstat.exe codex proxy` must leave the production hot path.
+The presence of the retained `hookstat-hook` executable does not admit it as a
+replacement production authority in v0.3.1.
 
 A dedicated minimal executable conceptually named `hookstat-hook` owns only:
 
@@ -359,18 +393,25 @@ Blindly increasing all Hook timeouts is not an accepted fix.
 
 ## Performance contract
 
-G28 records the real Owner Windows baseline and is the only Goal permitted to calibrate provisional numeric targets. After G28, the budget is frozen and release-governing.
-
-Provisional targets:
+G28 records the real Owner Windows baseline. The original transparent warm
+`20/25` contract and the Owner-approved one-time v0.3.1 `25/30` recalibration
+both failed under admitted Windows substrate. Neither result is rewritten and
+no further relaxation is authorized. The v0.3.1 release scope therefore admits
+only cooperative IPC performance while retaining transparent correctness.
 
 ```text
 NATIVE_ADDED_SYNCHRONOUS_LATENCY_MS=0
 COOPERATIVE_IPC_P95_MS<=1
 COOPERATIVE_IPC_P99_MS<=2
-TRANSPARENT_SHIM_WARM_P95_MS<=15
-TRANSPARENT_SHIM_WARM_P99_MS<=25
+COOPERATIVE_OBSERVATION_GAPS=0
+G28_REFERENCE_TRANSPARENT_WARM_P95_P99_MS=20/25
+ONE_TIME_V031_TRANSPARENT_WARM_P95_P99_MS=25/30
+TRANSPARENT_SHIM_20_25=FAIL
+TRANSPARENT_SHIM_25_30=FAIL
+TRANSPARENT_SHIM_PRODUCTION_ADMISSION=false
 TRANSPARENT_SHIM_COLD_P95_MS<=50
 HOOKSTAT_INDUCED_TIMEOUTS_FOR_HEALTHY_HOOK=0
+FURTHER_BUDGET_RELAXATION=false
 ```
 
 ## Legacy compatibility
@@ -398,6 +439,7 @@ Target diagnostics include:
 runtime
 authoritative evidence source per domain
 Native admission state
+IPC integration admission state
 IPC mode: cooperative/shim
 broker health
 queue lag
@@ -430,6 +472,9 @@ HS-G38 — Performance & Windows Dogfood Hardening
   ↓
 HS-G38R — v0.3.1 Hardening & Release
 ```
+
+`HS-G36T — Transparent Shim Rearchitecture` is a deferred v0.3.2-or-later
+track. It is not on the v0.3.1 dependency path.
 
 `HS-G30X`–`HS-G33X` remain future-runtime tracks and are not changed by this version.
 
@@ -498,7 +543,9 @@ For the current G35/G36 sequence, G36 stacked implementation is permitted only w
 ## Mandatory version stop gates
 
 1. **After G28:** stop if the selected IPC transport cannot satisfy a credible low-latency Windows budget.
-2. **Native L2:** ordinary-Codex external attach being upstream-unavailable is not a version stop. Record it truthfully and use IPC authority.
+2. **Native L2:** ordinary-Codex external attach being upstream-unavailable is
+   not a version stop. Record it truthfully; use IPC only for a domain with an
+   admitted IPC integration, otherwise report `NOT_ADMITTED`.
 3. **Before G38R:** any reproducible HookStat-induced timeout/failure in a previously healthy Hook blocks release.
 
 ## Release boundary

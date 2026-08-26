@@ -1,3 +1,4 @@
+use hookstat::admission::IpcAdmissionState;
 use hookstat::domain::{
     EvidenceCoverage, EvidenceKind, ExecutionMode, HandlerIdentity, HookEvent, HookInvocation,
     Runtime, TerminalStatus,
@@ -228,6 +229,7 @@ fn replay_enters_g29_core_idempotently_then_resolves_outside_the_broker() {
         AuthorityRouter::new([DomainAuthority {
             domain,
             native_admission: NativeAdmissionState::Qualified,
+            ipc_admission: IpcAdmissionState::Admitted,
         }])
         .unwrap(),
     );
@@ -249,6 +251,7 @@ fn replay_enters_g29_core_idempotently_then_resolves_outside_the_broker() {
                 AuthorityRouter::new([DomainAuthority {
                     domain,
                     native_admission: NativeAdmissionState::Qualified,
+                    ipc_admission: IpcAdmissionState::Admitted,
                 }])
                 .unwrap(),
             );
@@ -289,6 +292,41 @@ fn replay_enters_g29_core_idempotently_then_resolves_outside_the_broker() {
     assert_eq!(invocation.coverage, EvidenceCoverage::Partial);
     assert_eq!(invocation.terminal_status, TerminalStatus::Completed);
     invocation.validate().unwrap();
+}
+
+#[test]
+fn replay_retains_non_admitted_ipc_without_producing_denominator_evidence() {
+    let _guard = e2e_serial_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let mut wal = Wal::open(temp.path(), GroupDurabilityPolicy::default()).unwrap();
+    wal.append(&frame(1, 1)).unwrap();
+    wal.append(&completion(1, 1)).unwrap();
+    wal.flush_group().unwrap();
+    let recovery = wal.recover_and_replay().unwrap();
+    let broker_recovery = hookstat::ipc::BrokerRecovery {
+        frames: recovery.frames,
+        truncated_tail_bytes: recovery.truncated_tail_bytes,
+    };
+    let domain = CoverageDomain {
+        runtime: hookstat::evidence::RuntimeId::new("synthetic_runtime").unwrap(),
+        event: hookstat::evidence::EventFamily::new("synthetic_event").unwrap(),
+        source_scope: hookstat::evidence::SourceScope::new("synthetic_scope").unwrap(),
+    };
+    let mut core = RuntimeNeutralEvidenceCore::new(
+        AuthorityRouter::new([DomainAuthority {
+            domain,
+            native_admission: NativeAdmissionState::Qualified,
+            ipc_admission: IpcAdmissionState::QualifiedNotAdmittedPerformance,
+        }])
+        .unwrap(),
+    );
+
+    let result = broker_recovery.ingest_into(&mut core).unwrap();
+    assert_eq!(broker_recovery.frames.len(), 2);
+    assert_eq!(result.produced, 0);
+    assert_eq!(result.not_admitted, 2);
+    assert_eq!(result.shadowed, 0);
+    assert_eq!(result.unconfigured, 0);
 }
 
 #[test]

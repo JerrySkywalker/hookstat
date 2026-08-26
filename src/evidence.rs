@@ -5,6 +5,7 @@
 //! CanonicalEvidence, route it through one authority per coverage domain, and
 //! resolve the opaque handler reference before ledger attribution.
 
+use crate::admission::IpcAdmissionState;
 use crate::domain::{EvidenceCoverage, TerminalStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -199,20 +200,42 @@ pub struct CoverageDomain {
     pub source_scope: SourceScope,
 }
 
-/// An explicit authority rule. Native is authoritative only after admission.
-/// Every other state makes IPC the sole production authority.
+/// The production authority selected for one configured coverage domain.
+/// `NotAdmitted` is a coverage state, not an evidence transport.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DomainAuthoritySelection {
+    Native,
+    Ipc,
+    NotAdmitted,
+}
+
+/// An explicit authority rule. Native is preferred only after admission; IPC
+/// is authoritative only when an integration for this domain is admitted.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DomainAuthority {
     pub domain: CoverageDomain,
     pub native_admission: NativeAdmissionState,
+    #[serde(default)]
+    pub ipc_admission: IpcAdmissionState,
 }
 
 impl DomainAuthority {
-    pub const fn production_transport(&self) -> EvidenceTransport {
+    pub const fn production_authority(&self) -> DomainAuthoritySelection {
         if self.native_admission.is_admitted() {
-            EvidenceTransport::Native
+            DomainAuthoritySelection::Native
+        } else if self.ipc_admission.is_admitted() {
+            DomainAuthoritySelection::Ipc
         } else {
-            EvidenceTransport::Ipc
+            DomainAuthoritySelection::NotAdmitted
+        }
+    }
+
+    pub const fn production_transport(&self) -> Option<EvidenceTransport> {
+        match self.production_authority() {
+            DomainAuthoritySelection::Native => Some(EvidenceTransport::Native),
+            DomainAuthoritySelection::Ipc => Some(EvidenceTransport::Ipc),
+            DomainAuthoritySelection::NotAdmitted => None,
         }
     }
 }
@@ -238,10 +261,22 @@ impl AuthorityRouter {
         let Some(authority) = self.rules.get(&evidence.coverage_domain()) else {
             return EvidenceRoute::Unconfigured;
         };
-        if evidence.evidence_transport == authority.production_transport() {
-            EvidenceRoute::Production
-        } else {
-            EvidenceRoute::Shadow
+        match authority.production_authority() {
+            DomainAuthoritySelection::Native => {
+                if evidence.evidence_transport == EvidenceTransport::Native {
+                    EvidenceRoute::Production
+                } else {
+                    EvidenceRoute::Shadow
+                }
+            }
+            DomainAuthoritySelection::Ipc => {
+                if evidence.evidence_transport == EvidenceTransport::Ipc {
+                    EvidenceRoute::Production
+                } else {
+                    EvidenceRoute::Shadow
+                }
+            }
+            DomainAuthoritySelection::NotAdmitted => EvidenceRoute::NotAdmitted,
         }
     }
 }
@@ -250,6 +285,7 @@ impl AuthorityRouter {
 pub enum EvidenceRoute {
     Production,
     Shadow,
+    NotAdmitted,
     Unconfigured,
 }
 
@@ -506,6 +542,7 @@ impl RuntimeNeutralEvidenceCore {
                 CorrelationOutcome::Duplicate => Ok(CoreIngestOutcome::Duplicate),
             },
             EvidenceRoute::Shadow => Ok(CoreIngestOutcome::Shadow),
+            EvidenceRoute::NotAdmitted => Ok(CoreIngestOutcome::NotAdmitted),
             EvidenceRoute::Unconfigured => Ok(CoreIngestOutcome::Unconfigured),
         }
     }
@@ -516,6 +553,7 @@ pub enum CoreIngestOutcome {
     Produced(CorrelatedEvidence),
     Duplicate,
     Shadow,
+    NotAdmitted,
     Unconfigured,
 }
 

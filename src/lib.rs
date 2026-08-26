@@ -5,6 +5,7 @@
 //! instrumented receipt source while keeping passive evidence preferred for
 //! future runtimes.
 
+pub mod admission;
 pub mod analytics;
 pub mod codex;
 pub mod diagnostics;

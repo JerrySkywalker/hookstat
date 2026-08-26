@@ -2,26 +2,29 @@
 
 ## Status
 
-IN PROGRESS after accepted G35. The Owner selected the optimized one-process
-transparent shim for v0.3.1. Warm landing evidence requires the prospective
-G28 minimal-shim host-substrate admission defined in
-`docs/performance/HS-G28-HOT-PATH-METHODOLOGY.md`. The G28 `20/25`-ms warm
-values remain the reference target; the Owner-approved, one-time v0.3.1
-release hard cap is `25/30` ms as recorded in
-`docs/performance/HS-G36-WARM-BUDGET-RECALIBRATION.md`. Host admission remains
-`20/25` ms.
+IN PROGRESS after accepted G35. Cooperative IPC is the v0.3.1 production
+admission target. The optimized one-process transparent shim remains
+implemented and correctness-qualified, but it is not performance-admitted or
+production-activated after exact host-admitted failures under both the original
+`20/25` contract and the one-time v0.3.1 `25/30` recalibration. Neither failure
+is rewritten. G36T owns any v0.3.2-or-later transparent rearchitecture.
 
 ## Objective
 
-Replace the v0.3 full HookStat proxy hot path with an ultra-light IPC evidence path that preserves original Hook semantics while adding the smallest practical incremental latency.
+Admit the ultra-light cooperative IPC producer for v0.3.1, preserve the
+correctness-qualified transparent implementation and its evidence, and prevent
+the non-admitted transparent integration from becoming production authority.
 
 IPC has two producer modes but remains one evidence transport:
 
 ```text
 IPC
-├ cooperative producer
-└ transparent shim
+├ cooperative producer: ADMITTED for v0.3.1
+└ transparent shim: QUALIFIED_NOT_ADMITTED_PERFORMANCE
 ```
+
+`NOT_ADMITTED` is a coverage state inside this two-path architecture. It is not
+a third evidence path.
 
 ## Cooperative producer
 
@@ -44,7 +47,12 @@ A cooperative client must be embeddable without pulling HookStat's product/TUI/a
 
 Add a dedicated minimal executable conceptually named `hookstat-hook` for third-party Hooks that cannot emit HookStat evidence themselves.
 
-Its production hot path is limited to:
+The executable is retained in the v0.3.1 package as internal/experimental. It
+must report its non-production admission truth, and no normal activation path
+may select or install it while its admission state is
+`QUALIFIED_NOT_ADMITTED_PERFORMANCE`.
+
+Its retained execution path is limited to:
 
 ```text
 process entry
@@ -69,7 +77,10 @@ localization
 full HookStat TUI/application state
 ```
 
-The existing `hookstat.exe codex proxy` may remain temporarily for legacy restore/migration compatibility, but it must no longer be the target production hot path after G37.
+The existing `hookstat.exe codex proxy` may remain temporarily for legacy
+restore/migration compatibility. G37 must not replace it with the non-admitted
+shim. Domains without admitted Native or cooperative IPC remain
+`NOT_ADMITTED` rather than gaining an implicit transparent authority.
 
 ## Handler capsule
 
@@ -126,9 +137,11 @@ Preserve process-tree containment equivalent to the accepted v0.3 Windows Job Ob
 
 Benchmark containment overhead separately. Do not remove containment merely to improve a headline number.
 
-## Performance optimization scope
+## Preserved performance history
 
-The shim may use dedicated release-profile tuning where justified, including minimizing dependencies/imports, LTO, stripping, codegen settings, and other bounded binary-startup optimizations.
+The shim retains the optimized one-process implementation and the complete
+historical evidence taxonomy. No further redesign or budget increase is part of
+v0.3.1 scope recovery.
 
 Optimize for:
 
@@ -162,7 +175,7 @@ not just executable file size.
 - Windows child/descendant containment;
 - privacy boundary excludes raw streams/prompt/tool payload.
 
-## Real integration proof
+## Real integration proof and distribution
 
 Produce a pinned TabBeacon cooperative integration proof in a controlled/local candidate environment:
 
@@ -176,6 +189,12 @@ HookStat receives evidence without wrapping the TabBeacon declaration.
 ```
 
 This proof must not require publishing a new TabBeacon release during G36.
+
+The v0.3.1 distribution boundary is an integration-owned HSIP v1 client pinned
+to the versioned wire contract. It does not create a new public HookStat crate
+or require HookStat's TUI, analytics, workbench, SQLite, or CLI dependencies in
+the consumer. See
+`docs/architecture/HSIP-V1-COOPERATIVE-INTEGRATION.md`.
 
 ## Risk vector
 
@@ -210,20 +229,39 @@ INSTRUMENTATION_ENVELOPE_BOUNDED=true
 WINDOWS_PROCESS_TREE_CONTAINMENT=PASS
 
 COOPERATIVE_IPC=PASS
-TRANSPARENT_IPC_SHIM=PASS
-TABBEACON_COOPERATIVE_PROOF=PASS
+COOPERATIVE_P95_MS<=1
+COOPERATIVE_P99_MS<=2
+COOPERATIVE_OBSERVATION_GAPS=0
 
-PERFORMANCE_BUDGET=PASS
+TRANSPARENT_SHIM_IMPLEMENTATION_RETAINED=true
+TRANSPARENT_SHIM_CORRECTNESS_TESTS=PASS
+TRANSPARENT_IPC_SHIM=QUALIFIED_NOT_ADMITTED_PERFORMANCE
+TRANSPARENT_SHIM_PRODUCTION_ADMISSION=false
+TRANSPARENT_SHIM_20_25_RESULT=FAIL
+TRANSPARENT_SHIM_25_30_RESULT=FAIL
+TRANSPARENT_SHIM_FAILURE_EVIDENCE_PRESERVED=true
+
+TABBEACON_COOPERATIVE_PROOF=PASS
+TABBEACON_COOPERATIVE_PATH_REMAINS_POSSIBLE=true
+FULL_HOOKSTAT_PRODUCT_DEPENDENCIES_REQUIRED=false
+IPC_PROTOCOL_VERSION=1
+
+G35_ASYNC_DURABILITY_PRESERVED=true
+ACK_AFTER_WAL_APPEND=true
+WINDOWS_OVERLAPPED_CLIENT_PRESERVED=true
+
+COOPERATIVE_PERFORMANCE=PASS
 SECURITY_REVIEW=PASS
 CODE_CI=PASS
 
 FINAL_G36_SHIM_ARCHITECTURE=OPTIMIZED_ONE_PROCESS
 WARM_HOST_ADMISSION_POLICY=PASS_REVIEWED
-WARM_ADMITTED_RUNS=5/5
 G28_REFERENCE_WARM_P95_P99_MS=20/25
 V031_RELEASE_WARM_P95_P99_MS=25/30
 HOST_ADMISSION_P95_P99_MS=20/25
 FURTHER_AUTOMATIC_BUDGET_RELAXATION=false
+NO_THIRD_EVIDENCE_PATH=true
+NOT_ADMITTED_IS_EVIDENCE_PATH=false
 ```
 
 ## Estimated effort

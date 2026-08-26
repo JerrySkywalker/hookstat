@@ -49,6 +49,7 @@ const DEFAULT_MAX_WARM_WINDOW_ATTEMPTS: usize = 25;
 const DEFAULT_REJECT_RETRY_INTERVAL: Duration = Duration::from_secs(60);
 const ORACLE_ROOT_ENV: &str = "HOOKSTAT_G36_ORACLE_ROOT";
 const SHIPPING_SHIM_ENV: &str = "HOOKSTAT_G36_SHIPPING_SHIM";
+const COOPERATIVE_OUTPUT_ENV: &str = "HOOKSTAT_G36_COOPERATIVE_OUTPUT";
 const ORACLE_RECORD_BYTES: usize = 32;
 
 #[derive(Clone, Serialize)]
@@ -66,6 +67,27 @@ struct Series {
     run: usize,
     timing: Timing,
     observation_gaps: usize,
+}
+
+#[derive(Serialize)]
+struct CooperativeAcceptanceReceipt {
+    schema_version: u8,
+    run_kind: &'static str,
+    build_profile: &'static str,
+    source_git_head: String,
+    source_tracked_worktree_clean: bool,
+    qualifying_runs: usize,
+    samples_per_run: usize,
+    percentile_method: &'static str,
+    p95_limit_ms: f64,
+    p99_limit_ms: f64,
+    series: Vec<Series>,
+    worst_p95_ms: f64,
+    worst_p99_ms: f64,
+    observation_gaps: usize,
+    outcome: &'static str,
+    owner_live_codex_config_mutated: bool,
+    raw_private_content_captured: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -854,6 +876,70 @@ fn require_release_profile() {
 
 #[cfg(not(debug_assertions))]
 fn require_release_profile() {}
+
+#[test]
+#[ignore = "explicit release-profile cooperative IPC acceptance"]
+fn cooperative_ipc_meets_the_v031_production_budget() {
+    require_release_profile();
+    let (source_git_head, source_tracked_worktree_clean) = source_git_provenance();
+    assert!(
+        source_tracked_worktree_clean,
+        "qualification requires a tracked-clean source head"
+    );
+    let output = PathBuf::from(
+        std::env::var_os(COOPERATIVE_OUTPUT_ENV)
+            .expect("HOOKSTAT_G36_COOPERATIVE_OUTPUT is required"),
+    );
+    let temporary = tempfile::tempdir().unwrap();
+    let mut broker_config = BrokerConfig::for_state_root(temporary.path());
+    broker_config.ack_timeout = Duration::from_millis(100);
+    let host = BrokerHost::start(broker_config).unwrap();
+    let producer = CooperativeProducer::for_state_root(temporary.path()).unwrap();
+    wait_for_broker(&producer);
+
+    let mut series = Vec::with_capacity(QUALIFYING_RUNS);
+    for run in 1..=QUALIFYING_RUNS {
+        let (timing, observation_gaps) = emit_cooperative_run(&producer, run);
+        series.push(Series {
+            kind: "cooperative",
+            run,
+            timing,
+            observation_gaps,
+        });
+    }
+    host.stop();
+
+    let worst_p95_ms = worst(&series, "cooperative", |value| value.p95_ms);
+    let worst_p99_ms = worst(&series, "cooperative", |value| value.p99_ms);
+    let observation_gaps = series.iter().map(|value| value.observation_gaps).sum();
+    let passed = worst_p95_ms <= COOPERATIVE_P95_LIMIT_MS
+        && worst_p99_ms <= COOPERATIVE_P99_LIMIT_MS
+        && observation_gaps == 0
+        && series
+            .iter()
+            .all(|value| value.timing.samples == SAMPLES_PER_RUN);
+    let receipt = CooperativeAcceptanceReceipt {
+        schema_version: 1,
+        run_kind: "g36_v031_cooperative_ipc_acceptance",
+        build_profile: "release",
+        source_git_head,
+        source_tracked_worktree_clean,
+        qualifying_runs: QUALIFYING_RUNS,
+        samples_per_run: SAMPLES_PER_RUN,
+        percentile_method: "nearest_rank",
+        p95_limit_ms: COOPERATIVE_P95_LIMIT_MS,
+        p99_limit_ms: COOPERATIVE_P99_LIMIT_MS,
+        series,
+        worst_p95_ms,
+        worst_p99_ms,
+        observation_gaps,
+        outcome: if passed { "PASS" } else { "FAIL" },
+        owner_live_codex_config_mutated: false,
+        raw_private_content_captured: false,
+    };
+    write_json_once(&output, &receipt);
+    assert!(passed, "cooperative IPC did not satisfy the frozen budget");
+}
 
 #[test]
 #[ignore = "explicit release-artifact G36 performance qualification"]
