@@ -55,6 +55,7 @@ receipt's historical `outcome` field.
 | `runs/HS-G36-WARM-SHIM-ARCHITECTURE-DECISION-002/g36-performance-qualification-same-invocation-derived-001.json` | `FULL_ACCEPTANCE_PASS` | It is SHA-256-bound to the complete source receipt and changes only its reducer: the conservative build correction is the shipping worst-of-five p99 envelope minus the instrumented worst-of-five p99 envelope. A constant translation exactly translates every retained raw-oracle quantile. | Cooperative is 0.1733/0.3467 ms p95/p99, warm is 18.3269/20.5058 ms, cold p95 is 18.5793 ms, observation gaps are zero, and induced timeouts are zero. |
 | `runs/HS-G36-WINDOWS-PERFORMANCE-RCA-001/g36-full-acceptance-08f83bc-fail.json` | `FULL_ACCEPTANCE_FAIL` | Clean exact source head `08f83bc...`, ordinary and instrumented release-artifact hashes, five independent 100-sample populations, and the accepted same-invocation reducer are recorded. | Cooperative is 0.1357/0.2187 ms p95/p99, cold p95 is 20.5353 ms, and induced timeouts are zero. Warm is 32.6951/245.2032 ms and therefore fails the frozen contract. Four warm populations remain close to the gate while one retains a large fresh-process scheduling tail; the one-process candidate lacks repeatable acceptance margin. |
 | `runs/HS-G36-WARM-SHIM-ARCHITECTURE-DECISION-002/g36-idle-helper-frontend-floor-001.json` | `DIAGNOSTIC_ONLY` | A package-excluded bounded prototype sends only one fixed eight-byte request and response; it has no capsule, handler, containment, evidence, or cold-fallback semantics and explicitly denies acceptance status. | Its 179-KB fresh frontend plus one local helper exchange is 325.5800/451.8487 ms p95/p99 over 500 cache-warmed samples in the observed environment. The helper option cannot improve this strict floor by adding required semantics. |
+| `runs/HS-G36-WARM-HOST-ADMISSION-AND-LANDING-003/g36-host-admitted-qualification-1012a81-001-window-*.json` | `INVALIDATED_BY_BUILD_PROFILE` | The immutable window receipts retain eight raw `REJECTED_HOST_SUBSTRATE` dispositions and one raw `FAIL_FROZEN_BUDGET` disposition. The session's instrumented build was `9.9580 ms` faster than shipping under the complete-envelope reducer, exceeding the pre-existing `2.0 ms` build-comparability stop. The comparator ran before, and outside, the later passing-control window, so its cross-regime correction cannot establish a shipping-binary product tail. | Window 9's controls pass at 12.0442/14.6764 ms pre and 13.3663/15.1660 ms post. Its raw same-invocation oracle is 17.5643/21.0011 ms; adding the invalid 9.9580-ms cross-regime correction produces the receipt's preserved raw 27.5223/30.9591-ms failure disposition. This session proves neither product PASS nor product FAIL for release acceptance and is not relabelled as host rejection. |
 
 The current `FULL_ACCEPTANCE_PASS` is the deterministic reduction of one
 complete release qualification, not a rerun or selected subset.  The two
@@ -75,9 +76,12 @@ predefined control limits are p95 `20 ms` and p99 `25 ms`.
 
 Both controls must pass to admit the product series. A control failure produces
 `REJECTED_HOST_SUBSTRATE`, not product PASS or FAIL. If both pass, the
-same-invocation product metric is evaluated unadjusted against the frozen
-`20/25`-ms limits. No host-control subtraction or post-hoc threshold is
-permitted, and five independently admitted passing warm runs are required.
+same-invocation product metric is evaluated against the frozen `20/25`-ms
+limits. No host-control subtraction or post-hoc threshold is permitted, and
+five independently admitted passing warm runs are required. The already-frozen
+instrumented-versus-shipping comparability stop remains independent: a
+materially faster instrumented build invalidates the product metric rather than
+proving either release PASS or FAIL.
 
 The exact `08f83bc...` receipt and every earlier G36 receipt predate this
 prospective envelope. None contains the predefined contemporaneous pre and

@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "run_kind": "g36_warm_host_admission_window",
+  "source_git_head": "1012a812695e198f72707e6c933e8e9a4dc94089",
+  "control_methodology": "g28_cache_warmed_minimal_shim_process_start_pre_and_post_v1",
+  "control_fixture": "hookstat-hook-fixture",
+  "control_samples": 100,
+  "control_warmups_per_timed_sample": 25,
+  "percentile_method": "nearest_rank",
+  "control_p95_limit_ms": 20.0,
+  "control_p99_limit_ms": 25.0,
+  "product_p95_limit_ms": 20.0,
+  "product_p99_limit_ms": 25.0,
+  "startup_tail_bias_correction_ms": 9.957999999999998,
+  "window": {
+    "attempt": 7,
+    "pre_control": {
+      "samples": 100,
+      "p50_ms": 73.3476,
+      "p95_ms": 83.2173,
+      "p99_ms": 87.2175,
+      "max_ms": 91.2726
+    },
+    "raw_candidate": {
+      "samples": 100,
+      "p50_ms": 103.1678,
+      "p95_ms": 128.6297,
+      "p99_ms": 147.8187,
+      "max_ms": 171.0157
+    },
+    "candidate": {
+      "samples": 100,
+      "p50_ms": 113.1258,
+      "p95_ms": 138.5877,
+      "p99_ms": 157.7767,
+      "max_ms": 180.9737
+    },
+    "candidate_hookstat_induced_timeouts": 0,
+    "candidate_unexpected_terminal_results": 0,
+    "post_control": {
+      "samples": 100,
+      "p50_ms": 73.0913,
+      "p95_ms": 87.5102,
+      "p99_ms": 100.5805,
+      "max_ms": 106.38789999999999
+    },
+    "disposition": "REJECTED_HOST_SUBSTRATE"
+  },
+  "owner_live_codex_config_mutated": false,
+  "raw_private_content_captured": false
+}
