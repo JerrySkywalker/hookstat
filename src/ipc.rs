@@ -22,15 +22,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub use crate::ipc_client::{
-    BrokerAcknowledgement, BrokerStartup, Completion, ExitClassification, IpcClient, IpcFrame,
-    LifecycleFrame, LocalEndpoint, TerminalOutcome,
+    BROKER_DIAGNOSTICS_SCHEMA_VERSION, IPC_MAGIC, IPC_PROTOCOL_VERSION, IpcError,
+    MAX_IPC_FRAME_BYTES, MAX_IPC_REFERENCE_BYTES, RECENT_DIAGNOSTIC_SAMPLE_CAPACITY,
+};
+pub use crate::ipc_client::{
+    BrokerAcknowledgement, BrokerDiagnostics, BrokerStartup, Completion, ExitClassification,
+    IpcClient, IpcFrame, LifecycleFrame, LocalEndpoint, TerminalOutcome,
 };
 #[cfg(feature = "performance-harness")]
 pub(crate) use crate::ipc_client::{
     CooperativeProducer, QualificationClientStageSample, QualificationSendFailure,
-};
-pub use crate::ipc_client::{
-    IPC_MAGIC, IPC_PROTOCOL_VERSION, IpcError, MAX_IPC_FRAME_BYTES, MAX_IPC_REFERENCE_BYTES,
 };
 
 pub const WAL_MAGIC: [u8; 4] = *b"HSWL";
@@ -55,6 +56,9 @@ fn canonical(frame: &IpcFrame) -> Result<CanonicalEvidence, IpcError> {
             completion,
         } => (lifecycle, EvidenceLifecycle::Completed, Some(completion)),
         IpcFrame::Ack(_) => return Err(IpcError::Invalid("acknowledgement_is_not_evidence")),
+        IpcFrame::BrokerDiagnosticsRequest | IpcFrame::BrokerDiagnosticsResponse(_) => {
+            return Err(IpcError::Invalid("control_frame_is_not_evidence"));
+        }
     };
     lifecycle.validate()?;
     let (terminal_status, duration_ms, invocation_coverage) = match (lifecycle_state, completion) {
@@ -435,6 +439,7 @@ pub struct BrokerHealth {
 }
 
 struct HealthCounters {
+    started_at: Instant,
     accepted: AtomicU64,
     rejected: AtomicU64,
     dropped: AtomicU64,
@@ -447,6 +452,8 @@ struct HealthCounters {
     durability_requests_coalesced: AtomicU64,
     group_flushes: AtomicU64,
     durability_failures: AtomicU64,
+    last_group_flush_completed_ns: AtomicU64,
+    last_group_flush_duration_ns: AtomicU64,
 }
 
 impl HealthCounters {
@@ -468,6 +475,61 @@ impl HealthCounters {
             durability_failures: self.durability_failures.load(Ordering::Relaxed),
         }
     }
+}
+
+struct RecentDurations {
+    cursor: AtomicU64,
+    values_ns: [AtomicU64; RECENT_DIAGNOSTIC_SAMPLE_CAPACITY as usize],
+}
+
+impl RecentDurations {
+    fn new() -> Self {
+        Self {
+            cursor: AtomicU64::new(0),
+            values_ns: std::array::from_fn(|_| AtomicU64::new(0)),
+        }
+    }
+
+    fn record(&self, duration: Duration) {
+        let sequence = self.cursor.fetch_add(1, Ordering::AcqRel);
+        let index = (sequence % RECENT_DIAGNOSTIC_SAMPLE_CAPACITY) as usize;
+        self.values_ns[index].store(duration_nanos(duration).max(1), Ordering::Release);
+    }
+
+    fn percentiles_us(&self) -> (u64, u64, u64, u64) {
+        let observed = self.cursor.load(Ordering::Acquire);
+        let expected = observed.min(RECENT_DIAGNOSTIC_SAMPLE_CAPACITY) as usize;
+        let mut values = Vec::with_capacity(expected);
+        let range = if observed <= RECENT_DIAGNOSTIC_SAMPLE_CAPACITY {
+            0..expected
+        } else {
+            0..RECENT_DIAGNOSTIC_SAMPLE_CAPACITY as usize
+        };
+        for index in range {
+            let value = self.values_ns[index].load(Ordering::Acquire);
+            if value != 0 {
+                values.push(value);
+            }
+        }
+        values.sort_unstable();
+        let percentile_us = |percent: usize| -> u64 {
+            if values.is_empty() {
+                return 0;
+            }
+            let rank = (values.len() * percent).div_ceil(100).max(1);
+            values[rank - 1].div_ceil(1_000)
+        };
+        (
+            values.len() as u64,
+            percentile_us(50),
+            percentile_us(95),
+            percentile_us(99),
+        )
+    }
+}
+
+fn duration_nanos(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -755,7 +817,6 @@ impl QualificationRequestTiming {
 struct QueuedFrame {
     frame: IpcFrame,
     acknowledgement: mpsc::SyncSender<BrokerAcknowledgement>,
-    #[cfg(feature = "performance-harness")]
     enqueued_at: Instant,
     #[cfg(feature = "performance-harness")]
     timing: Option<Arc<QualificationRequestTiming>>,
@@ -768,18 +829,61 @@ struct BrokerCore {
     ack_timeout: Duration,
     health: Arc<HealthCounters>,
     last_activity: Mutex<Instant>,
+    recent_ipc_latency: RecentDurations,
+    recent_queue_wait: RecentDurations,
     #[cfg(feature = "performance-harness")]
     qualification_stage_collector: Option<Arc<QualificationStageCollector>>,
 }
 
 impl BrokerCore {
+    fn diagnostics(&self) -> BrokerDiagnostics {
+        let health = self.health.snapshot();
+        let (samples, latency_p50_us, latency_p95_us, latency_p99_us) =
+            self.recent_ipc_latency.percentiles_us();
+        let (_, _, queue_wait_p95_us, _) = self.recent_queue_wait.percentiles_us();
+        let now_ns = duration_nanos(self.health.started_at.elapsed());
+        let last_flush_completed_ns = self
+            .health
+            .last_group_flush_completed_ns
+            .load(Ordering::Acquire);
+        let last_flush_duration_ns = self
+            .health
+            .last_group_flush_duration_ns
+            .load(Ordering::Acquire);
+        BrokerDiagnostics {
+            schema_version: BROKER_DIAGNOSTICS_SCHEMA_VERSION,
+            accepted: health.accepted,
+            rejected: health.rejected,
+            dropped: health.dropped,
+            malformed: health.malformed,
+            replayed: health.replayed,
+            duplicates: health.duplicates,
+            ack_timeouts: health.ack_timeouts,
+            queue_depth: self.queue_depth.load(Ordering::Acquire) as u64,
+            active_connections: self.active_connections.load(Ordering::Acquire) as u64,
+            queue_high_water: health.queue_high_water,
+            durability_requests: health.durability_requests,
+            durability_requests_coalesced: health.durability_requests_coalesced,
+            group_flushes: health.group_flushes,
+            durability_failures: health.durability_failures,
+            recent_ipc_latency_samples: samples,
+            recent_ipc_latency_p50_us: latency_p50_us,
+            recent_ipc_latency_p95_us: latency_p95_us,
+            recent_ipc_latency_p99_us: latency_p99_us,
+            recent_queue_wait_p95_us: queue_wait_p95_us,
+            wal_flush_lag_ms: (last_flush_completed_ns != 0)
+                .then(|| now_ns.saturating_sub(last_flush_completed_ns) / 1_000_000),
+            last_wal_flush_duration_us: (last_flush_duration_ns != 0)
+                .then(|| last_flush_duration_ns.div_ceil(1_000)),
+        }
+    }
+
     #[cfg(not(feature = "performance-harness"))]
     fn submit(&self, frame: IpcFrame) -> BrokerAcknowledgement {
         let (acknowledgement, receiver) = mpsc::sync_channel(1);
         let queued = QueuedFrame {
             frame,
             acknowledgement,
-            #[cfg(feature = "performance-harness")]
             enqueued_at: Instant::now(),
         };
         // Increment before publishing to the worker: an immediate consumer
@@ -982,6 +1086,7 @@ impl BrokerHost {
         let listener = endpoint.bind()?;
         let (queue_sender, queue_receiver) = mpsc::sync_channel(config.queue_capacity);
         let health = Arc::new(HealthCounters {
+            started_at: Instant::now(),
             accepted: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
@@ -994,6 +1099,8 @@ impl BrokerHost {
             durability_requests_coalesced: AtomicU64::new(0),
             group_flushes: AtomicU64::new(0),
             durability_failures: AtomicU64::new(0),
+            last_group_flush_completed_ns: AtomicU64::new(0),
+            last_group_flush_duration_ns: AtomicU64::new(0),
         });
         let core = Arc::new(BrokerCore {
             queue: queue_sender,
@@ -1002,6 +1109,8 @@ impl BrokerHost {
             ack_timeout: config.ack_timeout,
             health: Arc::clone(&health),
             last_activity: Mutex::new(Instant::now()),
+            recent_ipc_latency: RecentDurations::new(),
+            recent_queue_wait: RecentDurations::new(),
             #[cfg(feature = "performance-harness")]
             qualification_stage_collector: qualification_stage_collector.clone(),
         });
@@ -1174,9 +1283,10 @@ fn wal_worker_loop(
         let worker_available_at = Instant::now();
         match receiver.recv_timeout(Duration::from_millis(2)) {
             Ok(queued) => {
-                #[cfg(feature = "performance-harness")]
                 let dequeued_at = Instant::now();
                 let _depth_at_dequeue = core.queue_depth.fetch_sub(1, Ordering::Relaxed);
+                core.recent_queue_wait
+                    .record(dequeued_at.saturating_duration_since(queued.enqueued_at));
                 #[cfg(feature = "performance-harness")]
                 if let Some(timing) = &queued.timing {
                     QualificationRequestTiming::store(
@@ -1318,7 +1428,6 @@ fn durability_worker_loop(
     #[cfg(test)] test_group_sync: Option<Arc<TestGroupSync>>,
 ) {
     while let Some(through_generation) = durability.next_request() {
-        #[cfg(feature = "performance-harness")]
         let sync_started = Instant::now();
         #[cfg(feature = "performance-harness")]
         if let Some(collector) = &qualification_stage_collector {
@@ -1337,6 +1446,14 @@ fn durability_worker_loop(
         }
         match result {
             Ok(()) => {
+                health.last_group_flush_duration_ns.store(
+                    duration_nanos(sync_started.elapsed()).max(1),
+                    Ordering::Release,
+                );
+                health.last_group_flush_completed_ns.store(
+                    duration_nanos(health.started_at.elapsed()).max(1),
+                    Ordering::Release,
+                );
                 #[cfg(test)]
                 if let Some(sync) = &test_group_sync {
                     sync.mark_completed();
@@ -1437,6 +1554,7 @@ fn connection_loop(
         let read_started = stage_collector.as_ref().map(|_| Instant::now());
         match read_frame_bounded(&mut stream, CONNECTION_IDLE_READ_WINDOW) {
             Ok(frame) if frame.is_lifecycle() => {
+                let handling_started = Instant::now();
                 #[cfg(feature = "performance-harness")]
                 let timing = stage_collector
                     .as_ref()
@@ -1467,6 +1585,7 @@ fn connection_loop(
                     &IpcFrame::Ack(acknowledgement),
                     Duration::from_millis(5),
                 );
+                core.recent_ipc_latency.record(handling_started.elapsed());
                 #[cfg(feature = "performance-harness")]
                 if let (Some(collector), Some(timing), Some(acknowledgement_write_started)) = (
                     stage_collector.as_ref(),
@@ -1479,6 +1598,15 @@ fn connection_loop(
                     );
                     collector.record(timing.sample());
                 }
+            }
+            Ok(IpcFrame::BrokerDiagnosticsRequest) => {
+                core.touch();
+                let response = core.diagnostics();
+                let _ = write_frame_bounded(
+                    &mut stream,
+                    &IpcFrame::BrokerDiagnosticsResponse(response),
+                    Duration::from_millis(5),
+                );
             }
             Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::TimedOut => {
                 // The producer never reuses an acknowledged connection past
@@ -2182,6 +2310,7 @@ mod tests {
     fn queue_overload_is_bounded_and_visible_without_false_acknowledgement() {
         let (sender, _receiver) = mpsc::sync_channel(1);
         let health = Arc::new(HealthCounters {
+            started_at: Instant::now(),
             accepted: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
@@ -2194,6 +2323,8 @@ mod tests {
             durability_requests_coalesced: AtomicU64::new(0),
             group_flushes: AtomicU64::new(0),
             durability_failures: AtomicU64::new(0),
+            last_group_flush_completed_ns: AtomicU64::new(0),
+            last_group_flush_duration_ns: AtomicU64::new(0),
         });
         let broker = BrokerCore {
             queue: sender,
@@ -2202,6 +2333,8 @@ mod tests {
             ack_timeout: Duration::from_millis(1),
             health: Arc::clone(&health),
             last_activity: Mutex::new(Instant::now()),
+            recent_ipc_latency: RecentDurations::new(),
+            recent_queue_wait: RecentDurations::new(),
             #[cfg(feature = "performance-harness")]
             qualification_stage_collector: None,
         };

@@ -27,6 +27,8 @@ pub const IPC_PROTOCOL_VERSION: u8 = 1;
 pub const IPC_MAGIC: [u8; 4] = *b"HSIP";
 pub const MAX_IPC_FRAME_BYTES: usize = 1024;
 pub const MAX_IPC_REFERENCE_BYTES: usize = 128;
+pub const BROKER_DIAGNOSTICS_SCHEMA_VERSION: u8 = 1;
+pub const RECENT_DIAGNOSTIC_SAMPLE_CAPACITY: u64 = 128;
 
 const FRAME_HEADER_BYTES: usize = 10;
 // The broker releases an idle server-side connection after a 50 ms bounded
@@ -209,6 +211,8 @@ pub enum IpcFrame {
         completion: Completion,
     },
     Ack(BrokerAcknowledgement),
+    BrokerDiagnosticsRequest,
+    BrokerDiagnosticsResponse(BrokerDiagnostics),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -232,6 +236,112 @@ impl BrokerAcknowledgement {
     }
 }
 
+/// Bounded numeric broker self-observability returned only to an explicit
+/// local diagnostics query. This control-plane snapshot is never a lifecycle
+/// evidence frame and contains no runtime, handler, command, path, payload, or
+/// stream content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct BrokerDiagnostics {
+    pub schema_version: u8,
+    pub accepted: u64,
+    pub rejected: u64,
+    pub dropped: u64,
+    pub malformed: u64,
+    pub replayed: u64,
+    pub duplicates: u64,
+    pub ack_timeouts: u64,
+    pub queue_depth: u64,
+    pub active_connections: u64,
+    pub queue_high_water: u64,
+    pub durability_requests: u64,
+    pub durability_requests_coalesced: u64,
+    pub group_flushes: u64,
+    pub durability_failures: u64,
+    pub recent_ipc_latency_samples: u64,
+    pub recent_ipc_latency_p50_us: u64,
+    pub recent_ipc_latency_p95_us: u64,
+    pub recent_ipc_latency_p99_us: u64,
+    pub recent_queue_wait_p95_us: u64,
+    pub wal_flush_lag_ms: Option<u64>,
+    pub last_wal_flush_duration_us: Option<u64>,
+}
+
+impl BrokerDiagnostics {
+    pub fn validate(&self) -> Result<(), IpcError> {
+        if self.schema_version != BROKER_DIAGNOSTICS_SCHEMA_VERSION
+            || self.queue_depth > 16_384
+            || self.active_connections > 128
+            || self.queue_high_water > 16_384
+            || self.recent_ipc_latency_samples > RECENT_DIAGNOSTIC_SAMPLE_CAPACITY
+            || self.recent_ipc_latency_p50_us > self.recent_ipc_latency_p95_us
+            || self.recent_ipc_latency_p95_us > self.recent_ipc_latency_p99_us
+        {
+            return Err(IpcError::Invalid("broker_diagnostics"));
+        }
+        Ok(())
+    }
+
+    fn encode_into(&self, output: &mut Vec<u8>) -> Result<(), IpcError> {
+        self.validate()?;
+        output.push(self.schema_version);
+        for value in [
+            self.accepted,
+            self.rejected,
+            self.dropped,
+            self.malformed,
+            self.replayed,
+            self.duplicates,
+            self.ack_timeouts,
+            self.queue_depth,
+            self.active_connections,
+            self.queue_high_water,
+            self.durability_requests,
+            self.durability_requests_coalesced,
+            self.group_flushes,
+            self.durability_failures,
+            self.recent_ipc_latency_samples,
+            self.recent_ipc_latency_p50_us,
+            self.recent_ipc_latency_p95_us,
+            self.recent_ipc_latency_p99_us,
+            self.recent_queue_wait_p95_us,
+        ] {
+            output.extend_from_slice(&value.to_le_bytes());
+        }
+        encode_optional_u64(output, self.wal_flush_lag_ms);
+        encode_optional_u64(output, self.last_wal_flush_duration_us);
+        Ok(())
+    }
+
+    fn decode_from(input: &mut Cursor<'_>) -> Result<Self, IpcError> {
+        let value = Self {
+            schema_version: input.u8()?,
+            accepted: input.u64()?,
+            rejected: input.u64()?,
+            dropped: input.u64()?,
+            malformed: input.u64()?,
+            replayed: input.u64()?,
+            duplicates: input.u64()?,
+            ack_timeouts: input.u64()?,
+            queue_depth: input.u64()?,
+            active_connections: input.u64()?,
+            queue_high_water: input.u64()?,
+            durability_requests: input.u64()?,
+            durability_requests_coalesced: input.u64()?,
+            group_flushes: input.u64()?,
+            durability_failures: input.u64()?,
+            recent_ipc_latency_samples: input.u64()?,
+            recent_ipc_latency_p50_us: input.u64()?,
+            recent_ipc_latency_p95_us: input.u64()?,
+            recent_ipc_latency_p99_us: input.u64()?,
+            recent_queue_wait_p95_us: input.u64()?,
+            wal_flush_lag_ms: input.optional_u64("wal_flush_lag_ms")?,
+            last_wal_flush_duration_us: input.optional_u64("last_wal_flush_duration_us")?,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+}
+
 impl IpcFrame {
     pub fn encode(&self) -> Result<Vec<u8>, IpcError> {
         let mut payload = Vec::with_capacity(256);
@@ -251,6 +361,11 @@ impl IpcFrame {
             Self::Ack(value) => {
                 payload.push(*value as u8);
                 3_u8
+            }
+            Self::BrokerDiagnosticsRequest => 4_u8,
+            Self::BrokerDiagnosticsResponse(value) => {
+                value.encode_into(&mut payload)?;
+                5_u8
             }
         };
         if payload.len() > MAX_IPC_FRAME_BYTES - FRAME_HEADER_BYTES
@@ -298,6 +413,8 @@ impl IpcFrame {
                 completion: Completion::decode_from(&mut cursor)?,
             },
             3 => Self::Ack(BrokerAcknowledgement::decode(cursor.u8()?)?),
+            4 => Self::BrokerDiagnosticsRequest,
+            5 => Self::BrokerDiagnosticsResponse(BrokerDiagnostics::decode_from(&mut cursor)?),
             _ => return Err(IpcError::Invalid("frame_type")),
         };
         if !cursor.is_empty() {
@@ -890,6 +1007,33 @@ impl IpcClient {
         }
     }
 
+    /// Requests one sanitized numeric broker snapshot over the existing local
+    /// HSIP control plane. It does not enqueue, append, acknowledge, replay, or
+    /// otherwise create evidence.
+    pub fn diagnostics(&mut self) -> Result<BrokerDiagnostics, IpcError> {
+        let deadline = Instant::now() + self.timeout;
+        let request = IpcFrame::BrokerDiagnosticsRequest;
+        #[cfg(unix)]
+        write_frame_until(&mut self.stream, &request, deadline)?;
+        #[cfg(windows)]
+        self.runtime.block_on(write_frame_bounded_tokio(
+            &mut self.stream,
+            &request,
+            deadline.saturating_duration_since(Instant::now()),
+        ))?;
+        #[cfg(unix)]
+        let response = read_frame_until(&mut self.stream, deadline)?;
+        #[cfg(windows)]
+        let response = self.runtime.block_on(read_frame_bounded_tokio(
+            &mut self.stream,
+            deadline.saturating_duration_since(Instant::now()),
+        ))?;
+        match response {
+            IpcFrame::BrokerDiagnosticsResponse(value) => Ok(value),
+            _ => Err(IpcError::Invalid("broker_diagnostics_response")),
+        }
+    }
+
     #[cfg(feature = "performance-harness")]
     pub(crate) fn send_for_qualification(
         &mut self,
@@ -1470,6 +1614,15 @@ fn encode_reference(output: &mut Vec<u8>, value: &str) -> Result<(), IpcError> {
     output.extend_from_slice(value.as_bytes());
     Ok(())
 }
+fn encode_optional_u64(output: &mut Vec<u8>, value: Option<u64>) {
+    match value {
+        Some(value) => {
+            output.push(1);
+            output.extend_from_slice(&value.to_le_bytes());
+        }
+        None => output.push(0),
+    }
+}
 struct Cursor<'a> {
     input: &'a [u8],
     offset: usize,
@@ -1507,6 +1660,13 @@ impl<'a> Cursor<'a> {
         Ok(u64::from_le_bytes(
             self.bytes(8)?.try_into().map_err(|_| IpcError::Truncated)?,
         ))
+    }
+    fn optional_u64(&mut self, field: &'static str) -> Result<Option<u64>, IpcError> {
+        match self.u8()? {
+            0 => Ok(None),
+            1 => Ok(Some(self.u64()?)),
+            _ => Err(IpcError::Invalid(field)),
+        }
     }
     fn reference(&mut self, field: &'static str) -> Result<String, IpcError> {
         let length = self.u8()? as usize;
@@ -1568,6 +1728,57 @@ mod tests {
         assert!(encoded.starts_with(&IPC_MAGIC));
         assert_eq!(encoded[4], IPC_PROTOCOL_VERSION);
         assert_eq!(IpcFrame::decode(&encoded).unwrap(), frame);
+    }
+
+    #[test]
+    fn broker_diagnostics_control_frames_are_bounded_numeric_and_not_evidence() {
+        let diagnostics = BrokerDiagnostics {
+            schema_version: BROKER_DIAGNOSTICS_SCHEMA_VERSION,
+            accepted: 10,
+            rejected: 1,
+            dropped: 2,
+            malformed: 3,
+            replayed: 4,
+            duplicates: 5,
+            ack_timeouts: 6,
+            queue_depth: 7,
+            active_connections: 8,
+            queue_high_water: 9,
+            durability_requests: 10,
+            durability_requests_coalesced: 11,
+            group_flushes: 12,
+            durability_failures: 0,
+            recent_ipc_latency_samples: 13,
+            recent_ipc_latency_p50_us: 14,
+            recent_ipc_latency_p95_us: 15,
+            recent_ipc_latency_p99_us: 16,
+            recent_queue_wait_p95_us: 17,
+            wal_flush_lag_ms: Some(18),
+            last_wal_flush_duration_us: Some(19),
+        };
+        for frame in [
+            IpcFrame::BrokerDiagnosticsRequest,
+            IpcFrame::BrokerDiagnosticsResponse(diagnostics),
+        ] {
+            let encoded = frame.encode().unwrap();
+            assert!(encoded.len() <= MAX_IPC_FRAME_BYTES);
+            assert_eq!(IpcFrame::decode(&encoded).unwrap(), frame);
+            assert!(!frame.is_lifecycle());
+        }
+        let serialized = serde_json::to_string(&diagnostics).unwrap();
+        for forbidden in [
+            "runtime",
+            "handler",
+            "command",
+            "path",
+            "prompt",
+            "payload",
+            "stdout",
+            "stderr",
+            "credential",
+        ] {
+            assert!(!serialized.contains(forbidden));
+        }
     }
     #[test]
     fn malformed_and_private_values_are_rejected_or_absent() {

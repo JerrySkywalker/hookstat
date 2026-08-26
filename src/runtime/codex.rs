@@ -18,7 +18,7 @@ use crate::native::{
     CapabilityAssessment, NativeCapabilityMatrix, NativeCapabilityProbe, NativeEvidenceReader,
     NativeNormalizer, RuntimeIdentityResolver,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -56,7 +56,8 @@ impl CodexHostPlatform {
 /// `codex` process. This is separate from Native L1 protocol qualification:
 /// observing lifecycle fields in a controlled App Server does not prove that
 /// an external observer can attach to an ordinary session.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CodexNativeL2Status {
     Admitted,
     UpstreamUnavailable,

@@ -4,10 +4,19 @@
 //! evidence timestamps. It never retains configuration paths, hook commands,
 //! receipt payloads, process output, credentials, or session content.
 
+use crate::admission::{
+    IpcAdmissionState, V031_COOPERATIVE_IPC_ADMISSION, V031_TRANSPARENT_SHIM_ADMISSION,
+};
 use crate::codex::{self, EffectiveDiscoverySummary, InstrumentationDisposition};
 use crate::domain::{EvidenceCoverage, Runtime};
+use crate::evidence::{DomainAuthority, DomainAuthoritySelection, NativeAdmissionState};
+use crate::ipc::{BrokerDiagnostics, IpcClient, IpcError, LocalEndpoint};
 use crate::ledger::Ledger;
 use crate::receipt::{ReceiptScan, ReceiptSpool};
+use crate::runtime::codex::{
+    CODEX_TESTED_CLI_VERSION, CodexHostPlatform, CodexNativeCapabilityProbe, CodexNativeL2Status,
+    CodexProtocolVersion,
+};
 use serde::Serialize;
 #[cfg(windows)]
 use std::ffi::{OsStr, OsString};
@@ -17,7 +26,9 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-pub const DIAGNOSTICS_SCHEMA_VERSION: u8 = 1;
+pub const DIAGNOSTICS_SCHEMA_VERSION: u8 = 2;
+pub const MAX_DIAGNOSTIC_AUTHORITY_DOMAINS: usize = 128;
+const BROKER_DIAGNOSTIC_QUERY_TIMEOUT: Duration = Duration::from_millis(20);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -95,12 +106,55 @@ pub struct DiagnosticCheck {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct AuthorityDomainDiagnostic {
+    pub runtime: String,
+    pub event: String,
+    pub source_scope: String,
+    pub native_admission: NativeAdmissionState,
+    pub ipc_admission: IpcAdmissionState,
+    pub selected_authority: DomainAuthoritySelection,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProductionEvidenceDiagnostics {
+    pub runtime: Runtime,
+    pub native_l2_status: CodexNativeL2Status,
+    pub native_admission: NativeAdmissionState,
+    pub cooperative_ipc_admission: IpcAdmissionState,
+    pub transparent_shim_admission: IpcAdmissionState,
+    pub transparent_shim_active: bool,
+    pub default_authority: DomainAuthoritySelection,
+    pub evidence_transport_count: u8,
+    pub third_transport_present: bool,
+    pub shadow_in_denominator: bool,
+    pub domains: Vec<AuthorityDomainDiagnostic>,
+    pub domains_truncated: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrokerDiagnosticState {
+    Absent,
+    Running,
+    Unavailable,
+    UnsafeState,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct BrokerDiagnosticsReport {
+    pub state: BrokerDiagnosticState,
+    pub metrics: Option<BrokerDiagnostics>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DiagnosticsReport {
     pub schema_version: u8,
     pub read_only: bool,
     pub generated_at_unix_ms: i64,
     pub overall_status: DiagnosticStatus,
     pub checks: Vec<DiagnosticCheck>,
+    pub production_evidence: ProductionEvidenceDiagnostics,
+    pub broker: BrokerDiagnosticsReport,
 }
 
 impl DiagnosticsReport {
@@ -111,6 +165,14 @@ impl DiagnosticsReport {
             generated_at_unix_ms: now_unix_ms,
             overall_status: DiagnosticStatus::Unknown,
             checks: Vec::new(),
+            production_evidence: production_evidence_diagnostics(
+                CodexNativeL2Status::NotQualified,
+                &[],
+            ),
+            broker: BrokerDiagnosticsReport {
+                state: BrokerDiagnosticState::Absent,
+                metrics: None,
+            },
         }
     }
 }
@@ -118,6 +180,18 @@ impl DiagnosticsReport {
 /// Collects the supported diagnostic checks without creating, repairing, or
 /// changing HookStat, Codex, receipt, or trust state.
 pub fn collect(data_root: &Path, now_unix_ms: i64) -> DiagnosticsReport {
+    collect_with_authorities(data_root, now_unix_ms, &[])
+}
+
+/// Controlled integrations may supply their already-governed authority table
+/// so diagnostics can report the exact selected authority per bounded domain.
+/// The default CLI passes no table and truthfully exposes the NOT_ADMITTED
+/// fallback instead of inferring integration from a handler declaration.
+pub fn collect_with_authorities(
+    data_root: &Path,
+    now_unix_ms: i64,
+    authorities: &[DomainAuthority],
+) -> DiagnosticsReport {
     let mut checks = vec![DiagnosticCheck {
         id: DiagnosticCheckId::HookStatBinary,
         status: DiagnosticStatus::Pass,
@@ -126,7 +200,8 @@ pub fn collect(data_root: &Path, now_unix_ms: i64) -> DiagnosticsReport {
         }],
     }];
 
-    checks.push(codex_binary_check());
+    let codex_version = codex_version();
+    checks.push(codex_binary_check_from(&codex_version));
 
     let static_discovery = codex::discover_default().ok().map(|value| value.summary);
     let effective_discovery = std::env::current_dir()
@@ -195,19 +270,22 @@ pub fn collect(data_root: &Path, now_unix_ms: i64) -> DiagnosticsReport {
         generated_at_unix_ms: now_unix_ms,
         overall_status,
         checks,
+        production_evidence: production_evidence_diagnostics(
+            native_l2_status(&codex_version),
+            authorities,
+        ),
+        broker: broker_diagnostics_report(data_root),
     }
 }
 
-fn codex_binary_check() -> DiagnosticCheck {
-    codex_binary_check_from(codex_version())
-}
-
-fn codex_binary_check_from(version: CodexVersion) -> DiagnosticCheck {
+fn codex_binary_check_from(version: &CodexVersion) -> DiagnosticCheck {
     match version {
         CodexVersion::Present(value) => DiagnosticCheck {
             id: DiagnosticCheckId::CodexBinary,
             status: DiagnosticStatus::Pass,
-            facts: vec![DiagnosticFact::Version { value }],
+            facts: vec![DiagnosticFact::Version {
+                value: value.clone(),
+            }],
         },
         CodexVersion::Missing => DiagnosticCheck {
             id: DiagnosticCheckId::CodexBinary,
@@ -225,6 +303,96 @@ fn codex_binary_check_from(version: CodexVersion) -> DiagnosticCheck {
                 facts: Vec::new(),
             }
         }
+    }
+}
+
+fn native_l2_status(version: &CodexVersion) -> CodexNativeL2Status {
+    match version {
+        CodexVersion::Present(value) if value == CODEX_TESTED_CLI_VERSION => {
+            CodexNativeCapabilityProbe.ordinary_session_attach(
+                &CodexProtocolVersion::tested(),
+                CodexHostPlatform::current(),
+            )
+        }
+        _ => CodexNativeL2Status::NotQualified,
+    }
+}
+
+fn production_evidence_diagnostics(
+    native_l2_status: CodexNativeL2Status,
+    authorities: &[DomainAuthority],
+) -> ProductionEvidenceDiagnostics {
+    let domains = authorities
+        .iter()
+        .take(MAX_DIAGNOSTIC_AUTHORITY_DOMAINS)
+        .map(|authority| AuthorityDomainDiagnostic {
+            runtime: authority.domain.runtime.as_str().to_owned(),
+            event: authority.domain.event.as_str().to_owned(),
+            source_scope: authority.domain.source_scope.as_str().to_owned(),
+            native_admission: authority.native_admission,
+            ipc_admission: authority.ipc_admission,
+            selected_authority: authority.production_authority(),
+        })
+        .collect();
+    ProductionEvidenceDiagnostics {
+        runtime: Runtime::Codex,
+        native_l2_status,
+        native_admission: native_l2_status.native_admission(),
+        cooperative_ipc_admission: V031_COOPERATIVE_IPC_ADMISSION.state,
+        transparent_shim_admission: V031_TRANSPARENT_SHIM_ADMISSION.state,
+        transparent_shim_active: false,
+        default_authority: DomainAuthoritySelection::NotAdmitted,
+        evidence_transport_count: 2,
+        third_transport_present: false,
+        shadow_in_denominator: false,
+        domains,
+        domains_truncated: authorities.len() > MAX_DIAGNOSTIC_AUTHORITY_DOMAINS,
+    }
+}
+
+fn broker_diagnostics_report(data_root: &Path) -> BrokerDiagnosticsReport {
+    let transport_dir = data_root.join("ipc");
+    if !data_root.exists() || !transport_dir.exists() {
+        return BrokerDiagnosticsReport {
+            state: BrokerDiagnosticState::Absent,
+            metrics: None,
+        };
+    }
+    let safe_transport = std::fs::symlink_metadata(&transport_dir)
+        .map(|metadata| !metadata.file_type().is_symlink() && metadata.is_dir())
+        .unwrap_or(false);
+    if !safe_transport {
+        return BrokerDiagnosticsReport {
+            state: BrokerDiagnosticState::UnsafeState,
+            metrics: None,
+        };
+    }
+    let endpoint = match LocalEndpoint::from_state_root(data_root) {
+        Ok(endpoint) => endpoint,
+        Err(IpcError::UnsafeStateObject) => {
+            return BrokerDiagnosticsReport {
+                state: BrokerDiagnosticState::UnsafeState,
+                metrics: None,
+            };
+        }
+        Err(_) => {
+            return BrokerDiagnosticsReport {
+                state: BrokerDiagnosticState::Unavailable,
+                metrics: None,
+            };
+        }
+    };
+    match IpcClient::connect(&endpoint, BROKER_DIAGNOSTIC_QUERY_TIMEOUT)
+        .and_then(|mut client| client.diagnostics())
+    {
+        Ok(metrics) => BrokerDiagnosticsReport {
+            state: BrokerDiagnosticState::Running,
+            metrics: Some(metrics),
+        },
+        Err(_) => BrokerDiagnosticsReport {
+            state: BrokerDiagnosticState::Unavailable,
+            metrics: None,
+        },
     }
 }
 
@@ -450,10 +618,18 @@ fn classify_version_output(success: bool, stdout: &[u8]) -> CodexVersion {
         && line.chars().all(|character| {
             character.is_ascii_alphanumeric() || matches!(character, ' ' | '.' | '-' | '_')
         });
-    if !safe || !line.to_ascii_lowercase().starts_with("codex") {
+    let normalized = line.to_ascii_lowercase();
+    let prefix_length = if normalized.starts_with("codex-cli ") {
+        "codex-cli".len()
+    } else if normalized.starts_with("codex ") {
+        "codex".len()
+    } else {
+        return CodexVersion::Malformed;
+    };
+    if !safe {
         return CodexVersion::Malformed;
     }
-    let value = line["codex".len()..].trim();
+    let value = line[prefix_length..].trim();
     if value.is_empty() {
         CodexVersion::Malformed
     } else {
@@ -688,6 +864,7 @@ fn evidence_freshness_check(scan: Option<&ReceiptScan>, now_unix_ms: i64) -> Dia
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::evidence::{CoverageDomain, EventFamily, RuntimeId, SourceScope};
     #[cfg(windows)]
     use std::ffi::OsString;
     #[cfg(windows)]
@@ -707,24 +884,100 @@ mod tests {
         assert!(report.checks.iter().any(|check| {
             check.id == DiagnosticCheckId::Ledger && check.status == DiagnosticStatus::Warning
         }));
+        assert_eq!(
+            report.production_evidence.default_authority,
+            DomainAuthoritySelection::NotAdmitted
+        );
+        assert_eq!(report.production_evidence.evidence_transport_count, 2);
+        assert!(!report.production_evidence.third_transport_present);
+        assert!(!report.production_evidence.shadow_in_denominator);
+        assert_eq!(report.broker.state, BrokerDiagnosticState::Absent);
+    }
+
+    #[test]
+    fn authority_diagnostics_preserve_native_ipc_and_not_admitted_per_domain() {
+        let authority =
+            |event: &str,
+             native_admission: NativeAdmissionState,
+             ipc_admission: IpcAdmissionState| DomainAuthority {
+                domain: CoverageDomain {
+                    runtime: RuntimeId::new("codex").unwrap(),
+                    event: EventFamily::new(event).unwrap(),
+                    source_scope: SourceScope::new("user_hooks").unwrap(),
+                },
+                native_admission,
+                ipc_admission,
+            };
+        let diagnostics = production_evidence_diagnostics(
+            CodexNativeL2Status::UpstreamUnavailable,
+            &[
+                authority(
+                    "session_start",
+                    NativeAdmissionState::Admitted,
+                    IpcAdmissionState::Admitted,
+                ),
+                authority(
+                    "stop",
+                    NativeAdmissionState::Unavailable,
+                    IpcAdmissionState::Admitted,
+                ),
+                authority(
+                    "pre_tool_use",
+                    NativeAdmissionState::Unavailable,
+                    IpcAdmissionState::QualifiedNotAdmittedPerformance,
+                ),
+            ],
+        );
+        assert_eq!(diagnostics.domains.len(), 3);
+        assert_eq!(
+            diagnostics.domains[0].selected_authority,
+            DomainAuthoritySelection::Native
+        );
+        assert_eq!(
+            diagnostics.domains[1].selected_authority,
+            DomainAuthoritySelection::Ipc
+        );
+        assert_eq!(
+            diagnostics.domains[2].selected_authority,
+            DomainAuthoritySelection::NotAdmitted
+        );
+        assert_eq!(
+            diagnostics.native_admission,
+            NativeAdmissionState::Unavailable
+        );
+        assert!(!diagnostics.transparent_shim_active);
+        assert!(!diagnostics.domains_truncated);
+
+        let bounded = (0..=MAX_DIAGNOSTIC_AUTHORITY_DOMAINS)
+            .map(|index| {
+                authority(
+                    &format!("event_{index}"),
+                    NativeAdmissionState::Unavailable,
+                    IpcAdmissionState::Admitted,
+                )
+            })
+            .collect::<Vec<_>>();
+        let bounded_diagnostics =
+            production_evidence_diagnostics(CodexNativeL2Status::NotQualified, &bounded);
+        assert_eq!(
+            bounded_diagnostics.domains.len(),
+            MAX_DIAGNOSTIC_AUTHORITY_DOMAINS
+        );
+        assert!(bounded_diagnostics.domains_truncated);
     }
 
     #[test]
     fn serialized_diagnostics_expose_no_private_operational_fields() {
-        let report = DiagnosticsReport {
-            schema_version: 1,
-            read_only: true,
-            generated_at_unix_ms: 1,
-            overall_status: DiagnosticStatus::Warning,
-            checks: vec![DiagnosticCheck {
-                id: DiagnosticCheckId::ReceiptIntegrity,
-                status: DiagnosticStatus::Warning,
-                facts: vec![DiagnosticFact::ReceiptIntegrity {
-                    incomplete: 2,
-                    malformed: 0,
-                }],
+        let mut report = DiagnosticsReport::empty(1);
+        report.overall_status = DiagnosticStatus::Warning;
+        report.checks = vec![DiagnosticCheck {
+            id: DiagnosticCheckId::ReceiptIntegrity,
+            status: DiagnosticStatus::Warning,
+            facts: vec![DiagnosticFact::ReceiptIntegrity {
+                incomplete: 2,
+                malformed: 0,
             }],
-        };
+        }];
         let json = serde_json::to_string(&report).unwrap();
         for forbidden in [
             "command",
@@ -745,6 +998,10 @@ mod tests {
             CodexVersion::Present(value) if value == "0.2.1"
         ));
         assert!(matches!(
+            classify_version_output(true, b"codex-cli 0.149.0\n"),
+            CodexVersion::Present(value) if value == "0.149.0"
+        ));
+        assert!(matches!(
             classify_version_output(false, b"Codex 0.2.1\n"),
             CodexVersion::Failed
         ));
@@ -753,7 +1010,7 @@ mod tests {
             CodexVersion::Malformed
         ));
         assert_eq!(
-            codex_binary_check_from(CodexVersion::Missing).status,
+            codex_binary_check_from(&CodexVersion::Missing).status,
             DiagnosticStatus::Fail
         );
         for version in [
@@ -762,7 +1019,7 @@ mod tests {
             CodexVersion::Malformed,
         ] {
             assert_eq!(
-                codex_binary_check_from(version).status,
+                codex_binary_check_from(&version).status,
                 DiagnosticStatus::Unknown
             );
         }

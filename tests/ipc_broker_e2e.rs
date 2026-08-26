@@ -132,6 +132,58 @@ fn local_transport_acknowledges_start_and_complete_without_network_listener() {
 }
 
 #[test]
+fn broker_diagnostics_are_read_only_bounded_and_never_enter_the_wal() {
+    let _guard = e2e_serial_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let mut configuration = config(temp.path());
+    configuration.group_durability.max_interval = Duration::from_millis(10);
+    let host = BrokerHost::start(configuration).unwrap();
+    let mut client = started_client(&host);
+    for sequence in 0..100 {
+        assert_eq!(
+            client.send(&frame(91, sequence)).unwrap(),
+            BrokerAcknowledgement::Accepted
+        );
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let snapshot = loop {
+        let snapshot = client.diagnostics().unwrap();
+        if snapshot.group_flushes > 0 || Instant::now() >= deadline {
+            break snapshot;
+        }
+        thread::sleep(Duration::from_millis(2));
+    };
+    snapshot.validate().unwrap();
+    assert_eq!(snapshot.accepted, 100);
+    assert_eq!(snapshot.dropped, 0);
+    assert_eq!(snapshot.malformed, 0);
+    assert!(snapshot.queue_high_water <= 256);
+    assert!(snapshot.recent_ipc_latency_samples > 0);
+    assert!(snapshot.recent_ipc_latency_samples <= 128);
+    assert!(snapshot.recent_ipc_latency_p50_us <= snapshot.recent_ipc_latency_p95_us);
+    assert!(snapshot.recent_ipc_latency_p95_us <= snapshot.recent_ipc_latency_p99_us);
+    assert!(snapshot.wal_flush_lag_ms.is_some());
+    assert!(snapshot.last_wal_flush_duration_us.is_some());
+
+    let second = client.diagnostics().unwrap();
+    assert_eq!(second.accepted, 100);
+    assert_eq!(second.replayed, 0);
+    drop(client);
+    host.stop();
+
+    let mut wal = Wal::open(temp.path(), GroupDurabilityPolicy::default()).unwrap();
+    let recovery = wal.recover_and_replay().unwrap();
+    assert_eq!(recovery.frames.len(), 100);
+    assert!(
+        recovery
+            .frames
+            .iter()
+            .all(hookstat::ipc::IpcFrame::is_lifecycle)
+    );
+}
+
+#[test]
 fn startup_race_elects_one_broker_and_healthy_endpoint_is_reused() {
     let _guard = e2e_serial_guard();
     let temp = tempfile::tempdir().unwrap();
@@ -358,6 +410,140 @@ fn concurrency_matrix_accepts_16_clients_10k_frames_and_100_clients_100k_frames(
 }
 
 #[test]
+fn g38_controlled_concurrency_accepts_1_5_10_clients_and_10k_unique_events() {
+    let _guard = e2e_serial_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let mut scale_config = config(temp.path());
+    scale_config.ack_timeout = Duration::from_secs(5);
+    let host = BrokerHost::start(scale_config).unwrap();
+
+    run_clients_from(&host, 1, 1_000, 1_000, Duration::from_secs(5));
+    run_clients_from(&host, 5, 600, 2_000, Duration::from_secs(5));
+    run_clients_from(&host, 10, 600, 3_000, Duration::from_secs(5));
+
+    let mut diagnostics_client =
+        IpcClient::connect(host.endpoint(), Duration::from_secs(5)).unwrap();
+    let diagnostics = diagnostics_client.diagnostics().unwrap();
+    assert_eq!(diagnostics.accepted, 10_000);
+    assert_eq!(diagnostics.rejected, 0);
+    assert_eq!(diagnostics.dropped, 0);
+    assert_eq!(diagnostics.malformed, 0);
+    assert!(diagnostics.queue_high_water <= 256);
+    assert!(diagnostics.recent_ipc_latency_samples <= 128);
+    drop(diagnostics_client);
+
+    let health = host.stop();
+    assert_eq!(health.accepted, 10_000);
+    let mut wal = Wal::open(temp.path(), GroupDurabilityPolicy::default()).unwrap();
+    let recovery = wal.recover_and_replay().unwrap();
+    assert_eq!(recovery.frames.len(), 10_000);
+}
+
+#[test]
+fn g38_live_client_disconnect_restart_replays_without_duplicate_or_success_fabrication() {
+    let _guard = e2e_serial_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let configuration = config(temp.path());
+    let host = BrokerHost::start(configuration.clone()).unwrap();
+    let endpoint = host.endpoint().clone();
+    let mut interrupted_client = started_client(&host);
+    assert_eq!(
+        interrupted_client.send(&frame(501, 1)).unwrap(),
+        BrokerAcknowledgement::Accepted
+    );
+    assert_eq!(
+        interrupted_client.send(&completion(501, 1)).unwrap(),
+        BrokerAcknowledgement::Accepted
+    );
+
+    let health = host.stop();
+    assert_eq!(health.accepted, 2);
+    assert!(
+        interrupted_client.send(&frame(501, 2)).is_err(),
+        "a stopped broker must not fabricate an acknowledgement"
+    );
+    drop(interrupted_client);
+    assert!(IpcClient::connect(&endpoint, Duration::from_millis(5)).is_err());
+
+    let restarted = BrokerHost::start(configuration).unwrap();
+    assert_eq!(restarted.recovery().frames.len(), 2);
+    assert_eq!(restarted.recovery().truncated_tail_bytes, 0);
+    let mut replacement = started_client(&restarted);
+    assert_eq!(
+        replacement.send(&frame(502, 1)).unwrap(),
+        BrokerAcknowledgement::Accepted
+    );
+    drop(replacement);
+    restarted.stop();
+
+    let mut wal = Wal::open(temp.path(), GroupDurabilityPolicy::default()).unwrap();
+    let recovery = wal.recover_and_replay().unwrap();
+    let broker_recovery = hookstat::ipc::BrokerRecovery {
+        frames: recovery.frames,
+        truncated_tail_bytes: recovery.truncated_tail_bytes,
+    };
+    let domain = CoverageDomain {
+        runtime: hookstat::evidence::RuntimeId::new("synthetic_runtime").unwrap(),
+        event: hookstat::evidence::EventFamily::new("synthetic_event").unwrap(),
+        source_scope: hookstat::evidence::SourceScope::new("synthetic_scope").unwrap(),
+    };
+    let mut core = RuntimeNeutralEvidenceCore::new(
+        AuthorityRouter::new([DomainAuthority {
+            domain,
+            native_admission: NativeAdmissionState::Qualified,
+            ipc_admission: IpcAdmissionState::Admitted,
+        }])
+        .unwrap(),
+    );
+    let replay = broker_recovery.ingest_into(&mut core).unwrap();
+    assert_eq!(replay.produced, 3);
+    assert_eq!(replay.duplicates, 0);
+}
+
+#[test]
+fn g38_partial_tail_restart_preserves_valid_frames_and_reports_coverage_degradation() {
+    let _guard = e2e_serial_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let mut wal = Wal::open(temp.path(), GroupDurabilityPolicy::default()).unwrap();
+    wal.append(&frame(601, 1)).unwrap();
+    wal.append(&completion(601, 1)).unwrap();
+    wal.flush_group().unwrap();
+    let wal_path = wal.path().to_path_buf();
+    drop(wal);
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&wal_path)
+        .unwrap()
+        .write_all(&hookstat::ipc::WAL_MAGIC[..2])
+        .unwrap();
+
+    let restarted = BrokerHost::start(config(temp.path())).unwrap();
+    assert_eq!(restarted.recovery().frames.len(), 2);
+    assert_eq!(restarted.recovery().truncated_tail_bytes, 2);
+    let recovery = restarted.recovery().clone();
+
+    let domain = CoverageDomain {
+        runtime: hookstat::evidence::RuntimeId::new("synthetic_runtime").unwrap(),
+        event: hookstat::evidence::EventFamily::new("synthetic_event").unwrap(),
+        source_scope: hookstat::evidence::SourceScope::new("synthetic_scope").unwrap(),
+    };
+    let mut core = RuntimeNeutralEvidenceCore::new(
+        AuthorityRouter::new([DomainAuthority {
+            domain,
+            native_admission: NativeAdmissionState::Qualified,
+            ipc_admission: IpcAdmissionState::QualifiedNotAdmittedPerformance,
+        }])
+        .unwrap(),
+    );
+    let replay = recovery.ingest_into(&mut core).unwrap();
+    assert_eq!(replay.produced, 0);
+    assert_eq!(replay.not_admitted, 2);
+    assert_eq!(replay.duplicates, 0);
+    restarted.stop();
+}
+
+#[test]
 fn broker_ack_latency_smoke_reports_sanitized_percentiles() {
     let _guard = e2e_serial_guard();
     let temp = tempfile::tempdir().unwrap();
@@ -500,6 +686,33 @@ fn run_clients(host: &BrokerHost, clients: u32, frames_per_client: u32, client_t
         let mut workers = Vec::new();
         for client_id in 0..clients {
             workers.push(scope.spawn(move || {
+                let mut client = IpcClient::connect(host.endpoint(), client_timeout).unwrap();
+                for sequence in 0..frames_per_client {
+                    assert_eq!(
+                        client.send(&frame(client_id, sequence)).unwrap(),
+                        BrokerAcknowledgement::Accepted
+                    );
+                }
+            }));
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    });
+}
+
+fn run_clients_from(
+    host: &BrokerHost,
+    clients: u32,
+    frames_per_client: u32,
+    client_id_offset: u32,
+    client_timeout: Duration,
+) {
+    thread::scope(|scope| {
+        let mut workers = Vec::new();
+        for client_id in 0..clients {
+            workers.push(scope.spawn(move || {
+                let client_id = client_id + client_id_offset;
                 let mut client = IpcClient::connect(host.endpoint(), client_timeout).unwrap();
                 for sequence in 0..frames_per_client {
                     assert_eq!(

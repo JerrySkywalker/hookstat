@@ -1946,17 +1946,13 @@ mod tests {
         let empty_buffer = rendered(empty, ResolvedLocale::ZhCn, 100, 30);
         assert!(empty_buffer.replace(' ', "").contains("尚无已接纳"));
 
-        let diagnostics = DiagnosticsReport {
-            schema_version: 1,
-            read_only: true,
-            generated_at_unix_ms: 1_000,
-            overall_status: DiagnosticStatus::Fail,
-            checks: vec![DiagnosticCheck {
-                id: DiagnosticCheckId::ReceiptIntegrity,
-                status: DiagnosticStatus::Fail,
-                facts: vec![],
-            }],
-        };
+        let mut diagnostics = DiagnosticsReport::empty(1_000);
+        diagnostics.overall_status = DiagnosticStatus::Fail;
+        diagnostics.checks = vec![DiagnosticCheck {
+            id: DiagnosticCheckId::ReceiptIntegrity,
+            status: DiagnosticStatus::Fail,
+            facts: vec![],
+        }];
         let mut degraded = App::from_snapshot(
             super::super::app::RefreshSnapshot::from_report_with_diagnostics(
                 synthetic_fixture_report(1_000),

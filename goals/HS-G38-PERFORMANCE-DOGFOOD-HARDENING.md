@@ -2,7 +2,9 @@
 
 ## Status
 
-PLANNED after accepted G37.
+DRAFT FOUNDATION after accepted G37. Read-only diagnostics and disposable-root
+recovery/concurrency guards are implemented; real Owner Windows dogfood remains
+required and has not run.
 
 ## Objective
 
@@ -131,6 +133,12 @@ A diagnostic may report `QUALIFIED_NOT_ADMITTED_PERFORMANCE` for the retained
 transparent implementation, but must not imply that it is selected or active.
 
 Self-observability instrumentation itself must be bounded and must not reintroduce hot-path synchronous persistence.
+
+The Draft foundation uses a numeric diagnostics request/response on the
+existing local HSIP control plane. These control frames are not lifecycle
+evidence, never enter the WAL/ledger, cannot contribute to a denominator, and
+do not create a third evidence transport. The fixed recent-latency window is
+bounded to 128 in-memory samples and resets with the broker process.
 
 ## Structural regression guards
 
