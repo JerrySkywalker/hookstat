@@ -18,6 +18,10 @@ use hook_shim::{
     CapsuleStore, ExecutionPlan, HandlerCapsule, InstrumentationEnvelope, OriginalHandlerBudget,
     capsule_file_name, write_key_for_test,
 };
+use hookstat::g36_host_admission::{
+    HOST_CONTROL_METHODOLOGY, HOST_CONTROL_P95_LIMIT_MS, HOST_CONTROL_P99_LIMIT_MS, TailLatency,
+    WarmWindowDisposition, classify_warm_window,
+};
 use hookstat::ipc::{BrokerConfig, BrokerHost};
 use interprocess::local_socket::traits::Listener as _;
 use ipc_client::{
@@ -27,7 +31,7 @@ use ipc_client::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -41,6 +45,8 @@ const SHIM_WARM_P95_LIMIT_MS: f64 = 20.0;
 const SHIM_WARM_P99_LIMIT_MS: f64 = 25.0;
 const SHIM_COLD_P95_LIMIT_MS: f64 = 50.0;
 const MAX_COMPARABLE_STARTUP_BIAS_MS: f64 = 2.0;
+const DEFAULT_MAX_WARM_WINDOW_ATTEMPTS: usize = 25;
+const DEFAULT_REJECT_RETRY_INTERVAL: Duration = Duration::from_secs(60);
 const ORACLE_ROOT_ENV: &str = "HOOKSTAT_G36_ORACLE_ROOT";
 const SHIPPING_SHIM_ENV: &str = "HOOKSTAT_G36_SHIPPING_SHIM";
 const ORACLE_RECORD_BYTES: usize = 32;
@@ -62,12 +68,42 @@ struct Series {
     observation_gaps: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct StartupComparisonSeries {
     run: usize,
     shipping: Timing,
     instrumented: Timing,
     shipping_minus_instrumented_p99_ms: f64,
+}
+
+#[derive(Clone, Serialize)]
+struct WarmWindow {
+    attempt: usize,
+    pre_control: Timing,
+    raw_candidate: Timing,
+    candidate: Timing,
+    post_control: Timing,
+    disposition: WarmWindowDisposition,
+}
+
+#[derive(Serialize)]
+struct WarmWindowReceipt<'a> {
+    schema_version: u8,
+    run_kind: &'static str,
+    source_git_head: &'a str,
+    control_methodology: &'static str,
+    control_fixture: &'static str,
+    control_samples: usize,
+    control_warmups_per_timed_sample: usize,
+    percentile_method: &'static str,
+    control_p95_limit_ms: f64,
+    control_p99_limit_ms: f64,
+    product_p95_limit_ms: f64,
+    product_p99_limit_ms: f64,
+    startup_tail_bias_correction_ms: f64,
+    window: &'a WarmWindow,
+    owner_live_codex_config_mutated: bool,
+    raw_private_content_captured: bool,
 }
 
 #[derive(Serialize)]
@@ -82,6 +118,16 @@ struct Receipt {
     oracle_transport: &'static str,
     oracle_record_bytes: usize,
     observed_overhead_includes_oracle_side_channel: bool,
+    host_control_methodology: &'static str,
+    host_control_fixture: &'static str,
+    host_control_samples_per_phase: usize,
+    host_control_warmups_per_timed_sample: usize,
+    host_control_percentile_method: &'static str,
+    host_control_p95_limit_ms: f64,
+    host_control_p99_limit_ms: f64,
+    warm_admitted_runs_required: usize,
+    max_warm_window_attempts: usize,
+    rejected_window_retry_interval_ms: u64,
     warmup_definition: &'static str,
     warm_harness_self_load: bool,
     qualifying_runs: usize,
@@ -100,14 +146,18 @@ struct Receipt {
     instrumented_startup_worst_p99_ms: f64,
     startup_tail_bias_correction_ms: f64,
     startup_bias_material: bool,
+    warm_window_attempts: Vec<WarmWindow>,
+    host_control_rejected_windows: usize,
+    warm_admitted_runs: usize,
+    admitted_warm_failure_occurred: bool,
     raw_oracle_series: Vec<Series>,
     series: Vec<Series>,
     oracle_primary_record_worst_p95_ms: f64,
     oracle_primary_record_worst_p99_ms: f64,
     cooperative_worst_p95_ms: f64,
     cooperative_worst_p99_ms: f64,
-    shim_warm_worst_p95_ms: f64,
-    shim_warm_worst_p99_ms: f64,
+    shim_warm_worst_p95_ms: Option<f64>,
+    shim_warm_worst_p99_ms: Option<f64>,
     shim_cold_worst_p95_ms: f64,
     healthy_near_timeout_runs: usize,
     hookstat_induced_timeouts_for_healthy_hook: usize,
@@ -183,6 +233,71 @@ fn timing(mut milliseconds: Vec<f64>) -> Timing {
         p95_ms: percentile(0.95),
         p99_ms: percentile(0.99),
         max_ms: *milliseconds.last().unwrap(),
+    }
+}
+
+fn run_silent(executable: &Path) {
+    let status = Command::new(executable)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("launch process-start control fixture");
+    assert!(status.success(), "process-start control fixture failed");
+}
+
+fn host_control_run(fixture: &Path) -> Timing {
+    let mut samples = Vec::with_capacity(SAMPLES_PER_RUN);
+    for _ in 0..SAMPLES_PER_RUN {
+        for _ in 0..WARMUPS_PER_SAMPLE {
+            run_silent(fixture);
+        }
+        let started = Instant::now();
+        run_silent(fixture);
+        samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
+    timing(samples)
+}
+
+fn tail(timing: &Timing) -> TailLatency {
+    TailLatency::new(timing.p95_ms, timing.p99_ms)
+}
+
+fn configured_max_warm_window_attempts() -> usize {
+    match std::env::var("HOOKSTAT_G36_MAX_WARM_WINDOWS") {
+        Ok(value) => {
+            let value = value
+                .parse::<usize>()
+                .expect("HOOKSTAT_G36_MAX_WARM_WINDOWS must be an integer");
+            assert!(
+                (QUALIFYING_RUNS..=100).contains(&value),
+                "HOOKSTAT_G36_MAX_WARM_WINDOWS must be between 5 and 100"
+            );
+            value
+        }
+        Err(std::env::VarError::NotPresent) => DEFAULT_MAX_WARM_WINDOW_ATTEMPTS,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("HOOKSTAT_G36_MAX_WARM_WINDOWS must be Unicode")
+        }
+    }
+}
+
+fn configured_reject_retry_interval() -> Duration {
+    match std::env::var("HOOKSTAT_G36_REJECT_RETRY_INTERVAL_MS") {
+        Ok(value) => {
+            let milliseconds = value
+                .parse::<u64>()
+                .expect("HOOKSTAT_G36_REJECT_RETRY_INTERVAL_MS must be an integer");
+            assert!(
+                (1_000..=300_000).contains(&milliseconds),
+                "HOOKSTAT_G36_REJECT_RETRY_INTERVAL_MS must be between 1000 and 300000"
+            );
+            Duration::from_millis(milliseconds)
+        }
+        Err(std::env::VarError::NotPresent) => DEFAULT_REJECT_RETRY_INTERVAL,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("HOOKSTAT_G36_REJECT_RETRY_INTERVAL_MS must be Unicode")
+        }
     }
 }
 
@@ -410,12 +525,82 @@ fn worst(series: &[Series], kind: &str, percentile: fn(&Timing) -> f64) -> f64 {
         .unwrap()
 }
 
-fn write_receipt(receipt: &Receipt) {
-    let output = std::env::var_os("HOOKSTAT_G36_PERFORMANCE_OUTPUT")
-        .expect("HOOKSTAT_G36_PERFORMANCE_OUTPUT is required for a qualifying run");
-    let output = PathBuf::from(output);
-    fs::create_dir_all(output.parent().unwrap()).unwrap();
-    fs::write(output, serde_json::to_vec_pretty(receipt).unwrap()).unwrap();
+fn worst_optional(series: &[Series], kind: &str, percentile: fn(&Timing) -> f64) -> Option<f64> {
+    series
+        .iter()
+        .filter(|series| series.kind == kind)
+        .map(|series| percentile(&series.timing))
+        .max_by(f64::total_cmp)
+}
+
+fn qualification_output_path() -> PathBuf {
+    PathBuf::from(
+        std::env::var_os("HOOKSTAT_G36_PERFORMANCE_OUTPUT")
+            .expect("HOOKSTAT_G36_PERFORMANCE_OUTPUT is required for a qualifying run"),
+    )
+}
+
+fn write_json_once(path: &Path, value: &impl Serialize) {
+    let parent = path.parent().expect("qualification output has a parent");
+    fs::create_dir_all(parent).unwrap();
+    assert!(
+        !path.exists(),
+        "qualification output already exists; historical evidence is immutable"
+    );
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("json");
+    let temporary = path.with_extension(format!("{extension}.tmp-{}", std::process::id()));
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)
+        .expect("create unique qualification receipt staging file");
+    file.write_all(&serde_json::to_vec_pretty(value).unwrap())
+        .expect("write qualification receipt");
+    file.sync_all().expect("sync qualification receipt");
+    drop(file);
+    fs::rename(&temporary, path).expect("publish qualification receipt atomically");
+}
+
+fn warm_window_output_path(output: &Path, attempt: usize) -> PathBuf {
+    let stem = output
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .expect("qualification output has a Unicode file stem");
+    output.with_file_name(format!("{stem}-window-{attempt:03}.json"))
+}
+
+fn write_warm_window_receipt(
+    output: &Path,
+    source_git_head: &str,
+    startup_tail_bias_correction_ms: f64,
+    window: &WarmWindow,
+) {
+    let receipt = WarmWindowReceipt {
+        schema_version: 1,
+        run_kind: "g36_warm_host_admission_window",
+        source_git_head,
+        control_methodology: HOST_CONTROL_METHODOLOGY,
+        control_fixture: "hookstat-hook-fixture",
+        control_samples: SAMPLES_PER_RUN,
+        control_warmups_per_timed_sample: WARMUPS_PER_SAMPLE,
+        percentile_method: "nearest_rank",
+        control_p95_limit_ms: HOST_CONTROL_P95_LIMIT_MS,
+        control_p99_limit_ms: HOST_CONTROL_P99_LIMIT_MS,
+        product_p95_limit_ms: SHIM_WARM_P95_LIMIT_MS,
+        product_p99_limit_ms: SHIM_WARM_P99_LIMIT_MS,
+        startup_tail_bias_correction_ms,
+        window,
+        owner_live_codex_config_mutated: false,
+        raw_private_content_captured: false,
+    };
+    write_json_once(&warm_window_output_path(output, window.attempt), &receipt);
+}
+
+fn write_receipt(output: &Path, receipt: &Receipt) {
+    write_json_once(output, receipt);
 }
 
 fn source_git_provenance() -> (String, bool) {
@@ -493,6 +678,9 @@ fn release_artifact_meets_the_frozen_g36_budget() {
         source_tracked_worktree_clean,
         "qualification requires a tracked-clean source head"
     );
+    let qualification_output = qualification_output_path();
+    let max_warm_window_attempts = configured_max_warm_window_attempts();
+    let reject_retry_interval = configured_reject_retry_interval();
     let temporary = tempfile::tempdir().unwrap();
     let capsule_root = temporary.path().join("capsules");
     let state_root = temporary.path().join("state");
@@ -514,6 +702,11 @@ fn release_artifact_meets_the_frozen_g36_budget() {
     let host = BrokerHost::start(broker_config).unwrap();
     let producer = CooperativeProducer::for_state_root(&state_root).unwrap();
     let shim = PathBuf::from(env!("CARGO_BIN_EXE_hookstat-hook"));
+    let host_control_fixture = PathBuf::from(env!("CARGO_BIN_EXE_hookstat-hook-fixture"));
+    assert!(
+        host_control_fixture.is_file(),
+        "exact G28 minimal-shim control fixture is not a file"
+    );
     let shipping_shim = PathBuf::from(
         std::env::var_os(SHIPPING_SHIM_ENV)
             .expect("HOOKSTAT_G36_SHIPPING_SHIM is required for a qualifying run"),
@@ -546,12 +739,105 @@ fn release_artifact_meets_the_frozen_g36_budget() {
             observation_gaps,
         });
     }
-    let mut raw_oracle_runs = Vec::with_capacity(QUALIFYING_RUNS * 2);
-    for run in 1..=QUALIFYING_RUNS {
-        raw_oracle_runs.push(emit_oracle_run("shim_warm", run, &oracle_context, true));
+    // The product metric uses a feature-gated timing side channel. Retain the
+    // established shipping/instrumented comparability proof before any warm
+    // admission window and conservatively charge a small shipping-tail bias.
+    // This value is never derived from or subtracted from the host control.
+    let startup_comparison_series = (1..=QUALIFYING_RUNS)
+        .map(|run| startup_comparison_run(&shipping_shim, &shim, run))
+        .collect::<Vec<_>>();
+    let (
+        shipping_startup_worst_p99_ms,
+        instrumented_startup_worst_p99_ms,
+        startup_tail_bias_correction_ms,
+    ) = startup_tail_bias(&startup_comparison_series);
+    let startup_bias_material = startup_tail_bias_correction_ms >= MAX_COMPARABLE_STARTUP_BIAS_MS;
+
+    let mut raw_oracle_runs = Vec::with_capacity(max_warm_window_attempts + QUALIFYING_RUNS);
+    let mut warm_window_attempts = Vec::with_capacity(max_warm_window_attempts);
+    let mut warm_admitted_runs = 0;
+    let mut admitted_warm_failure_occurred = false;
+    for attempt in 1..=max_warm_window_attempts {
+        let pre_control = host_control_run(&host_control_fixture);
+        let raw_run = emit_oracle_run("shim_warm", attempt, &oracle_context, true);
+        let raw_candidate = timing(raw_run.overhead_ms.clone());
+        let candidate = timing(
+            raw_run
+                .overhead_ms
+                .iter()
+                .map(|value| value + startup_tail_bias_correction_ms)
+                .collect(),
+        );
+        let post_control = host_control_run(&host_control_fixture);
+        let disposition =
+            classify_warm_window(tail(&pre_control), tail(&candidate), tail(&post_control));
+        let window = WarmWindow {
+            attempt,
+            pre_control,
+            raw_candidate,
+            candidate,
+            post_control,
+            disposition,
+        };
+        write_warm_window_receipt(
+            &qualification_output,
+            &source_git_head,
+            startup_tail_bias_correction_ms,
+            &window,
+        );
+        raw_oracle_runs.push(raw_run);
+        warm_window_attempts.push(window.clone());
+
+        match disposition {
+            WarmWindowDisposition::AdmittedPass => {
+                warm_admitted_runs += 1;
+                series.push(Series {
+                    kind: "shim_warm",
+                    run: attempt,
+                    timing: window.candidate,
+                    observation_gaps: 0,
+                });
+                if warm_admitted_runs == QUALIFYING_RUNS {
+                    break;
+                }
+            }
+            WarmWindowDisposition::FailFrozenBudget => {
+                admitted_warm_failure_occurred = true;
+                series.push(Series {
+                    kind: "shim_warm",
+                    run: attempt,
+                    timing: window.candidate,
+                    observation_gaps: 0,
+                });
+                break;
+            }
+            WarmWindowDisposition::RejectedHostSubstrate => {
+                if attempt < max_warm_window_attempts {
+                    std::thread::sleep(reject_retry_interval);
+                }
+            }
+        }
     }
+    let host_control_rejected_windows = warm_window_attempts
+        .iter()
+        .filter(|window| window.disposition == WarmWindowDisposition::RejectedHostSubstrate)
+        .count();
+
     for run in 1..=QUALIFYING_RUNS {
-        raw_oracle_runs.push(emit_oracle_run("shim_cold", run, &oracle_context, false));
+        let raw_run = emit_oracle_run("shim_cold", run, &oracle_context, false);
+        series.push(Series {
+            kind: "shim_cold",
+            run,
+            timing: timing(
+                raw_run
+                    .overhead_ms
+                    .iter()
+                    .map(|value| value + startup_tail_bias_correction_ms)
+                    .collect(),
+            ),
+            observation_gaps: 0,
+        });
+        raw_oracle_runs.push(raw_run);
     }
 
     let near_timeout = capsule(
@@ -566,7 +852,6 @@ fn release_artifact_meets_the_frozen_g36_budget() {
     let healthy_near_timeout_runs = 5;
     let mut hookstat_induced_timeouts_for_healthy_hook = 0;
     for _ in 0..healthy_near_timeout_runs {
-        let started = Instant::now();
         let status = Command::new(&shim)
             .arg("--capsule")
             .arg(&near_timeout_path)
@@ -579,7 +864,6 @@ fn release_artifact_meets_the_frozen_g36_budget() {
             .stderr(Stdio::null())
             .status()
             .unwrap();
-        let _elapsed = started.elapsed();
         if status.code() == Some(124) {
             hookstat_induced_timeouts_for_healthy_hook += 1;
         }
@@ -588,19 +872,6 @@ fn release_artifact_meets_the_frozen_g36_budget() {
             "near-timeout healthy fixture did not exit zero"
         );
     }
-
-    // Compare the feature-gated oracle binary with the ordinary shipping
-    // release artifact only after the broker-dependent samples. The broker's
-    // production idle expiry therefore cannot change a warm/cold result.
-    let startup_comparison_series = (1..=QUALIFYING_RUNS)
-        .map(|run| startup_comparison_run(&shipping_shim, &shim, run))
-        .collect::<Vec<_>>();
-    let (
-        shipping_startup_worst_p99_ms,
-        instrumented_startup_worst_p99_ms,
-        startup_tail_bias_correction_ms,
-    ) = startup_tail_bias(&startup_comparison_series);
-    let startup_bias_material = startup_tail_bias_correction_ms >= MAX_COMPARABLE_STARTUP_BIAS_MS;
 
     let raw_oracle_series = raw_oracle_runs
         .iter()
@@ -624,24 +895,10 @@ fn release_artifact_meets_the_frozen_g36_budget() {
             observation_gaps: 0,
         })
         .collect::<Vec<_>>();
-    for run in &raw_oracle_runs {
-        series.push(Series {
-            kind: run.kind,
-            run: run.run,
-            timing: timing(
-                run.overhead_ms
-                    .iter()
-                    .map(|value| value + startup_tail_bias_correction_ms)
-                    .collect(),
-            ),
-            observation_gaps: 0,
-        });
-    }
-
     let cooperative_worst_p95_ms = worst(&series, "cooperative", |value| value.p95_ms);
     let cooperative_worst_p99_ms = worst(&series, "cooperative", |value| value.p99_ms);
-    let shim_warm_worst_p95_ms = worst(&series, "shim_warm", |value| value.p95_ms);
-    let shim_warm_worst_p99_ms = worst(&series, "shim_warm", |value| value.p99_ms);
+    let shim_warm_worst_p95_ms = worst_optional(&series, "shim_warm", |value| value.p95_ms);
+    let shim_warm_worst_p99_ms = worst_optional(&series, "shim_warm", |value| value.p99_ms);
     let shim_cold_worst_p95_ms = worst(&series, "shim_cold", |value| value.p95_ms);
     let oracle_primary_record_worst_p95_ms = worst(
         &oracle_primary_record_series,
@@ -655,11 +912,24 @@ fn release_artifact_meets_the_frozen_g36_budget() {
     );
     let passed = cooperative_worst_p95_ms <= COOPERATIVE_P95_LIMIT_MS
         && cooperative_worst_p99_ms <= COOPERATIVE_P99_LIMIT_MS
-        && shim_warm_worst_p95_ms <= SHIM_WARM_P95_LIMIT_MS
-        && shim_warm_worst_p99_ms <= SHIM_WARM_P99_LIMIT_MS
+        && warm_admitted_runs == QUALIFYING_RUNS
+        && !admitted_warm_failure_occurred
+        && shim_warm_worst_p95_ms.is_some_and(|value| value <= SHIM_WARM_P95_LIMIT_MS)
+        && shim_warm_worst_p99_ms.is_some_and(|value| value <= SHIM_WARM_P99_LIMIT_MS)
         && shim_cold_worst_p95_ms <= SHIM_COLD_P95_LIMIT_MS
         && !startup_bias_material
         && hookstat_induced_timeouts_for_healthy_hook == 0;
+    let outcome = if passed {
+        "PASS"
+    } else if admitted_warm_failure_occurred {
+        "FAIL_FROZEN_BUDGET"
+    } else if warm_admitted_runs < QUALIFYING_RUNS {
+        "INSUFFICIENT_ADMITTED_WINDOWS"
+    } else if startup_bias_material {
+        "INVALIDATED_BUILD_COMPARABILITY"
+    } else {
+        "FAIL_FROZEN_BUDGET"
+    };
     let receipt = Receipt {
         schema_version: 1,
         run_kind: "g36_release_artifact_performance_qualification",
@@ -671,6 +941,17 @@ fn release_artifact_meets_the_frozen_g36_budget() {
         oracle_transport: "feature_gated_local_fixed_32_byte_timing_side_channel",
         oracle_record_bytes: ORACLE_RECORD_BYTES,
         observed_overhead_includes_oracle_side_channel: true,
+        host_control_methodology: HOST_CONTROL_METHODOLOGY,
+        host_control_fixture: "hookstat-hook-fixture",
+        host_control_samples_per_phase: SAMPLES_PER_RUN,
+        host_control_warmups_per_timed_sample: WARMUPS_PER_SAMPLE,
+        host_control_percentile_method: "nearest_rank",
+        host_control_p95_limit_ms: HOST_CONTROL_P95_LIMIT_MS,
+        host_control_p99_limit_ms: HOST_CONTROL_P99_LIMIT_MS,
+        warm_admitted_runs_required: QUALIFYING_RUNS,
+        max_warm_window_attempts,
+        rejected_window_retry_interval_ms: u64::try_from(reject_retry_interval.as_millis())
+            .unwrap_or(u64::MAX),
         warmup_definition: "25_unmeasured_fresh_actual_instrumented_hookstat_hook_help_launches_before_each_timed_invocation",
         warm_harness_self_load: false,
         qualifying_runs: QUALIFYING_RUNS,
@@ -689,6 +970,10 @@ fn release_artifact_meets_the_frozen_g36_budget() {
         instrumented_startup_worst_p99_ms,
         startup_tail_bias_correction_ms,
         startup_bias_material,
+        warm_window_attempts,
+        host_control_rejected_windows,
+        warm_admitted_runs,
+        admitted_warm_failure_occurred,
         raw_oracle_series,
         series,
         oracle_primary_record_worst_p95_ms,
@@ -700,13 +985,13 @@ fn release_artifact_meets_the_frozen_g36_budget() {
         shim_cold_worst_p95_ms,
         healthy_near_timeout_runs,
         hookstat_induced_timeouts_for_healthy_hook,
-        outcome: if passed { "PASS" } else { "FAIL" },
+        outcome,
         owner_live_codex_config_mutated: false,
         raw_private_content_captured: false,
     };
-    write_receipt(&receipt);
+    write_receipt(&qualification_output, &receipt);
     drop(host);
-    assert!(passed, "G36 frozen performance budget was exceeded");
+    assert!(passed, "G36 qualification outcome was {outcome}");
 }
 
 #[test]

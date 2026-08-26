@@ -10,6 +10,8 @@ pub mod codex;
 pub mod diagnostics;
 pub mod domain;
 pub mod evidence;
+#[cfg(feature = "performance-harness")]
+pub mod g36_host_admission;
 #[allow(dead_code)]
 mod hook_shim;
 pub mod identity;
