@@ -69,6 +69,22 @@ pub struct ReceiptReconciliationState {
     pub malformed_receipts: u64,
 }
 
+/// Read-only, bounded receipt facts retained by the reconciliation catalog.
+///
+/// These values are valid only when the caller has independently confirmed
+/// that the durable receipt journal has not advanced past `journal_offset`.
+/// They deliberately do not attempt to revalidate every canonical receipt
+/// file: that is an explicit reconciliation operation, not a diagnostics
+/// control-plane query.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ReceiptCatalogDiagnostics {
+    pub journal_offset: u64,
+    pub record_count: u64,
+    pub incomplete: u64,
+    pub malformed: u64,
+    pub latest_occurred_at_unix_ms: Option<i64>,
+}
+
 /// Work returned by the normal analysis query. Its row count is a real count
 /// of materialized canonical rows, not a wall-clock estimate.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -371,6 +387,41 @@ impl Ledger {
             .query_row(&sql, [], |row| row.get::<_, i64>(0))
             .map(|value| value as u64)
             .map_err(Into::into)
+    }
+
+    /// Returns the bounded receipt catalog facts when the ledger has a
+    /// reconciliation cursor. A missing catalog remains unobserved rather
+    /// than being fabricated into a zero-integrity result.
+    pub(crate) fn receipt_catalog_diagnostics_if_present(
+        &self,
+        receipt_source_key: &str,
+        reconciliation_source_key: &str,
+    ) -> Result<Option<ReceiptCatalogDiagnostics>, LedgerError> {
+        let Some(state) =
+            self.receipt_reconciliation_state_if_present(reconciliation_source_key)?
+        else {
+            return Ok(None);
+        };
+        let (record_count, incomplete, latest_occurred_at_unix_ms): (i64, i64, Option<i64>) = self
+            .connection
+            .query_row(
+                "SELECT count(*),
+                        COALESCE(SUM(CASE WHEN terminal_status = 'incomplete' THEN 1 ELSE 0 END), 0),
+                        MAX(occurred_at_unix_ms)
+                 FROM hook_invocations
+                 WHERE source_key = ?1",
+                [receipt_source_key],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        Ok(Some(ReceiptCatalogDiagnostics {
+            journal_offset: state.journal_offset,
+            record_count: u64::try_from(record_count)
+                .map_err(|_| ValidationError::new("receipt_record_count"))?,
+            incomplete: u64::try_from(incomplete)
+                .map_err(|_| ValidationError::new("receipt_incomplete"))?,
+            malformed: state.malformed_receipts,
+            latest_occurred_at_unix_ms,
+        }))
     }
 
     /// Reads the bounded working set needed for every finite reliability view.
@@ -1253,7 +1304,9 @@ mod tests {
     #[test]
     fn receipt_reconciliation_cursor_and_rows_commit_together() {
         let mut ledger = Ledger::open_in_memory().unwrap();
-        let first = fixture("receipt-one");
+        let mut first = fixture("receipt-one");
+        first.source_key = "codex_instrumented_receipts_v1".into();
+        first.occurred_at_unix_ms = 1_234;
         let receipt = ledger
             .ingest_receipt_reconciliation(
                 "receipt_catalog_journal_v1",
@@ -1278,6 +1331,21 @@ mod tests {
             .unwrap();
         assert_eq!(replay.duplicates, 1);
         assert_eq!(ledger.invocation_count().unwrap(), 1);
+        assert_eq!(
+            ledger
+                .receipt_catalog_diagnostics_if_present(
+                    "codex_instrumented_receipts_v1",
+                    "receipt_catalog_journal_v1",
+                )
+                .unwrap(),
+            Some(ReceiptCatalogDiagnostics {
+                journal_offset: 42,
+                record_count: 1,
+                incomplete: 0,
+                malformed: 1,
+                latest_occurred_at_unix_ms: Some(1_234),
+            })
+        );
     }
 
     #[test]

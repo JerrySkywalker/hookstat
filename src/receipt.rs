@@ -16,8 +16,8 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const SOURCE_KEY: &str = "codex_instrumented_receipts_v1";
-const RECONCILIATION_SOURCE_KEY: &str = "receipt_catalog_journal_v1";
+pub(crate) const SOURCE_KEY: &str = "codex_instrumented_receipts_v1";
+pub(crate) const RECONCILIATION_SOURCE_KEY: &str = "receipt_catalog_journal_v1";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -144,6 +144,18 @@ impl ReceiptSpool {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Returns only the durable journal byte length. This never enumerates or
+    /// parses receipt files, so diagnostics can compare an existing catalog
+    /// cursor without turning a routine health query into a legacy-history
+    /// scan.
+    pub(crate) fn journal_length_read_only(&self) -> Result<u64, ReceiptError> {
+        match fs::metadata(self.journal_path()) {
+            Ok(metadata) => Ok(metadata.len()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(0),
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub fn write_start(&self, value: &ReceiptStart) -> Result<(), ReceiptError> {

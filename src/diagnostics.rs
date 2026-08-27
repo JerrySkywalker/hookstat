@@ -11,8 +11,8 @@ use crate::codex::{self, EffectiveDiscoverySummary, InstrumentationDisposition};
 use crate::domain::{EvidenceCoverage, Runtime};
 use crate::evidence::{DomainAuthority, DomainAuthoritySelection, NativeAdmissionState};
 use crate::ipc::{BrokerDiagnostics, IpcClient, IpcError, LocalEndpoint};
-use crate::ledger::Ledger;
-use crate::receipt::{ReceiptScan, ReceiptSpool};
+use crate::ledger::{Ledger, ReceiptCatalogDiagnostics};
+use crate::receipt::{RECONCILIATION_SOURCE_KEY, ReceiptSpool, SOURCE_KEY};
 use crate::runtime::codex::{
     CODEX_TESTED_CLI_VERSION, CodexHostPlatform, CodexNativeCapabilityProbe, CodexNativeL2Status,
     CodexProtocolVersion,
@@ -214,7 +214,7 @@ pub fn collect_with_authorities(
 
     let spool_root = data_root.join("receipts");
     let records_root = spool_root.join("records");
-    let mut scan = None;
+    let mut catalog = None;
     if !records_root.exists() {
         checks.push(DiagnosticCheck {
             id: DiagnosticCheckId::ReceiptSpool,
@@ -227,19 +227,27 @@ pub fn collect_with_authorities(
                 let writable_attribute = std::fs::metadata(spool.root().join("records"))
                     .map(|metadata| !metadata.permissions().readonly())
                     .unwrap_or(false);
-                let value = spool.scan();
-                let record_count = value.invocations.len() as u64;
-                scan = Some(value);
+                // A normal diagnostics refresh must never parse the entire
+                // legacy receipt directory. When its durable catalog cursor
+                // exactly matches the append-only journal, reuse the bounded
+                // catalog facts. A missing or stale catalog remains explicit
+                // as unobserved rather than being misreported as clean.
+                catalog = receipt_catalog_for_diagnostics(data_root, &spool);
                 checks.push(DiagnosticCheck {
                     id: DiagnosticCheckId::ReceiptSpool,
-                    status: if writable_attribute {
+                    status: if writable_attribute && catalog.is_some() {
                         DiagnosticStatus::Pass
                     } else {
                         DiagnosticStatus::Warning
                     },
-                    facts: vec![DiagnosticFact::ReceiptRecords {
-                        count: record_count,
-                    }],
+                    facts: catalog
+                        .as_ref()
+                        .map(|value| {
+                            vec![DiagnosticFact::ReceiptRecords {
+                                count: value.record_count,
+                            }]
+                        })
+                        .unwrap_or_default(),
                 });
             }
             Err(_) => checks.push(DiagnosticCheck {
@@ -251,13 +259,13 @@ pub fn collect_with_authorities(
     }
 
     checks.push(ledger_check(&data_root.join("ledger.sqlite3")));
-    checks.push(receipt_integrity_check(scan.as_ref()));
+    checks.push(receipt_integrity_check(catalog.as_ref()));
     checks.push(coverage_check(
         static_discovery.as_ref(),
         effective_discovery.as_ref(),
     ));
     checks.push(path_identity_check());
-    checks.push(evidence_freshness_check(scan.as_ref(), now_unix_ms));
+    checks.push(evidence_freshness_check(catalog.as_ref(), now_unix_ms));
 
     let overall_status = checks
         .iter()
@@ -276,6 +284,18 @@ pub fn collect_with_authorities(
         ),
         broker: broker_diagnostics_report(data_root),
     }
+}
+
+fn receipt_catalog_for_diagnostics(
+    data_root: &Path,
+    spool: &ReceiptSpool,
+) -> Option<ReceiptCatalogDiagnostics> {
+    let journal_length = spool.journal_length_read_only().ok()?;
+    let ledger = Ledger::open_read_only(data_root.join("ledger.sqlite3")).ok()?;
+    let catalog = ledger
+        .receipt_catalog_diagnostics_if_present(SOURCE_KEY, RECONCILIATION_SOURCE_KEY)
+        .ok()??;
+    (catalog.journal_offset == journal_length).then_some(catalog)
 }
 
 fn codex_binary_check_from(version: &CodexVersion) -> DiagnosticCheck {
@@ -756,20 +776,22 @@ fn ledger_check(path: &Path) -> DiagnosticCheck {
     }
 }
 
-fn receipt_integrity_check(scan: Option<&ReceiptScan>) -> DiagnosticCheck {
-    match scan {
-        Some(scan) => DiagnosticCheck {
+fn receipt_integrity_check(catalog: Option<&ReceiptCatalogDiagnostics>) -> DiagnosticCheck {
+    match catalog {
+        Some(catalog) => DiagnosticCheck {
             id: DiagnosticCheckId::ReceiptIntegrity,
-            status: if scan.malformed > 0 {
+            // The catalog is current with the journal, but routine
+            // diagnostics intentionally does not parse every canonical file.
+            // Keep a clean snapshot as Warning so an unverified legacy spool
+            // can never be shown as a fully healthy integrity proof.
+            status: if catalog.malformed > 0 {
                 DiagnosticStatus::Fail
-            } else if scan.starts_without_completion > 0 {
-                DiagnosticStatus::Warning
             } else {
-                DiagnosticStatus::Pass
+                DiagnosticStatus::Warning
             },
             facts: vec![DiagnosticFact::ReceiptIntegrity {
-                incomplete: scan.starts_without_completion,
-                malformed: scan.malformed,
+                incomplete: catalog.incomplete,
+                malformed: catalog.malformed,
             }],
         },
         None => DiagnosticCheck {
@@ -835,13 +857,11 @@ fn path_identity_check() -> DiagnosticCheck {
     }
 }
 
-fn evidence_freshness_check(scan: Option<&ReceiptScan>, now_unix_ms: i64) -> DiagnosticCheck {
-    let latest = scan.and_then(|scan| {
-        scan.invocations
-            .iter()
-            .map(|value| value.occurred_at_unix_ms)
-            .max()
-    });
+fn evidence_freshness_check(
+    catalog: Option<&ReceiptCatalogDiagnostics>,
+    now_unix_ms: i64,
+) -> DiagnosticCheck {
+    let latest = catalog.and_then(|catalog| catalog.latest_occurred_at_unix_ms);
     let Some(latest) = latest else {
         return DiagnosticCheck {
             id: DiagnosticCheckId::EvidenceFreshness,
@@ -864,10 +884,11 @@ fn evidence_freshness_check(scan: Option<&ReceiptScan>, now_unix_ms: i64) -> Dia
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::{ExecutionMode, HandlerIdentity, HookEvent};
     use crate::evidence::{CoverageDomain, EventFamily, RuntimeId, SourceScope};
+    use crate::receipt::ReceiptStart;
     #[cfg(windows)]
     use std::ffi::OsString;
-    #[cfg(windows)]
     use std::fs;
     use tempfile::tempdir;
 
@@ -892,6 +913,101 @@ mod tests {
         assert!(!report.production_evidence.third_transport_present);
         assert!(!report.production_evidence.shadow_in_denominator);
         assert_eq!(report.broker.state, BrokerDiagnosticState::Absent);
+    }
+
+    /// G38 regression scale proof: ordinary diagnostics must leave a large
+    /// pre-catalog legacy spool explicitly unobserved instead of parsing every
+    /// file. The empty files would produce `Fail` under the former full scan,
+    /// so the expected `Unknown` status is a deterministic non-scan oracle.
+    #[test]
+    #[ignore = "explicit G38 legacy diagnostics boundedness scale proof"]
+    fn large_uncatalogued_legacy_history_is_not_scanned_by_diagnostics() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("HookStat");
+        let records = root.join("receipts").join("records");
+        fs::create_dir_all(&records).unwrap();
+        for index in 0..6_769 {
+            fs::write(
+                records.join(format!("legacy-{index:05}.complete.json")),
+                b"not a receipt",
+            )
+            .unwrap();
+        }
+
+        let report = collect(&root, 1_000);
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::ReceiptSpool
+                && check.status == DiagnosticStatus::Warning
+                && check.facts.is_empty()
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::ReceiptIntegrity
+                && check.status == DiagnosticStatus::Unknown
+                && check.facts.is_empty()
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::EvidenceFreshness
+                && check.status == DiagnosticStatus::Unknown
+                && check.facts.is_empty()
+        }));
+    }
+
+    #[test]
+    fn current_catalog_keeps_a_clean_snapshot_explicitly_unverified() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("HookStat");
+        let spool = ReceiptSpool::open(root.join("receipts")).unwrap();
+        spool
+            .write_start(&ReceiptStart {
+                schema_version: 1,
+                invocation_id: "catalogued-start".into(),
+                handler: HandlerIdentity {
+                    key: "hk_catalogued".into(),
+                    revision: "fixture-r1".into(),
+                    label: "Catalogued fixture".into(),
+                    source_kind: "fixture".into(),
+                    event: HookEvent::Stop,
+                    matcher_identity: "fixture".into(),
+                    structural_identity: "fixture".into(),
+                    execution_mode: ExecutionMode::Sync,
+                },
+                source: "fixture".into(),
+                started_at_unix_ms: 1_000,
+                coverage: EvidenceCoverage::Partial,
+            })
+            .unwrap();
+        let mut ledger = Ledger::open_path(root.join("ledger.sqlite3")).unwrap();
+        let reconciled = spool.reconcile_incremental(&mut ledger, 1_000).unwrap();
+        assert!(reconciled.work.full_reconciliation);
+        drop(ledger);
+
+        // This record is intentionally outside the durable journal. A normal
+        // diagnostics refresh must not parse it, nor claim the catalog proves
+        // an exhaustive live integrity scan.
+        fs::write(
+            spool
+                .root()
+                .join("records")
+                .join("unverified.complete.json"),
+            b"not a receipt",
+        )
+        .unwrap();
+
+        let report = collect(&root, 1_001);
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::ReceiptSpool
+                && check.status == DiagnosticStatus::Pass
+                && check.facts == vec![DiagnosticFact::ReceiptRecords { count: 1 }]
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::ReceiptIntegrity
+                && check.status == DiagnosticStatus::Warning
+                && check.facts
+                    == vec![DiagnosticFact::ReceiptIntegrity {
+                        incomplete: 1,
+                        malformed: 0,
+                    }]
+        }));
     }
 
     #[test]
