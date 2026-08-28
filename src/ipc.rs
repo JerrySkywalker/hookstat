@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 pub use crate::ipc_client::{
     BrokerAcknowledgement, BrokerStartup, Completion, ExitClassification, IpcClient, IpcFrame,
-    LifecycleFrame, LocalEndpoint, TerminalOutcome,
+    LifecycleFrame, LocalEndpoint, ObservationDisposition, ProducerPolicy, TerminalOutcome,
 };
 #[cfg(feature = "performance-harness")]
 pub(crate) use crate::ipc_client::{
