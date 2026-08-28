@@ -438,7 +438,6 @@ pub struct BrokerHealth {
 }
 
 struct HealthCounters {
-    started_at: Instant,
     accepted: AtomicU64,
     rejected: AtomicU64,
     dropped: AtomicU64,
@@ -451,7 +450,6 @@ struct HealthCounters {
     durability_requests_coalesced: AtomicU64,
     group_flushes: AtomicU64,
     durability_failures: AtomicU64,
-    last_group_flush_completed_ns: AtomicU64,
     last_group_flush_duration_ns: AtomicU64,
 }
 
@@ -542,9 +540,22 @@ enum DurabilityRequestStatus {
 struct DurabilityState {
     requested_generation: u64,
     completed_generation: u64,
+    unscheduled: Option<PendingDurabilityRange>,
+    in_flight: Option<PendingDurabilityRange>,
+    queued: Option<PendingDurabilityRange>,
     coalesce_until: Option<Instant>,
     shutting_down: bool,
     failed: bool,
+}
+
+/// A bounded oldest-pending marker. At most one range is waiting for the
+/// current sync, one is in flight, and one has not yet reached the group
+/// durability threshold; that is sufficient to report the exact oldest
+/// append which is not yet known durable.
+#[derive(Clone, Copy, Debug)]
+struct PendingDurabilityRange {
+    through_generation: u64,
+    oldest_append_at: Instant,
 }
 
 #[derive(Debug, Default)]
@@ -556,6 +567,22 @@ struct DurabilityCoordinator {
 }
 
 impl DurabilityCoordinator {
+    fn record_append(&self, generation: u64, appended_at: Instant) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &mut state.unscheduled {
+            Some(range) => range.through_generation = range.through_generation.max(generation),
+            None => {
+                state.unscheduled = Some(PendingDurabilityRange {
+                    through_generation: generation,
+                    oldest_append_at: appended_at,
+                });
+            }
+        }
+    }
+
     fn request(&self, through_generation: u64, coalesce_until: Instant) -> DurabilityRequestStatus {
         let mut state = self
             .state
@@ -569,6 +596,20 @@ impl DurabilityCoordinator {
         } else {
             DurabilityRequestStatus::Scheduled
         };
+        if let Some(range) = state.unscheduled.take() {
+            debug_assert!(range.through_generation <= through_generation);
+            match &mut state.queued {
+                Some(queued) => {
+                    queued.through_generation = queued.through_generation.max(through_generation);
+                }
+                None => {
+                    state.queued = Some(PendingDurabilityRange {
+                        through_generation,
+                        oldest_append_at: range.oldest_append_at,
+                    });
+                }
+            }
+        }
         state.requested_generation = state.requested_generation.max(through_generation);
         state.coalesce_until = Some(
             state
@@ -619,7 +660,12 @@ impl DurabilityCoordinator {
                     }
                 }
                 state.coalesce_until = None;
-                return Some(state.requested_generation);
+                let range = state
+                    .queued
+                    .take()
+                    .expect("requested durability range is tracked");
+                state.in_flight = Some(range);
+                return Some(range.through_generation);
             }
             if state.shutting_down {
                 return None;
@@ -637,7 +683,24 @@ impl DurabilityCoordinator {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.completed_generation = state.completed_generation.max(through_generation);
+        if let Some(range) = state.in_flight.take() {
+            debug_assert!(range.through_generation <= through_generation);
+        }
         self.wake.notify_all();
+    }
+
+    fn pending_wal_flush_lag_ms(&self) -> Option<u64> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        [state.unscheduled, state.in_flight, state.queued]
+            .into_iter()
+            .flatten()
+            .map(|range| {
+                u64::try_from(range.oldest_append_at.elapsed().as_millis()).unwrap_or(u64::MAX)
+            })
+            .max()
     }
 
     fn publish_failure(&self) {
@@ -827,6 +890,7 @@ struct BrokerCore {
     active_connections: AtomicUsize,
     ack_timeout: Duration,
     health: Arc<HealthCounters>,
+    durability: Arc<DurabilityCoordinator>,
     last_activity: Mutex<Instant>,
     recent_ipc_latency: RecentDurations,
     recent_queue_wait: RecentDurations,
@@ -840,11 +904,6 @@ impl BrokerCore {
         let (samples, latency_p50_us, latency_p95_us, latency_p99_us) =
             self.recent_ipc_latency.percentiles_us();
         let (_, _, queue_wait_p95_us, _) = self.recent_queue_wait.percentiles_us();
-        let now_ns = duration_nanos(self.health.started_at.elapsed());
-        let last_flush_completed_ns = self
-            .health
-            .last_group_flush_completed_ns
-            .load(Ordering::Acquire);
         let last_flush_duration_ns = self
             .health
             .last_group_flush_duration_ns
@@ -870,8 +929,7 @@ impl BrokerCore {
             recent_ipc_latency_p95_us: latency_p95_us,
             recent_ipc_latency_p99_us: latency_p99_us,
             recent_queue_wait_p95_us: queue_wait_p95_us,
-            wal_flush_lag_ms: (last_flush_completed_ns != 0)
-                .then(|| now_ns.saturating_sub(last_flush_completed_ns) / 1_000_000),
+            wal_flush_lag_ms: self.durability.pending_wal_flush_lag_ms(),
             last_wal_flush_duration_us: (last_flush_duration_ns != 0)
                 .then(|| last_flush_duration_ns.div_ceil(1_000)),
         }
@@ -1085,7 +1143,6 @@ impl BrokerHost {
         let listener = endpoint.bind()?;
         let (queue_sender, queue_receiver) = mpsc::sync_channel(config.queue_capacity);
         let health = Arc::new(HealthCounters {
-            started_at: Instant::now(),
             accepted: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
@@ -1098,15 +1155,16 @@ impl BrokerHost {
             durability_requests_coalesced: AtomicU64::new(0),
             group_flushes: AtomicU64::new(0),
             durability_failures: AtomicU64::new(0),
-            last_group_flush_completed_ns: AtomicU64::new(0),
             last_group_flush_duration_ns: AtomicU64::new(0),
         });
+        let durability = Arc::new(DurabilityCoordinator::default());
         let core = Arc::new(BrokerCore {
             queue: queue_sender,
             queue_depth: AtomicUsize::new(0),
             active_connections: AtomicUsize::new(0),
             ack_timeout: config.ack_timeout,
             health: Arc::clone(&health),
+            durability: Arc::clone(&durability),
             last_activity: Mutex::new(Instant::now()),
             recent_ipc_latency: RecentDurations::new(),
             recent_queue_wait: RecentDurations::new(),
@@ -1114,7 +1172,6 @@ impl BrokerHost {
             qualification_stage_collector: qualification_stage_collector.clone(),
         });
         let stopping = Arc::new(AtomicBool::new(false));
-        let durability = Arc::new(DurabilityCoordinator::default());
         let mut handles = Vec::new();
         {
             let health = Arc::clone(&health);
@@ -1327,6 +1384,7 @@ fn wal_worker_loop(
                         let append_started = queued.timing.as_ref().map(|_| Instant::now());
                         match wal.append(&queued.frame) {
                             Ok(()) => {
+                                durability.record_append(wal.append_generation(), Instant::now());
                                 #[cfg(feature = "performance-harness")]
                                 if let (Some(timing), Some(append_started)) =
                                     (&queued.timing, append_started)
@@ -1447,10 +1505,6 @@ fn durability_worker_loop(
             Ok(()) => {
                 health.last_group_flush_duration_ns.store(
                     duration_nanos(sync_started.elapsed()).max(1),
-                    Ordering::Release,
-                );
-                health.last_group_flush_completed_ns.store(
-                    duration_nanos(health.started_at.elapsed()).max(1),
                     Ordering::Release,
                 );
                 #[cfg(test)]
@@ -2127,6 +2181,39 @@ mod tests {
     }
 
     #[test]
+    fn wal_flush_lag_tracks_only_the_oldest_not_yet_durable_append() {
+        let durability = DurabilityCoordinator::default();
+        let first_append = Instant::now() - Duration::from_millis(50);
+        durability.record_append(1, first_append);
+        assert!(durability.pending_wal_flush_lag_ms().is_some());
+        assert_eq!(
+            durability.request(1, Instant::now()),
+            DurabilityRequestStatus::Scheduled
+        );
+        assert_eq!(durability.next_request(), Some(1));
+
+        let later_append = Instant::now();
+        durability.record_append(2, later_append);
+        assert_eq!(
+            durability.request(2, Instant::now()),
+            DurabilityRequestStatus::Coalesced
+        );
+        durability.complete(1);
+
+        let state = durability
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(state.in_flight.is_none());
+        assert_eq!(state.queued.unwrap().oldest_append_at, later_append);
+        drop(state);
+
+        assert_eq!(durability.next_request(), Some(2));
+        durability.complete(2);
+        assert_eq!(durability.pending_wal_flush_lag_ms(), None);
+    }
+
+    #[test]
     fn fifty_millisecond_low_traffic_trigger_syncs_without_a_later_frame() {
         let temp = tempfile::tempdir().unwrap();
         let (sync, entered_receiver, release_sender) = controlled_group_sync();
@@ -2312,7 +2399,6 @@ mod tests {
     fn queue_overload_is_bounded_and_visible_without_false_acknowledgement() {
         let (sender, _receiver) = mpsc::sync_channel(1);
         let health = Arc::new(HealthCounters {
-            started_at: Instant::now(),
             accepted: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
@@ -2325,15 +2411,16 @@ mod tests {
             durability_requests_coalesced: AtomicU64::new(0),
             group_flushes: AtomicU64::new(0),
             durability_failures: AtomicU64::new(0),
-            last_group_flush_completed_ns: AtomicU64::new(0),
             last_group_flush_duration_ns: AtomicU64::new(0),
         });
+        let durability = Arc::new(DurabilityCoordinator::default());
         let broker = BrokerCore {
             queue: sender,
             queue_depth: AtomicUsize::new(0),
             active_connections: AtomicUsize::new(0),
             ack_timeout: Duration::from_millis(1),
             health: Arc::clone(&health),
+            durability,
             last_activity: Mutex::new(Instant::now()),
             recent_ipc_latency: RecentDurations::new(),
             recent_queue_wait: RecentDurations::new(),

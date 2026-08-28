@@ -971,6 +971,20 @@ impl IpcClient {
         Self::connect_with_timeouts(endpoint, timeout, timeout)
     }
 
+    /// Connect without extending a caller-owned deadline. This is reserved for
+    /// read-only control-plane probes that must bound endpoint connection and
+    /// request/response as one operation.
+    pub(crate) fn connect_until(
+        endpoint: &LocalEndpoint,
+        deadline: Instant,
+    ) -> Result<Self, IpcError> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(timed_out("bounded IPC connection"));
+        }
+        Self::connect_with_timeouts(endpoint, remaining, remaining)
+    }
+
     /// Connect and acknowledge under independently bounded budgets. The
     /// producer contract reserves a short endpoint probe separately from the
     /// complete write-plus-acknowledgement exchange.
@@ -1059,7 +1073,18 @@ impl IpcClient {
     /// HSIP control plane. It does not enqueue, append, acknowledge, replay, or
     /// otherwise create evidence.
     pub fn diagnostics(&mut self) -> Result<BrokerDiagnostics, IpcError> {
-        let deadline = Instant::now() + self.timeout;
+        self.diagnostics_until(Instant::now() + self.timeout)
+    }
+
+    /// Requests a sanitized numeric broker snapshot without extending a
+    /// caller-owned deadline.
+    pub(crate) fn diagnostics_until(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<BrokerDiagnostics, IpcError> {
+        if deadline <= Instant::now() {
+            return Err(timed_out("bounded IPC diagnostics"));
+        }
         let request = IpcFrame::BrokerDiagnosticsRequest;
         #[cfg(unix)]
         write_frame_until(&mut self.stream, &request, deadline)?;
@@ -1862,6 +1887,47 @@ mod tests {
         ] {
             assert!(!serialized.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn caller_owned_diagnostic_deadline_is_never_reset() {
+        let temp = tempfile::tempdir().unwrap();
+        let endpoint = LocalEndpoint::from_state_root(temp.path()).unwrap();
+        let listener = endpoint.bind().unwrap();
+        let (accepted_sender, accepted_receiver) = std::sync::mpsc::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let accept_deadline = Instant::now() + Duration::from_secs(1);
+            let _stream = loop {
+                match listener.accept() {
+                    Ok(stream) => break stream,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < accept_deadline, "client did not connect");
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("listener failed: {error}"),
+                }
+            };
+            accepted_sender.send(()).unwrap();
+            release_receiver
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+        });
+
+        let mut client =
+            IpcClient::connect_until(&endpoint, Instant::now() + Duration::from_millis(100))
+                .unwrap();
+        accepted_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        let deadline = Instant::now() - Duration::from_millis(1);
+        let error = client.diagnostics_until(deadline).unwrap_err();
+        assert!(matches!(
+            error,
+            IpcError::Io(error) if error.kind() == io::ErrorKind::TimedOut
+        ));
+        release_sender.send(()).unwrap();
+        server.join().unwrap();
     }
     #[test]
     fn malformed_and_private_values_are_rejected_or_absent() {
