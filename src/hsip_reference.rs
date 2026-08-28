@@ -207,7 +207,11 @@ impl ReferenceProducer {
         fixture: ReferenceWireFixture,
     ) -> Result<BrokerAcknowledgement, IpcError> {
         let encoded = ReferenceInvocation::new(0, 0).encoded_wire_fixture(fixture)?;
-        let mut client = IpcClient::connect(&self.endpoint, self.policy.connect_timeout)?;
+        let mut client = IpcClient::connect_with_timeouts(
+            &self.endpoint,
+            self.policy.connect_timeout,
+            self.policy.acknowledgement_timeout,
+        )?;
         client.send_encoded_for_conformance(&encoded)
     }
 }
@@ -356,7 +360,7 @@ fn validate_hookstat_reference_sha(value: &str) -> Result<(), IpcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ipc_client::read_frame_bounded;
+    use crate::ipc_client::{read_frame_bounded, write_frame_bounded};
     use interprocess::local_socket::prelude::*;
     use std::io::ErrorKind;
     use std::time::{Duration, Instant};
@@ -559,6 +563,55 @@ mod tests {
                 ReferenceScenario::StartOnly
             )[0],
             ObservationDisposition::Unavailable | ObservationDisposition::BudgetExhausted
+        ));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn reference_wire_fixture_keeps_the_configured_acknowledgement_budget() {
+        let temporary = tempfile::tempdir().unwrap();
+        let endpoint = LocalEndpoint::from_state_root(temporary.path()).unwrap();
+        let listener = endpoint.bind().unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok(stream) => break stream,
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "reference fixture client did not connect"
+                        );
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("test listener failed: {error}"),
+                }
+            };
+            assert!(matches!(
+                read_frame_bounded(&mut stream, Duration::from_millis(100)),
+                Err(IpcError::BadMagic)
+            ));
+            // Deliberately exceed the endpoint-probe budget while remaining
+            // within the independent acknowledgement budget.
+            std::thread::sleep(Duration::from_millis(10));
+            write_frame_bounded(
+                &mut stream,
+                &IpcFrame::Ack(BrokerAcknowledgement::Rejected),
+                Duration::from_millis(100),
+            )
+            .unwrap();
+        });
+        let producer = ReferenceProducer::new(
+            endpoint,
+            ProducerPolicy {
+                connect_timeout: Duration::from_millis(1),
+                acknowledgement_timeout: Duration::from_millis(50),
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            producer.send_wire_fixture_to_broker(ReferenceWireFixture::MalformedMagic),
+            Ok(BrokerAcknowledgement::Rejected)
         ));
         server.join().unwrap();
     }

@@ -115,14 +115,16 @@ fn reference_producer_reports_absence_then_recovers_after_broker_restart_without
         vec![ObservationDisposition::Unavailable]
     );
 
-    let host = BrokerHost::start(config(temp.path())).unwrap();
+    let mut first_config = config(temp.path());
+    first_config.idle_timeout = Duration::from_millis(25);
+    let mut host = BrokerHost::start(first_config).unwrap();
     let producer = ReferenceProducer::new(host.endpoint().clone(), conformance_policy()).unwrap();
     assert_accepted(&producer.emit_scenario(
         &ReferenceInvocation::new(2, 2),
         ReferenceScenario::StartOnly,
     ));
-    let first_health = host.stop();
-    assert_eq!(first_health.accepted, 1);
+    assert!(host.wait_for_idle(Duration::from_secs(1)));
+    assert_eq!(host.health().accepted, 1);
     assert!(matches!(
         producer.emit_scenario(
             &ReferenceInvocation::new(2, 2),
@@ -130,6 +132,7 @@ fn reference_producer_reports_absence_then_recovers_after_broker_restart_without
         )[0],
         ObservationDisposition::Unavailable | ObservationDisposition::BudgetExhausted
     ));
+    drop(host);
 
     let restarted = BrokerHost::start(config(temp.path())).unwrap();
     assert_eq!(restarted.recovery().frames.len(), 1);
