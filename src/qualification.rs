@@ -10,8 +10,8 @@ use crate::hsip_reference::{
     ReferenceScenario,
 };
 use crate::ipc::{
-    BrokerAcknowledgement, BrokerConfig, BrokerHost, CooperativeProducer, GroupDurabilityPolicy,
-    IpcClient, IpcError, IpcFrame, LifecycleFrame, ObservationDisposition,
+    BrokerAcknowledgement, BrokerConfig, BrokerHealth, BrokerHost, CooperativeProducer,
+    GroupDurabilityPolicy, IpcClient, IpcError, IpcFrame, LifecycleFrame, ObservationDisposition,
     QualificationBrokerStageSample, QualificationClientStageSample, QualificationSendFailure,
 };
 use serde::{Deserialize, Serialize};
@@ -126,6 +126,9 @@ pub struct ReferenceHsipPerformanceSeries {
     pub latency: LatencyStatistics,
     pub outcomes: ReferenceHsipObservationCounts,
     pub observation_gaps: usize,
+    /// A qualifying series must have no asynchronous WAL durability failures
+    /// when the broker drains during teardown.
+    pub broker_durability_failures: u64,
     pub frozen_budget_passed: bool,
 }
 
@@ -136,6 +139,8 @@ pub struct ReferenceHsipPerformanceSeries {
 pub struct ReferenceHsipPerformanceReceipt {
     pub schema_version: u8,
     pub run_kind: String,
+    pub build_profile: String,
+    pub release_artifacts: bool,
     pub acceptance_evidence: bool,
     pub reference_producer_production_authority: bool,
     pub frozen_g28_budget_ms: FrozenBudget,
@@ -423,9 +428,11 @@ pub enum QualificationError {
 impl fmt::Display for QualificationError {
     fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Ipc(_) => output.write_str("G35 qualification IPC operation failed"),
-            Self::Io(_) => output.write_str("G35 qualification disposable-state operation failed"),
-            Self::Invalid(value) => write!(output, "invalid G35 qualification value: {value}"),
+            Self::Ipc(_) => output.write_str("HookStat qualification IPC operation failed"),
+            Self::Io(_) => {
+                output.write_str("HookStat qualification disposable-state operation failed")
+            }
+            Self::Invalid(value) => write!(output, "invalid HookStat qualification value: {value}"),
         }
     }
 }
@@ -526,6 +533,7 @@ pub fn run_reference_hsip_performance(
     config: &ReferenceHsipPerformanceConfig,
 ) -> Result<ReferenceHsipPerformanceReceipt, QualificationError> {
     validate_reference_hsip_performance_config(config)?;
+    require_reference_hsip_release_profile()?;
     let mut series = Vec::with_capacity(3);
     for (name, producers, frames_per_producer) in [
         ("one_producer_release", 1, config.one_producer_frames),
@@ -548,8 +556,10 @@ pub fn run_reference_hsip_performance(
     }
     let performance_gate_passed = series.iter().all(|value| value.frozen_budget_passed);
     Ok(ReferenceHsipPerformanceReceipt {
-        schema_version: 1,
+        schema_version: 2,
         run_kind: "hs_g38b_reference_hsip_release_measurement".into(),
+        build_profile: "release".into(),
+        release_artifacts: true,
         // This runner performs a truthful local measurement. It cannot alone
         // satisfy G38B because acceptance additionally needs repeatability,
         // exact-head hosted CI, and independent review.
@@ -623,7 +633,8 @@ fn measure_reference_hsip_series(
         }
         Ok::<_, QualificationError>((latency_ns, outcomes))
     });
-    host.stop();
+    let health = host.stop();
+    reference_broker_health_is_qualifying(&health)?;
     let (latency_ns, outcomes) = result?;
     let latency = latency_statistics(latency_ns)?;
     let observation_gaps = outcomes.observation_gaps();
@@ -636,6 +647,7 @@ fn measure_reference_hsip_series(
         latency,
         outcomes,
         observation_gaps,
+        broker_durability_failures: health.durability_failures,
     })
 }
 
@@ -1606,6 +1618,24 @@ fn validate_reference_hsip_performance_config(
     Ok(())
 }
 
+fn require_reference_hsip_release_profile() -> Result<(), QualificationError> {
+    if cfg!(debug_assertions) {
+        return Err(QualificationError::Invalid(
+            "reference_hsip_release_profile_required",
+        ));
+    }
+    Ok(())
+}
+
+fn reference_broker_health_is_qualifying(health: &BrokerHealth) -> Result<(), QualificationError> {
+    if health.durability_failures != 0 {
+        return Err(QualificationError::Invalid(
+            "reference_hsip_broker_durability_failure",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_collector_comparison_config(
     config: &CollectorComparisonConfig,
 ) -> Result<(), QualificationError> {
@@ -1819,11 +1849,39 @@ mod tests {
         );
     }
 
+    #[cfg(debug_assertions)]
+    #[test]
+    fn reference_performance_rejects_debug_artifacts() {
+        assert!(matches!(
+            run_reference_hsip_performance(&ReferenceHsipPerformanceConfig::default()),
+            Err(QualificationError::Invalid(
+                "reference_hsip_release_profile_required"
+            ))
+        ));
+    }
+
+    #[test]
+    fn reference_broker_durability_failure_is_not_qualifying() {
+        let health = BrokerHealth {
+            durability_failures: 1,
+            ..Default::default()
+        };
+        assert!(matches!(
+            reference_broker_health_is_qualifying(&health),
+            Err(QualificationError::Invalid(
+                "reference_hsip_broker_durability_failure"
+            ))
+        ));
+    }
+
+    #[cfg(not(debug_assertions))]
     #[test]
     fn reference_performance_receipt_is_non_authoritative_and_sanitized() {
         let receipt =
             run_reference_hsip_performance(&ReferenceHsipPerformanceConfig::default()).unwrap();
         assert!(!receipt.acceptance_evidence);
+        assert_eq!(receipt.build_profile, "release");
+        assert!(receipt.release_artifacts);
         assert!(!receipt.reference_producer_production_authority);
         assert!(!receipt.raw_private_content_captured);
         assert_eq!(
@@ -1837,6 +1895,12 @@ mod tests {
         assert_eq!(receipt.series[0].attempted_frames, 1_000);
         assert_eq!(receipt.series[1].attempted_frames, 1_000);
         assert_eq!(receipt.series[2].attempted_frames, 10_000);
+        assert!(
+            receipt
+                .series
+                .iter()
+                .all(|series| series.broker_durability_failures == 0)
+        );
         let serialized = serde_json::to_value(receipt).unwrap();
         assert!(serialized.get("prompt").is_none());
         assert!(serialized.get("command").is_none());
