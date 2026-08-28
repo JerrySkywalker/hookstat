@@ -22,16 +22,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub use crate::ipc_client::{
-    BrokerAcknowledgement, BrokerStartup, Completion, ExitClassification, IpcClient, IpcFrame,
-    LifecycleFrame, LocalEndpoint, ObservationDisposition, ProducerPolicy, TerminalOutcome,
+    BROKER_DIAGNOSTICS_SCHEMA_VERSION, BrokerAcknowledgement, BrokerDiagnostics, BrokerStartup,
+    Completion, ExitClassification, IPC_FRAME_HEADER_BYTES, IPC_MAGIC, IPC_PROTOCOL_VERSION,
+    IpcClient, IpcError, IpcFrame, LifecycleFrame, LocalEndpoint, MAX_IPC_FRAME_BYTES,
+    MAX_IPC_REFERENCE_BYTES, ObservationDisposition, ProducerPolicy,
+    RECENT_DIAGNOSTIC_SAMPLE_CAPACITY, TerminalOutcome,
 };
 #[cfg(feature = "performance-harness")]
 pub(crate) use crate::ipc_client::{
     CooperativeProducer, QualificationClientStageSample, QualificationSendFailure,
-};
-pub use crate::ipc_client::{
-    IPC_FRAME_HEADER_BYTES, IPC_MAGIC, IPC_PROTOCOL_VERSION, IpcError, MAX_IPC_FRAME_BYTES,
-    MAX_IPC_REFERENCE_BYTES,
 };
 
 pub const WAL_MAGIC: [u8; 4] = *b"HSWL";
@@ -56,6 +55,9 @@ fn canonical(frame: &IpcFrame) -> Result<CanonicalEvidence, IpcError> {
             completion,
         } => (lifecycle, EvidenceLifecycle::Completed, Some(completion)),
         IpcFrame::Ack(_) => return Err(IpcError::Invalid("acknowledgement_is_not_evidence")),
+        IpcFrame::BrokerDiagnosticsRequest | IpcFrame::BrokerDiagnosticsResponse(_) => {
+            return Err(IpcError::Invalid("control_frame_is_not_evidence"));
+        }
     };
     lifecycle.validate()?;
     let (terminal_status, duration_ms, invocation_coverage) = match (lifecycle_state, completion) {
@@ -448,6 +450,7 @@ struct HealthCounters {
     durability_requests_coalesced: AtomicU64,
     group_flushes: AtomicU64,
     durability_failures: AtomicU64,
+    last_group_flush_duration_ns: AtomicU64,
 }
 
 impl HealthCounters {
@@ -471,6 +474,61 @@ impl HealthCounters {
     }
 }
 
+struct RecentDurations {
+    cursor: AtomicU64,
+    values_ns: [AtomicU64; RECENT_DIAGNOSTIC_SAMPLE_CAPACITY as usize],
+}
+
+impl RecentDurations {
+    fn new() -> Self {
+        Self {
+            cursor: AtomicU64::new(0),
+            values_ns: std::array::from_fn(|_| AtomicU64::new(0)),
+        }
+    }
+
+    fn record(&self, duration: Duration) {
+        let sequence = self.cursor.fetch_add(1, Ordering::AcqRel);
+        let index = (sequence % RECENT_DIAGNOSTIC_SAMPLE_CAPACITY) as usize;
+        self.values_ns[index].store(duration_nanos(duration).max(1), Ordering::Release);
+    }
+
+    fn percentiles_us(&self) -> (u64, u64, u64, u64) {
+        let observed = self.cursor.load(Ordering::Acquire);
+        let expected = observed.min(RECENT_DIAGNOSTIC_SAMPLE_CAPACITY) as usize;
+        let mut values = Vec::with_capacity(expected);
+        let range = if observed <= RECENT_DIAGNOSTIC_SAMPLE_CAPACITY {
+            0..expected
+        } else {
+            0..RECENT_DIAGNOSTIC_SAMPLE_CAPACITY as usize
+        };
+        for index in range {
+            let value = self.values_ns[index].load(Ordering::Acquire);
+            if value != 0 {
+                values.push(value);
+            }
+        }
+        values.sort_unstable();
+        let percentile_us = |percent: usize| -> u64 {
+            if values.is_empty() {
+                return 0;
+            }
+            let rank = (values.len() * percent).div_ceil(100).max(1);
+            values[rank - 1].div_ceil(1_000)
+        };
+        (
+            values.len() as u64,
+            percentile_us(50),
+            percentile_us(95),
+            percentile_us(99),
+        )
+    }
+}
+
+fn duration_nanos(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DurabilityRequestStatus {
     Scheduled,
@@ -482,9 +540,22 @@ enum DurabilityRequestStatus {
 struct DurabilityState {
     requested_generation: u64,
     completed_generation: u64,
+    unscheduled: Option<PendingDurabilityRange>,
+    in_flight: Option<PendingDurabilityRange>,
+    queued: Option<PendingDurabilityRange>,
     coalesce_until: Option<Instant>,
     shutting_down: bool,
     failed: bool,
+}
+
+/// A bounded oldest-pending marker. At most one range is waiting for the
+/// current sync, one is in flight, and one has not yet reached the group
+/// durability threshold; that is sufficient to report the exact oldest
+/// append which is not yet known durable.
+#[derive(Clone, Copy, Debug)]
+struct PendingDurabilityRange {
+    through_generation: u64,
+    oldest_append_at: Instant,
 }
 
 #[derive(Debug, Default)]
@@ -496,6 +567,22 @@ struct DurabilityCoordinator {
 }
 
 impl DurabilityCoordinator {
+    fn record_append(&self, generation: u64, appended_at: Instant) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &mut state.unscheduled {
+            Some(range) => range.through_generation = range.through_generation.max(generation),
+            None => {
+                state.unscheduled = Some(PendingDurabilityRange {
+                    through_generation: generation,
+                    oldest_append_at: appended_at,
+                });
+            }
+        }
+    }
+
     fn request(&self, through_generation: u64, coalesce_until: Instant) -> DurabilityRequestStatus {
         let mut state = self
             .state
@@ -509,6 +596,20 @@ impl DurabilityCoordinator {
         } else {
             DurabilityRequestStatus::Scheduled
         };
+        if let Some(range) = state.unscheduled.take() {
+            debug_assert!(range.through_generation <= through_generation);
+            match &mut state.queued {
+                Some(queued) => {
+                    queued.through_generation = queued.through_generation.max(through_generation);
+                }
+                None => {
+                    state.queued = Some(PendingDurabilityRange {
+                        through_generation,
+                        oldest_append_at: range.oldest_append_at,
+                    });
+                }
+            }
+        }
         state.requested_generation = state.requested_generation.max(through_generation);
         state.coalesce_until = Some(
             state
@@ -559,7 +660,12 @@ impl DurabilityCoordinator {
                     }
                 }
                 state.coalesce_until = None;
-                return Some(state.requested_generation);
+                let range = state
+                    .queued
+                    .take()
+                    .expect("requested durability range is tracked");
+                state.in_flight = Some(range);
+                return Some(range.through_generation);
             }
             if state.shutting_down {
                 return None;
@@ -577,7 +683,24 @@ impl DurabilityCoordinator {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.completed_generation = state.completed_generation.max(through_generation);
+        if let Some(range) = state.in_flight.take() {
+            debug_assert!(range.through_generation <= through_generation);
+        }
         self.wake.notify_all();
+    }
+
+    fn pending_wal_flush_lag_ms(&self) -> Option<u64> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        [state.unscheduled, state.in_flight, state.queued]
+            .into_iter()
+            .flatten()
+            .map(|range| {
+                u64::try_from(range.oldest_append_at.elapsed().as_millis()).unwrap_or(u64::MAX)
+            })
+            .max()
     }
 
     fn publish_failure(&self) {
@@ -756,7 +879,6 @@ impl QualificationRequestTiming {
 struct QueuedFrame {
     frame: IpcFrame,
     acknowledgement: mpsc::SyncSender<BrokerAcknowledgement>,
-    #[cfg(feature = "performance-harness")]
     enqueued_at: Instant,
     #[cfg(feature = "performance-harness")]
     timing: Option<Arc<QualificationRequestTiming>>,
@@ -768,19 +890,57 @@ struct BrokerCore {
     active_connections: AtomicUsize,
     ack_timeout: Duration,
     health: Arc<HealthCounters>,
+    durability: Arc<DurabilityCoordinator>,
     last_activity: Mutex<Instant>,
+    recent_ipc_latency: RecentDurations,
+    recent_queue_wait: RecentDurations,
     #[cfg(feature = "performance-harness")]
     qualification_stage_collector: Option<Arc<QualificationStageCollector>>,
 }
 
 impl BrokerCore {
+    fn diagnostics(&self) -> BrokerDiagnostics {
+        let health = self.health.snapshot();
+        let (samples, latency_p50_us, latency_p95_us, latency_p99_us) =
+            self.recent_ipc_latency.percentiles_us();
+        let (_, _, queue_wait_p95_us, _) = self.recent_queue_wait.percentiles_us();
+        let last_flush_duration_ns = self
+            .health
+            .last_group_flush_duration_ns
+            .load(Ordering::Acquire);
+        BrokerDiagnostics {
+            schema_version: BROKER_DIAGNOSTICS_SCHEMA_VERSION,
+            accepted: health.accepted,
+            rejected: health.rejected,
+            dropped: health.dropped,
+            malformed: health.malformed,
+            replayed: health.replayed,
+            duplicates: health.duplicates,
+            ack_timeouts: health.ack_timeouts,
+            queue_depth: self.queue_depth.load(Ordering::Acquire) as u64,
+            active_connections: self.active_connections.load(Ordering::Acquire) as u64,
+            queue_high_water: health.queue_high_water,
+            durability_requests: health.durability_requests,
+            durability_requests_coalesced: health.durability_requests_coalesced,
+            group_flushes: health.group_flushes,
+            durability_failures: health.durability_failures,
+            recent_ipc_latency_samples: samples,
+            recent_ipc_latency_p50_us: latency_p50_us,
+            recent_ipc_latency_p95_us: latency_p95_us,
+            recent_ipc_latency_p99_us: latency_p99_us,
+            recent_queue_wait_p95_us: queue_wait_p95_us,
+            wal_flush_lag_ms: self.durability.pending_wal_flush_lag_ms(),
+            last_wal_flush_duration_us: (last_flush_duration_ns != 0)
+                .then(|| last_flush_duration_ns.div_ceil(1_000)),
+        }
+    }
+
     #[cfg(not(feature = "performance-harness"))]
     fn submit(&self, frame: IpcFrame) -> BrokerAcknowledgement {
         let (acknowledgement, receiver) = mpsc::sync_channel(1);
         let queued = QueuedFrame {
             frame,
             acknowledgement,
-            #[cfg(feature = "performance-harness")]
             enqueued_at: Instant::now(),
         };
         // Increment before publishing to the worker: an immediate consumer
@@ -995,19 +1155,23 @@ impl BrokerHost {
             durability_requests_coalesced: AtomicU64::new(0),
             group_flushes: AtomicU64::new(0),
             durability_failures: AtomicU64::new(0),
+            last_group_flush_duration_ns: AtomicU64::new(0),
         });
+        let durability = Arc::new(DurabilityCoordinator::default());
         let core = Arc::new(BrokerCore {
             queue: queue_sender,
             queue_depth: AtomicUsize::new(0),
             active_connections: AtomicUsize::new(0),
             ack_timeout: config.ack_timeout,
             health: Arc::clone(&health),
+            durability: Arc::clone(&durability),
             last_activity: Mutex::new(Instant::now()),
+            recent_ipc_latency: RecentDurations::new(),
+            recent_queue_wait: RecentDurations::new(),
             #[cfg(feature = "performance-harness")]
             qualification_stage_collector: qualification_stage_collector.clone(),
         });
         let stopping = Arc::new(AtomicBool::new(false));
-        let durability = Arc::new(DurabilityCoordinator::default());
         let mut handles = Vec::new();
         {
             let health = Arc::clone(&health);
@@ -1175,9 +1339,10 @@ fn wal_worker_loop(
         let worker_available_at = Instant::now();
         match receiver.recv_timeout(Duration::from_millis(2)) {
             Ok(queued) => {
-                #[cfg(feature = "performance-harness")]
                 let dequeued_at = Instant::now();
                 let _depth_at_dequeue = core.queue_depth.fetch_sub(1, Ordering::Relaxed);
+                core.recent_queue_wait
+                    .record(dequeued_at.saturating_duration_since(queued.enqueued_at));
                 #[cfg(feature = "performance-harness")]
                 if let Some(timing) = &queued.timing {
                     QualificationRequestTiming::store(
@@ -1219,6 +1384,7 @@ fn wal_worker_loop(
                         let append_started = queued.timing.as_ref().map(|_| Instant::now());
                         match wal.append(&queued.frame) {
                             Ok(()) => {
+                                durability.record_append(wal.append_generation(), Instant::now());
                                 #[cfg(feature = "performance-harness")]
                                 if let (Some(timing), Some(append_started)) =
                                     (&queued.timing, append_started)
@@ -1319,7 +1485,6 @@ fn durability_worker_loop(
     #[cfg(test)] test_group_sync: Option<Arc<TestGroupSync>>,
 ) {
     while let Some(through_generation) = durability.next_request() {
-        #[cfg(feature = "performance-harness")]
         let sync_started = Instant::now();
         #[cfg(feature = "performance-harness")]
         if let Some(collector) = &qualification_stage_collector {
@@ -1338,6 +1503,10 @@ fn durability_worker_loop(
         }
         match result {
             Ok(()) => {
+                health.last_group_flush_duration_ns.store(
+                    duration_nanos(sync_started.elapsed()).max(1),
+                    Ordering::Release,
+                );
                 #[cfg(test)]
                 if let Some(sync) = &test_group_sync {
                     sync.mark_completed();
@@ -1438,6 +1607,7 @@ fn connection_loop(
         let read_started = stage_collector.as_ref().map(|_| Instant::now());
         match read_frame_bounded(&mut stream, CONNECTION_IDLE_READ_WINDOW) {
             Ok(frame) if frame.is_lifecycle() => {
+                let handling_started = Instant::now();
                 #[cfg(feature = "performance-harness")]
                 let timing = stage_collector
                     .as_ref()
@@ -1468,6 +1638,7 @@ fn connection_loop(
                     &IpcFrame::Ack(acknowledgement),
                     Duration::from_millis(5),
                 );
+                core.recent_ipc_latency.record(handling_started.elapsed());
                 #[cfg(feature = "performance-harness")]
                 if let (Some(collector), Some(timing), Some(acknowledgement_write_started)) = (
                     stage_collector.as_ref(),
@@ -1480,6 +1651,18 @@ fn connection_loop(
                     );
                     collector.record(timing.sample());
                 }
+            }
+            Ok(IpcFrame::BrokerDiagnosticsRequest) => {
+                // A read-only control query must not keep this on-demand
+                // broker alive. Only lifecycle evidence extends the idle
+                // lease; otherwise a polling doctor or TUI would turn the
+                // broker into an accidental service.
+                let response = core.diagnostics();
+                let _ = write_frame_bounded(
+                    &mut stream,
+                    &IpcFrame::BrokerDiagnosticsResponse(response),
+                    Duration::from_millis(5),
+                );
             }
             Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::TimedOut => {
                 // The producer never reuses an acknowledged connection past
@@ -1998,6 +2181,39 @@ mod tests {
     }
 
     #[test]
+    fn wal_flush_lag_tracks_only_the_oldest_not_yet_durable_append() {
+        let durability = DurabilityCoordinator::default();
+        let first_append = Instant::now() - Duration::from_millis(50);
+        durability.record_append(1, first_append);
+        assert!(durability.pending_wal_flush_lag_ms().is_some());
+        assert_eq!(
+            durability.request(1, Instant::now()),
+            DurabilityRequestStatus::Scheduled
+        );
+        assert_eq!(durability.next_request(), Some(1));
+
+        let later_append = Instant::now();
+        durability.record_append(2, later_append);
+        assert_eq!(
+            durability.request(2, Instant::now()),
+            DurabilityRequestStatus::Coalesced
+        );
+        durability.complete(1);
+
+        let state = durability
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(state.in_flight.is_none());
+        assert_eq!(state.queued.unwrap().oldest_append_at, later_append);
+        drop(state);
+
+        assert_eq!(durability.next_request(), Some(2));
+        durability.complete(2);
+        assert_eq!(durability.pending_wal_flush_lag_ms(), None);
+    }
+
+    #[test]
     fn fifty_millisecond_low_traffic_trigger_syncs_without_a_later_frame() {
         let temp = tempfile::tempdir().unwrap();
         let (sync, entered_receiver, release_sender) = controlled_group_sync();
@@ -2195,14 +2411,19 @@ mod tests {
             durability_requests_coalesced: AtomicU64::new(0),
             group_flushes: AtomicU64::new(0),
             durability_failures: AtomicU64::new(0),
+            last_group_flush_duration_ns: AtomicU64::new(0),
         });
+        let durability = Arc::new(DurabilityCoordinator::default());
         let broker = BrokerCore {
             queue: sender,
             queue_depth: AtomicUsize::new(0),
             active_connections: AtomicUsize::new(0),
             ack_timeout: Duration::from_millis(1),
             health: Arc::clone(&health),
+            durability,
             last_activity: Mutex::new(Instant::now()),
+            recent_ipc_latency: RecentDurations::new(),
+            recent_queue_wait: RecentDurations::new(),
             #[cfg(feature = "performance-harness")]
             qualification_stage_collector: None,
         };

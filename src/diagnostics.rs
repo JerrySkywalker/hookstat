@@ -4,10 +4,19 @@
 //! evidence timestamps. It never retains configuration paths, hook commands,
 //! receipt payloads, process output, credentials, or session content.
 
+use crate::admission::{
+    IpcAdmissionState, V031_COOPERATIVE_IPC_ADMISSION, V031_TRANSPARENT_SHIM_ADMISSION,
+};
 use crate::codex::{self, EffectiveDiscoverySummary, InstrumentationDisposition};
 use crate::domain::{EvidenceCoverage, Runtime};
-use crate::ledger::Ledger;
-use crate::receipt::{ReceiptScan, ReceiptSpool};
+use crate::evidence::{DomainAuthority, DomainAuthoritySelection, NativeAdmissionState};
+use crate::ipc::{BrokerDiagnostics, IpcClient, IpcError, LocalEndpoint};
+use crate::ledger::{Ledger, ReceiptCatalogDiagnostics};
+use crate::receipt::{RECONCILIATION_SOURCE_KEY, ReceiptSpool};
+use crate::runtime::codex::{
+    CODEX_TESTED_CLI_VERSION, CodexHostPlatform, CodexNativeCapabilityProbe, CodexNativeL2Status,
+    CodexProtocolVersion,
+};
 use serde::Serialize;
 #[cfg(windows)]
 use std::ffi::{OsStr, OsString};
@@ -17,7 +26,9 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-pub const DIAGNOSTICS_SCHEMA_VERSION: u8 = 1;
+pub const DIAGNOSTICS_SCHEMA_VERSION: u8 = 2;
+pub const MAX_DIAGNOSTIC_AUTHORITY_DOMAINS: usize = 128;
+const BROKER_DIAGNOSTIC_QUERY_TIMEOUT: Duration = Duration::from_millis(20);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -95,12 +106,61 @@ pub struct DiagnosticCheck {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct AuthorityDomainDiagnostic {
+    pub runtime: String,
+    pub event: String,
+    pub source_scope: String,
+    pub native_admission: NativeAdmissionState,
+    pub ipc_admission: IpcAdmissionState,
+    pub selected_authority: DomainAuthoritySelection,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProductionEvidenceDiagnostics {
+    pub runtime: Runtime,
+    pub native_l2_status: CodexNativeL2Status,
+    pub native_admission: NativeAdmissionState,
+    /// This is HookStat's protocol/broker substrate state, never an
+    /// assertion that an unnamed runtime coverage domain is admitted.
+    pub cooperative_ipc_substrate_state: IpcAdmissionState,
+    /// The authority used when the caller did not provide a named coverage
+    /// domain. It remains `not_admitted` until such a domain has a governed
+    /// Native or IPC authority.
+    pub default_cooperative_ipc_authority: DomainAuthoritySelection,
+    pub transparent_shim_admission: IpcAdmissionState,
+    pub transparent_shim_active: bool,
+    pub default_authority: DomainAuthoritySelection,
+    pub evidence_transport_count: u8,
+    pub third_transport_present: bool,
+    pub shadow_in_denominator: bool,
+    pub domains: Vec<AuthorityDomainDiagnostic>,
+    pub domains_truncated: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrokerDiagnosticState {
+    Absent,
+    Running,
+    Unavailable,
+    UnsafeState,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct BrokerDiagnosticsReport {
+    pub state: BrokerDiagnosticState,
+    pub metrics: Option<BrokerDiagnostics>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DiagnosticsReport {
     pub schema_version: u8,
     pub read_only: bool,
     pub generated_at_unix_ms: i64,
     pub overall_status: DiagnosticStatus,
     pub checks: Vec<DiagnosticCheck>,
+    pub production_evidence: ProductionEvidenceDiagnostics,
+    pub broker: BrokerDiagnosticsReport,
 }
 
 impl DiagnosticsReport {
@@ -111,6 +171,14 @@ impl DiagnosticsReport {
             generated_at_unix_ms: now_unix_ms,
             overall_status: DiagnosticStatus::Unknown,
             checks: Vec::new(),
+            production_evidence: production_evidence_diagnostics(
+                CodexNativeL2Status::NotQualified,
+                &[],
+            ),
+            broker: BrokerDiagnosticsReport {
+                state: BrokerDiagnosticState::Absent,
+                metrics: None,
+            },
         }
     }
 }
@@ -118,6 +186,18 @@ impl DiagnosticsReport {
 /// Collects the supported diagnostic checks without creating, repairing, or
 /// changing HookStat, Codex, receipt, or trust state.
 pub fn collect(data_root: &Path, now_unix_ms: i64) -> DiagnosticsReport {
+    collect_with_authorities(data_root, now_unix_ms, &[])
+}
+
+/// Controlled integrations may supply their already-governed authority table
+/// so diagnostics can report the exact selected authority per bounded domain.
+/// The default CLI passes no table and truthfully exposes the NOT_ADMITTED
+/// fallback instead of inferring integration from a handler declaration.
+pub fn collect_with_authorities(
+    data_root: &Path,
+    now_unix_ms: i64,
+    authorities: &[DomainAuthority],
+) -> DiagnosticsReport {
     let mut checks = vec![DiagnosticCheck {
         id: DiagnosticCheckId::HookStatBinary,
         status: DiagnosticStatus::Pass,
@@ -126,7 +206,8 @@ pub fn collect(data_root: &Path, now_unix_ms: i64) -> DiagnosticsReport {
         }],
     }];
 
-    checks.push(codex_binary_check());
+    let codex_version = codex_version();
+    checks.push(codex_binary_check_from(&codex_version));
 
     let static_discovery = codex::discover_default().ok().map(|value| value.summary);
     let effective_discovery = std::env::current_dir()
@@ -139,7 +220,7 @@ pub fn collect(data_root: &Path, now_unix_ms: i64) -> DiagnosticsReport {
 
     let spool_root = data_root.join("receipts");
     let records_root = spool_root.join("records");
-    let mut scan = None;
+    let mut catalog = None;
     if !records_root.exists() {
         checks.push(DiagnosticCheck {
             id: DiagnosticCheckId::ReceiptSpool,
@@ -152,19 +233,27 @@ pub fn collect(data_root: &Path, now_unix_ms: i64) -> DiagnosticsReport {
                 let writable_attribute = std::fs::metadata(spool.root().join("records"))
                     .map(|metadata| !metadata.permissions().readonly())
                     .unwrap_or(false);
-                let value = spool.scan();
-                let record_count = value.invocations.len() as u64;
-                scan = Some(value);
+                // A normal diagnostics refresh must never parse the entire
+                // legacy receipt directory. When its durable catalog cursor
+                // exactly matches the append-only journal, reuse the bounded
+                // catalog facts. A missing or stale catalog remains explicit
+                // as unobserved rather than being misreported as clean.
+                catalog = receipt_catalog_for_diagnostics(data_root, &spool);
                 checks.push(DiagnosticCheck {
                     id: DiagnosticCheckId::ReceiptSpool,
-                    status: if writable_attribute {
+                    status: if writable_attribute && catalog.is_some() {
                         DiagnosticStatus::Pass
                     } else {
                         DiagnosticStatus::Warning
                     },
-                    facts: vec![DiagnosticFact::ReceiptRecords {
-                        count: record_count,
-                    }],
+                    facts: catalog
+                        .as_ref()
+                        .map(|value| {
+                            vec![DiagnosticFact::ReceiptRecords {
+                                count: value.record_count,
+                            }]
+                        })
+                        .unwrap_or_default(),
                 });
             }
             Err(_) => checks.push(DiagnosticCheck {
@@ -176,13 +265,13 @@ pub fn collect(data_root: &Path, now_unix_ms: i64) -> DiagnosticsReport {
     }
 
     checks.push(ledger_check(&data_root.join("ledger.sqlite3")));
-    checks.push(receipt_integrity_check(scan.as_ref()));
+    checks.push(receipt_integrity_check(catalog.as_ref()));
     checks.push(coverage_check(
         static_discovery.as_ref(),
         effective_discovery.as_ref(),
     ));
     checks.push(path_identity_check());
-    checks.push(evidence_freshness_check(scan.as_ref(), now_unix_ms));
+    checks.push(evidence_freshness_check(catalog.as_ref(), now_unix_ms));
 
     let overall_status = checks
         .iter()
@@ -195,19 +284,34 @@ pub fn collect(data_root: &Path, now_unix_ms: i64) -> DiagnosticsReport {
         generated_at_unix_ms: now_unix_ms,
         overall_status,
         checks,
+        production_evidence: production_evidence_diagnostics(
+            native_l2_status(&codex_version),
+            authorities,
+        ),
+        broker: broker_diagnostics_report(data_root),
     }
 }
 
-fn codex_binary_check() -> DiagnosticCheck {
-    codex_binary_check_from(codex_version())
+fn receipt_catalog_for_diagnostics(
+    data_root: &Path,
+    spool: &ReceiptSpool,
+) -> Option<ReceiptCatalogDiagnostics> {
+    let journal_length = spool.journal_length_read_only().ok()??;
+    let ledger = Ledger::open_read_only(data_root.join("ledger.sqlite3")).ok()?;
+    let catalog = ledger
+        .receipt_catalog_diagnostics_if_present(RECONCILIATION_SOURCE_KEY)
+        .ok()??;
+    (catalog.journal_offset == journal_length).then_some(catalog)
 }
 
-fn codex_binary_check_from(version: CodexVersion) -> DiagnosticCheck {
+fn codex_binary_check_from(version: &CodexVersion) -> DiagnosticCheck {
     match version {
         CodexVersion::Present(value) => DiagnosticCheck {
             id: DiagnosticCheckId::CodexBinary,
             status: DiagnosticStatus::Pass,
-            facts: vec![DiagnosticFact::Version { value }],
+            facts: vec![DiagnosticFact::Version {
+                value: value.clone(),
+            }],
         },
         CodexVersion::Missing => DiagnosticCheck {
             id: DiagnosticCheckId::CodexBinary,
@@ -225,6 +329,91 @@ fn codex_binary_check_from(version: CodexVersion) -> DiagnosticCheck {
                 facts: Vec::new(),
             }
         }
+    }
+}
+
+fn native_l2_status(version: &CodexVersion) -> CodexNativeL2Status {
+    match version {
+        CodexVersion::Present(value) if value == CODEX_TESTED_CLI_VERSION => {
+            CodexNativeCapabilityProbe.ordinary_session_attach(
+                &CodexProtocolVersion::tested(),
+                CodexHostPlatform::current(),
+            )
+        }
+        _ => CodexNativeL2Status::NotQualified,
+    }
+}
+
+fn production_evidence_diagnostics(
+    native_l2_status: CodexNativeL2Status,
+    authorities: &[DomainAuthority],
+) -> ProductionEvidenceDiagnostics {
+    let domains = authorities
+        .iter()
+        .take(MAX_DIAGNOSTIC_AUTHORITY_DOMAINS)
+        .map(|authority| AuthorityDomainDiagnostic {
+            runtime: authority.domain.runtime.as_str().to_owned(),
+            event: authority.domain.event.as_str().to_owned(),
+            source_scope: authority.domain.source_scope.as_str().to_owned(),
+            native_admission: authority.native_admission,
+            ipc_admission: authority.ipc_admission,
+            selected_authority: authority.production_authority(),
+        })
+        .collect();
+    ProductionEvidenceDiagnostics {
+        runtime: Runtime::Codex,
+        native_l2_status,
+        native_admission: native_l2_status.native_admission(),
+        cooperative_ipc_substrate_state: V031_COOPERATIVE_IPC_ADMISSION.state,
+        default_cooperative_ipc_authority: DomainAuthoritySelection::NotAdmitted,
+        transparent_shim_admission: V031_TRANSPARENT_SHIM_ADMISSION.state,
+        transparent_shim_active: false,
+        default_authority: DomainAuthoritySelection::NotAdmitted,
+        evidence_transport_count: 2,
+        third_transport_present: false,
+        shadow_in_denominator: false,
+        domains,
+        domains_truncated: authorities.len() > MAX_DIAGNOSTIC_AUTHORITY_DOMAINS,
+    }
+}
+
+fn broker_diagnostics_report(data_root: &Path) -> BrokerDiagnosticsReport {
+    let endpoint = match LocalEndpoint::from_existing_state_root(data_root) {
+        Ok(endpoint) => endpoint,
+        Err(error) => return broker_diagnostics_endpoint_error(error),
+    };
+    // The directory can disappear after endpoint derivation. Validate at the
+    // final read-only boundary so diagnostics never recreate it while trying
+    // to report that the broker is unavailable.
+    if let Err(error) = endpoint.validate_existing_transport() {
+        return broker_diagnostics_endpoint_error(error);
+    };
+    let deadline = Instant::now() + BROKER_DIAGNOSTIC_QUERY_TIMEOUT;
+    match IpcClient::connect_existing_until(&endpoint, deadline)
+        .and_then(|mut client| client.diagnostics_until(deadline))
+    {
+        Ok(metrics) => BrokerDiagnosticsReport {
+            state: BrokerDiagnosticState::Running,
+            metrics: Some(metrics),
+        },
+        Err(_) => BrokerDiagnosticsReport {
+            state: BrokerDiagnosticState::Unavailable,
+            metrics: None,
+        },
+    }
+}
+
+fn broker_diagnostics_endpoint_error(error: IpcError) -> BrokerDiagnosticsReport {
+    let state = match error {
+        IpcError::UnsafeStateObject => BrokerDiagnosticState::UnsafeState,
+        IpcError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            BrokerDiagnosticState::Absent
+        }
+        _ => BrokerDiagnosticState::Unavailable,
+    };
+    BrokerDiagnosticsReport {
+        state,
+        metrics: None,
     }
 }
 
@@ -450,10 +639,18 @@ fn classify_version_output(success: bool, stdout: &[u8]) -> CodexVersion {
         && line.chars().all(|character| {
             character.is_ascii_alphanumeric() || matches!(character, ' ' | '.' | '-' | '_')
         });
-    if !safe || !line.to_ascii_lowercase().starts_with("codex") {
+    let normalized = line.to_ascii_lowercase();
+    let prefix_length = if normalized.starts_with("codex-cli ") {
+        "codex-cli".len()
+    } else if normalized.starts_with("codex ") {
+        "codex".len()
+    } else {
+        return CodexVersion::Malformed;
+    };
+    if !safe {
         return CodexVersion::Malformed;
     }
-    let value = line["codex".len()..].trim();
+    let value = line[prefix_length..].trim();
     if value.is_empty() {
         CodexVersion::Malformed
     } else {
@@ -580,20 +777,22 @@ fn ledger_check(path: &Path) -> DiagnosticCheck {
     }
 }
 
-fn receipt_integrity_check(scan: Option<&ReceiptScan>) -> DiagnosticCheck {
-    match scan {
-        Some(scan) => DiagnosticCheck {
+fn receipt_integrity_check(catalog: Option<&ReceiptCatalogDiagnostics>) -> DiagnosticCheck {
+    match catalog {
+        Some(catalog) => DiagnosticCheck {
             id: DiagnosticCheckId::ReceiptIntegrity,
-            status: if scan.malformed > 0 {
+            // The catalog is current with the journal, but routine
+            // diagnostics intentionally does not parse every canonical file.
+            // Keep a clean snapshot as Warning so an unverified legacy spool
+            // can never be shown as a fully healthy integrity proof.
+            status: if catalog.malformed > 0 {
                 DiagnosticStatus::Fail
-            } else if scan.starts_without_completion > 0 {
-                DiagnosticStatus::Warning
             } else {
-                DiagnosticStatus::Pass
+                DiagnosticStatus::Warning
             },
             facts: vec![DiagnosticFact::ReceiptIntegrity {
-                incomplete: scan.starts_without_completion,
-                malformed: scan.malformed,
+                incomplete: catalog.incomplete,
+                malformed: catalog.malformed,
             }],
         },
         None => DiagnosticCheck {
@@ -659,13 +858,11 @@ fn path_identity_check() -> DiagnosticCheck {
     }
 }
 
-fn evidence_freshness_check(scan: Option<&ReceiptScan>, now_unix_ms: i64) -> DiagnosticCheck {
-    let latest = scan.and_then(|scan| {
-        scan.invocations
-            .iter()
-            .map(|value| value.occurred_at_unix_ms)
-            .max()
-    });
+fn evidence_freshness_check(
+    catalog: Option<&ReceiptCatalogDiagnostics>,
+    now_unix_ms: i64,
+) -> DiagnosticCheck {
+    let latest = catalog.and_then(|catalog| catalog.latest_occurred_at_unix_ms);
     let Some(latest) = latest else {
         return DiagnosticCheck {
             id: DiagnosticCheckId::EvidenceFreshness,
@@ -688,9 +885,11 @@ fn evidence_freshness_check(scan: Option<&ReceiptScan>, now_unix_ms: i64) -> Dia
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::{ExecutionMode, HandlerIdentity, HookEvent};
+    use crate::evidence::{CoverageDomain, EventFamily, RuntimeId, SourceScope};
+    use crate::receipt::ReceiptStart;
     #[cfg(windows)]
     use std::ffi::OsString;
-    #[cfg(windows)]
     use std::fs;
     use tempfile::tempdir;
 
@@ -707,24 +906,339 @@ mod tests {
         assert!(report.checks.iter().any(|check| {
             check.id == DiagnosticCheckId::Ledger && check.status == DiagnosticStatus::Warning
         }));
+        assert_eq!(
+            report.production_evidence.default_authority,
+            DomainAuthoritySelection::NotAdmitted
+        );
+        assert_eq!(
+            report.production_evidence.default_cooperative_ipc_authority,
+            DomainAuthoritySelection::NotAdmitted
+        );
+        assert_eq!(
+            report.production_evidence.cooperative_ipc_substrate_state,
+            IpcAdmissionState::Admitted
+        );
+        assert_eq!(report.production_evidence.evidence_transport_count, 2);
+        assert!(!report.production_evidence.third_transport_present);
+        assert!(!report.production_evidence.shadow_in_denominator);
+        assert_eq!(report.broker.state, BrokerDiagnosticState::Absent);
+    }
+
+    #[test]
+    fn broker_observation_does_not_recreate_a_transport_removed_after_endpoint_derivation() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("HookStat");
+        let endpoint = LocalEndpoint::from_state_root(&root).unwrap();
+        fs::remove_dir(root.join("ipc")).unwrap();
+
+        assert!(matches!(
+            endpoint.validate_existing_transport(),
+            Err(IpcError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+        assert!(!root.join("ipc").exists());
+
+        let report = broker_diagnostics_report(&root);
+        assert_eq!(report.state, BrokerDiagnosticState::Absent);
+        assert!(!root.join("ipc").exists());
+    }
+
+    /// G38 regression scale proof: ordinary diagnostics must leave a large
+    /// pre-catalog legacy spool explicitly unobserved instead of parsing every
+    /// file. The empty files would produce `Fail` under the former full scan,
+    /// so the expected `Unknown` status is a deterministic non-scan oracle.
+    #[test]
+    #[ignore = "explicit G38 legacy diagnostics boundedness scale proof"]
+    fn large_uncatalogued_legacy_history_is_not_scanned_by_diagnostics() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("HookStat");
+        let records = root.join("receipts").join("records");
+        fs::create_dir_all(&records).unwrap();
+        for index in 0..6_769 {
+            fs::write(
+                records.join(format!("legacy-{index:05}.complete.json")),
+                b"not a receipt",
+            )
+            .unwrap();
+        }
+
+        let report = collect(&root, 1_000);
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::ReceiptSpool
+                && check.status == DiagnosticStatus::Warning
+                && check.facts.is_empty()
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::ReceiptIntegrity
+                && check.status == DiagnosticStatus::Unknown
+                && check.facts.is_empty()
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::EvidenceFreshness
+                && check.status == DiagnosticStatus::Unknown
+                && check.facts.is_empty()
+        }));
+    }
+
+    /// G38 regression scale proof for an established catalog. Reconciliation
+    /// may build the durable catalog, but a routine diagnostics refresh must
+    /// then use its one-row aggregate rather than revisit the 6,769 records.
+    #[test]
+    #[ignore = "explicit G38 catalogued diagnostics boundedness scale proof"]
+    fn large_catalogued_history_uses_the_fixed_receipt_catalog() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("HookStat");
+        let spool = ReceiptSpool::open(root.join("receipts")).unwrap();
+        let handler = HandlerIdentity {
+            key: "hk_catalogued_scale".into(),
+            revision: "fixture-r1".into(),
+            label: "Catalogued scale fixture".into(),
+            source_kind: "fixture".into(),
+            event: HookEvent::Stop,
+            matcher_identity: "fixture".into(),
+            structural_identity: "fixture".into(),
+            execution_mode: ExecutionMode::Sync,
+        };
+        for index in 0..6_769 {
+            spool
+                .write_start(&ReceiptStart {
+                    schema_version: 1,
+                    invocation_id: format!("catalogued-scale-{index:05}"),
+                    handler: handler.clone(),
+                    source: "fixture".into(),
+                    started_at_unix_ms: 1_000 + index,
+                    coverage: EvidenceCoverage::Partial,
+                })
+                .unwrap();
+        }
+        let mut ledger = Ledger::open_path(root.join("ledger.sqlite3")).unwrap();
+        let reconciled = spool.reconcile_incremental(&mut ledger, 10_000).unwrap();
+        assert!(reconciled.work.full_reconciliation);
+        drop(ledger);
+
+        let report = collect(&root, 10_001);
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::ReceiptSpool
+                && check.status == DiagnosticStatus::Pass
+                && check.facts == vec![DiagnosticFact::ReceiptRecords { count: 6_769 }]
+        }));
+        let catalog_reader = include_str!("ledger.rs")
+            .split_once("pub(crate) fn receipt_catalog_diagnostics_if_present")
+            .unwrap()
+            .1
+            .split_once("/// Reads the bounded working set")
+            .unwrap()
+            .0;
+        assert!(!catalog_reader.contains("hook_invocations"));
+    }
+
+    #[test]
+    fn current_catalog_keeps_a_clean_snapshot_explicitly_unverified() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("HookStat");
+        let spool = ReceiptSpool::open(root.join("receipts")).unwrap();
+        spool
+            .write_start(&ReceiptStart {
+                schema_version: 1,
+                invocation_id: "catalogued-start".into(),
+                handler: HandlerIdentity {
+                    key: "hk_catalogued".into(),
+                    revision: "fixture-r1".into(),
+                    label: "Catalogued fixture".into(),
+                    source_kind: "fixture".into(),
+                    event: HookEvent::Stop,
+                    matcher_identity: "fixture".into(),
+                    structural_identity: "fixture".into(),
+                    execution_mode: ExecutionMode::Sync,
+                },
+                source: "fixture".into(),
+                started_at_unix_ms: 1_000,
+                coverage: EvidenceCoverage::Partial,
+            })
+            .unwrap();
+        let mut ledger = Ledger::open_path(root.join("ledger.sqlite3")).unwrap();
+        let reconciled = spool.reconcile_incremental(&mut ledger, 1_000).unwrap();
+        assert!(reconciled.work.full_reconciliation);
+        drop(ledger);
+
+        // This record is intentionally outside the durable journal. A normal
+        // diagnostics refresh must not parse it, nor claim the catalog proves
+        // an exhaustive live integrity scan.
+        fs::write(
+            spool
+                .root()
+                .join("records")
+                .join("unverified.complete.json"),
+            b"not a receipt",
+        )
+        .unwrap();
+
+        let report = collect(&root, 1_001);
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::ReceiptSpool
+                && check.status == DiagnosticStatus::Pass
+                && check.facts == vec![DiagnosticFact::ReceiptRecords { count: 1 }]
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::ReceiptIntegrity
+                && check.status == DiagnosticStatus::Warning
+                && check.facts
+                    == vec![DiagnosticFact::ReceiptIntegrity {
+                        incomplete: 1,
+                        malformed: 0,
+                    }]
+        }));
+    }
+
+    #[test]
+    fn missing_empty_journal_leaves_a_legacy_catalog_unobserved() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("HookStat");
+        let spool = ReceiptSpool::open(root.join("receipts")).unwrap();
+        let start = ReceiptStart {
+            schema_version: 1,
+            invocation_id: "legacy-without-journal".into(),
+            handler: HandlerIdentity {
+                key: "hk_legacy_without_journal".into(),
+                revision: "fixture-r1".into(),
+                label: "Legacy without journal".into(),
+                source_kind: "fixture".into(),
+                event: HookEvent::Stop,
+                matcher_identity: "fixture".into(),
+                structural_identity: "fixture".into(),
+                execution_mode: ExecutionMode::Sync,
+            },
+            source: "fixture".into(),
+            started_at_unix_ms: 1_000,
+            coverage: EvidenceCoverage::Partial,
+        };
+        fs::write(
+            spool
+                .root()
+                .join("records")
+                .join("legacy-without-journal.start.json"),
+            serde_json::to_vec(&start).unwrap(),
+        )
+        .unwrap();
+
+        let mut ledger = Ledger::open_path(root.join("ledger.sqlite3")).unwrap();
+        spool.reconcile_full(&mut ledger, 1_000).unwrap();
+        drop(ledger);
+        assert_eq!(spool.journal_length_read_only().unwrap(), Some(0));
+
+        fs::remove_file(spool.root().join("receipt-journal-v1.ndjson")).unwrap();
+        assert_eq!(spool.journal_length_read_only().unwrap(), None);
+        assert!(receipt_catalog_for_diagnostics(&root, &spool).is_none());
+
+        let report = collect(&root, 1_001);
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::ReceiptSpool
+                && check.status == DiagnosticStatus::Warning
+                && check.facts.is_empty()
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::ReceiptIntegrity
+                && check.status == DiagnosticStatus::Unknown
+                && check.facts.is_empty()
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::EvidenceFreshness
+                && check.status == DiagnosticStatus::Unknown
+                && check.facts.is_empty()
+        }));
+    }
+
+    #[test]
+    fn authority_diagnostics_preserve_native_ipc_and_not_admitted_per_domain() {
+        let authority =
+            |event: &str,
+             native_admission: NativeAdmissionState,
+             ipc_admission: IpcAdmissionState| DomainAuthority {
+                domain: CoverageDomain {
+                    runtime: RuntimeId::new("codex").unwrap(),
+                    event: EventFamily::new(event).unwrap(),
+                    source_scope: SourceScope::new("user_hooks").unwrap(),
+                },
+                native_admission,
+                ipc_admission,
+            };
+        let diagnostics = production_evidence_diagnostics(
+            CodexNativeL2Status::UpstreamUnavailable,
+            &[
+                authority(
+                    "session_start",
+                    NativeAdmissionState::Admitted,
+                    IpcAdmissionState::Admitted,
+                ),
+                authority(
+                    "stop",
+                    NativeAdmissionState::Unavailable,
+                    IpcAdmissionState::Admitted,
+                ),
+                authority(
+                    "pre_tool_use",
+                    NativeAdmissionState::Unavailable,
+                    IpcAdmissionState::QualifiedNotAdmittedPerformance,
+                ),
+            ],
+        );
+        assert_eq!(diagnostics.domains.len(), 3);
+        assert_eq!(
+            diagnostics.domains[0].selected_authority,
+            DomainAuthoritySelection::Native
+        );
+        assert_eq!(
+            diagnostics.domains[1].selected_authority,
+            DomainAuthoritySelection::Ipc
+        );
+        assert_eq!(
+            diagnostics.domains[2].selected_authority,
+            DomainAuthoritySelection::NotAdmitted
+        );
+        assert_eq!(
+            diagnostics.native_admission,
+            NativeAdmissionState::Unavailable
+        );
+        assert_eq!(
+            diagnostics.default_cooperative_ipc_authority,
+            DomainAuthoritySelection::NotAdmitted
+        );
+        assert_eq!(
+            diagnostics.cooperative_ipc_substrate_state,
+            IpcAdmissionState::Admitted
+        );
+        assert!(!diagnostics.transparent_shim_active);
+        assert!(!diagnostics.domains_truncated);
+
+        let bounded = (0..=MAX_DIAGNOSTIC_AUTHORITY_DOMAINS)
+            .map(|index| {
+                authority(
+                    &format!("event_{index}"),
+                    NativeAdmissionState::Unavailable,
+                    IpcAdmissionState::Admitted,
+                )
+            })
+            .collect::<Vec<_>>();
+        let bounded_diagnostics =
+            production_evidence_diagnostics(CodexNativeL2Status::NotQualified, &bounded);
+        assert_eq!(
+            bounded_diagnostics.domains.len(),
+            MAX_DIAGNOSTIC_AUTHORITY_DOMAINS
+        );
+        assert!(bounded_diagnostics.domains_truncated);
     }
 
     #[test]
     fn serialized_diagnostics_expose_no_private_operational_fields() {
-        let report = DiagnosticsReport {
-            schema_version: 1,
-            read_only: true,
-            generated_at_unix_ms: 1,
-            overall_status: DiagnosticStatus::Warning,
-            checks: vec![DiagnosticCheck {
-                id: DiagnosticCheckId::ReceiptIntegrity,
-                status: DiagnosticStatus::Warning,
-                facts: vec![DiagnosticFact::ReceiptIntegrity {
-                    incomplete: 2,
-                    malformed: 0,
-                }],
+        let mut report = DiagnosticsReport::empty(1);
+        report.overall_status = DiagnosticStatus::Warning;
+        report.checks = vec![DiagnosticCheck {
+            id: DiagnosticCheckId::ReceiptIntegrity,
+            status: DiagnosticStatus::Warning,
+            facts: vec![DiagnosticFact::ReceiptIntegrity {
+                incomplete: 2,
+                malformed: 0,
             }],
-        };
+        }];
         let json = serde_json::to_string(&report).unwrap();
         for forbidden in [
             "command",
@@ -745,6 +1259,10 @@ mod tests {
             CodexVersion::Present(value) if value == "0.2.1"
         ));
         assert!(matches!(
+            classify_version_output(true, b"codex-cli 0.149.0\n"),
+            CodexVersion::Present(value) if value == "0.149.0"
+        ));
+        assert!(matches!(
             classify_version_output(false, b"Codex 0.2.1\n"),
             CodexVersion::Failed
         ));
@@ -753,7 +1271,7 @@ mod tests {
             CodexVersion::Malformed
         ));
         assert_eq!(
-            codex_binary_check_from(CodexVersion::Missing).status,
+            codex_binary_check_from(&CodexVersion::Missing).status,
             DiagnosticStatus::Fail
         );
         for version in [
@@ -762,7 +1280,7 @@ mod tests {
             CodexVersion::Malformed,
         ] {
             assert_eq!(
-                codex_binary_check_from(version).status,
+                codex_binary_check_from(&version).status,
                 DiagnosticStatus::Unknown
             );
         }

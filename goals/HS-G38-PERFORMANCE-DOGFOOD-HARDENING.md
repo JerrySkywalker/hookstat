@@ -15,6 +15,11 @@ G38D — Acceptance / PR Closeout
 
 The old G38 requirement that HookStat release acceptance depend on a named external cooperative producer is superseded by G38A. Historical receipts remain factual history but no external product repository is a mandatory release dependency.
 
+The preserved G38 safe-activation receipts describe historical, unadmitted
+external-integration experiments. They remain evidence of what did and did
+not happen at that time; they do not require external repair or block this
+HookStat-only G38C path.
+
 ## Objective
 
 Prove HookStat's v0.3.1 evidence substrate under deterministic HSIP conformance, Owner Windows concurrency/recovery/performance testing, diagnostics/self-observability, privacy/security review, and exact-head CI/review.
@@ -158,6 +163,12 @@ transparent shim status: qualified_not_admitted_performance
 ```
 
 Diagnostics control frames are not evidence and must never enter WAL, ledger, replay, or denominators.
+
+The Draft foundation uses a numeric diagnostics request/response on the
+existing local HSIP control plane. These control frames are not lifecycle
+evidence, never enter the WAL/ledger, cannot contribute to a denominator, and
+do not create a third evidence transport. The fixed recent-latency window is
+bounded to 128 in-memory samples and resets with the broker process.
 
 ## Structural regression guards
 

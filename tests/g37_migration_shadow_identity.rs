@@ -241,7 +241,7 @@ fn v03_fixtures_migrate_additively_and_reopen_idempotently() {
     assert_eq!(
         connection
             .query_row(
-                "SELECT count(*) FROM hookstat_schema WHERE version = 4",
+                "SELECT count(*) FROM hookstat_schema WHERE version = 5",
                 [],
                 |row| { row.get::<_, i64>(0) }
             )

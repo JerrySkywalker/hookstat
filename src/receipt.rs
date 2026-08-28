@@ -16,8 +16,8 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const SOURCE_KEY: &str = "codex_instrumented_receipts_v1";
-const RECONCILIATION_SOURCE_KEY: &str = "receipt_catalog_journal_v1";
+pub(crate) const SOURCE_KEY: &str = "codex_instrumented_receipts_v1";
+pub(crate) const RECONCILIATION_SOURCE_KEY: &str = "receipt_catalog_journal_v1";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -144,6 +144,21 @@ impl ReceiptSpool {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Returns only the durable journal byte length when the journal is a
+    /// regular existing file. This never enumerates or parses receipt files,
+    /// so diagnostics can compare an existing catalog cursor without turning a
+    /// routine health query into a legacy-history scan. Missing, symbolic, and
+    /// non-file journals remain unobserved rather than being conflated with an
+    /// existing empty journal.
+    pub(crate) fn journal_length_read_only(&self) -> Result<Option<u64>, ReceiptError> {
+        match fs::symlink_metadata(self.journal_path()) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => Ok(None),
+            Ok(metadata) => Ok(Some(metadata.len())),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub fn write_start(&self, value: &ReceiptStart) -> Result<(), ReceiptError> {
@@ -359,6 +374,18 @@ impl ReceiptSpool {
         }
         let (entries, next_offset, journal_malformed) =
             self.read_journal_from(state.journal_offset)?;
+        if entries.is_empty()
+            && journal_malformed == 0
+            && let Some(catalog) =
+                ledger.receipt_catalog_diagnostics_if_present(RECONCILIATION_SOURCE_KEY)?
+        {
+            return Ok(ReceiptReconciliation {
+                malformed: state.malformed_receipts,
+                incomplete: catalog.incomplete,
+                ingest: IngestReceipt::default(),
+                work: ReceiptWork::default(),
+            });
+        }
         let mut values = Vec::new();
         let mut work = ReceiptWork::default();
         let mut malformed_delta = journal_malformed;
@@ -373,14 +400,18 @@ impl ReceiptSpool {
         }
         let ingest = ledger.ingest_receipt_reconciliation(
             RECONCILIATION_SOURCE_KEY,
+            SOURCE_KEY,
             next_offset,
             state.malformed_receipts.saturating_add(malformed_delta),
             now_unix_ms,
             &values,
         )?;
+        let catalog = ledger
+            .receipt_catalog_diagnostics_if_present(RECONCILIATION_SOURCE_KEY)?
+            .ok_or(ReceiptError::Invalid("receipt_catalog"))?;
         Ok(ReceiptReconciliation {
             malformed: state.malformed_receipts.saturating_add(malformed_delta),
-            incomplete: ledger.incomplete_receipt_count()?,
+            incomplete: catalog.incomplete,
             ingest,
             work,
         })
@@ -397,14 +428,18 @@ impl ReceiptSpool {
         let journal_length = self.journal_length()?;
         let ingest = ledger.ingest_receipt_reconciliation(
             RECONCILIATION_SOURCE_KEY,
+            SOURCE_KEY,
             journal_length,
             scan.malformed,
             now_unix_ms,
             &scan.invocations,
         )?;
+        let catalog = ledger
+            .receipt_catalog_diagnostics_if_present(RECONCILIATION_SOURCE_KEY)?
+            .ok_or(ReceiptError::Invalid("receipt_catalog"))?;
         Ok(ReceiptReconciliation {
             malformed: scan.malformed,
-            incomplete: ledger.incomplete_receipt_count()?,
+            incomplete: catalog.incomplete,
             ingest,
             work: ReceiptWork {
                 files_inspected: scan.files_inspected,

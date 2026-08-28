@@ -517,6 +517,7 @@ fn diagnostics(
     } else {
         DiagnosticStatus::Warning
     };
+    let unobserved = DiagnosticsViewModel::empty(refreshed_at_unix_ms);
     DiagnosticsViewModel {
         schema_version: crate::diagnostics::DIAGNOSTICS_SCHEMA_VERSION,
         read_only: true,
@@ -545,6 +546,8 @@ fn diagnostics(
             unavailable_diagnostic(DiagnosticCheckId::ReceiptSpool),
         ],
         generated_at_unix_ms: refreshed_at_unix_ms,
+        production_evidence: unobserved.production_evidence,
+        broker: unobserved.broker,
     }
 }
 

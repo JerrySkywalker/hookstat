@@ -27,6 +27,9 @@ pub const IPC_PROTOCOL_VERSION: u8 = 1;
 pub const IPC_MAGIC: [u8; 4] = *b"HSIP";
 pub const MAX_IPC_FRAME_BYTES: usize = 1024;
 pub const MAX_IPC_REFERENCE_BYTES: usize = 128;
+pub const BROKER_DIAGNOSTICS_SCHEMA_VERSION: u8 = 1;
+pub const RECENT_DIAGNOSTIC_SAMPLE_CAPACITY: u64 = 128;
+
 /// Fixed HSIP v1 frame header size: magic, protocol version, frame kind,
 /// flags, and payload length. Reference conformance fixtures use this public
 /// protocol constant rather than duplicating a private wire-layout guess.
@@ -211,6 +214,8 @@ pub enum IpcFrame {
         completion: Completion,
     },
     Ack(BrokerAcknowledgement),
+    BrokerDiagnosticsRequest,
+    BrokerDiagnosticsResponse(BrokerDiagnostics),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -234,6 +239,112 @@ impl BrokerAcknowledgement {
     }
 }
 
+/// Bounded numeric broker self-observability returned only to an explicit
+/// local diagnostics query. This control-plane snapshot is never a lifecycle
+/// evidence frame and contains no runtime, handler, command, path, payload, or
+/// stream content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct BrokerDiagnostics {
+    pub schema_version: u8,
+    pub accepted: u64,
+    pub rejected: u64,
+    pub dropped: u64,
+    pub malformed: u64,
+    pub replayed: u64,
+    pub duplicates: u64,
+    pub ack_timeouts: u64,
+    pub queue_depth: u64,
+    pub active_connections: u64,
+    pub queue_high_water: u64,
+    pub durability_requests: u64,
+    pub durability_requests_coalesced: u64,
+    pub group_flushes: u64,
+    pub durability_failures: u64,
+    pub recent_ipc_latency_samples: u64,
+    pub recent_ipc_latency_p50_us: u64,
+    pub recent_ipc_latency_p95_us: u64,
+    pub recent_ipc_latency_p99_us: u64,
+    pub recent_queue_wait_p95_us: u64,
+    pub wal_flush_lag_ms: Option<u64>,
+    pub last_wal_flush_duration_us: Option<u64>,
+}
+
+impl BrokerDiagnostics {
+    pub fn validate(&self) -> Result<(), IpcError> {
+        if self.schema_version != BROKER_DIAGNOSTICS_SCHEMA_VERSION
+            || self.queue_depth > 16_384
+            || self.active_connections > 128
+            || self.queue_high_water > 16_384
+            || self.recent_ipc_latency_samples > RECENT_DIAGNOSTIC_SAMPLE_CAPACITY
+            || self.recent_ipc_latency_p50_us > self.recent_ipc_latency_p95_us
+            || self.recent_ipc_latency_p95_us > self.recent_ipc_latency_p99_us
+        {
+            return Err(IpcError::Invalid("broker_diagnostics"));
+        }
+        Ok(())
+    }
+
+    fn encode_into(&self, output: &mut Vec<u8>) -> Result<(), IpcError> {
+        self.validate()?;
+        output.push(self.schema_version);
+        for value in [
+            self.accepted,
+            self.rejected,
+            self.dropped,
+            self.malformed,
+            self.replayed,
+            self.duplicates,
+            self.ack_timeouts,
+            self.queue_depth,
+            self.active_connections,
+            self.queue_high_water,
+            self.durability_requests,
+            self.durability_requests_coalesced,
+            self.group_flushes,
+            self.durability_failures,
+            self.recent_ipc_latency_samples,
+            self.recent_ipc_latency_p50_us,
+            self.recent_ipc_latency_p95_us,
+            self.recent_ipc_latency_p99_us,
+            self.recent_queue_wait_p95_us,
+        ] {
+            output.extend_from_slice(&value.to_le_bytes());
+        }
+        encode_optional_u64(output, self.wal_flush_lag_ms);
+        encode_optional_u64(output, self.last_wal_flush_duration_us);
+        Ok(())
+    }
+
+    fn decode_from(input: &mut Cursor<'_>) -> Result<Self, IpcError> {
+        let value = Self {
+            schema_version: input.u8()?,
+            accepted: input.u64()?,
+            rejected: input.u64()?,
+            dropped: input.u64()?,
+            malformed: input.u64()?,
+            replayed: input.u64()?,
+            duplicates: input.u64()?,
+            ack_timeouts: input.u64()?,
+            queue_depth: input.u64()?,
+            active_connections: input.u64()?,
+            queue_high_water: input.u64()?,
+            durability_requests: input.u64()?,
+            durability_requests_coalesced: input.u64()?,
+            group_flushes: input.u64()?,
+            durability_failures: input.u64()?,
+            recent_ipc_latency_samples: input.u64()?,
+            recent_ipc_latency_p50_us: input.u64()?,
+            recent_ipc_latency_p95_us: input.u64()?,
+            recent_ipc_latency_p99_us: input.u64()?,
+            recent_queue_wait_p95_us: input.u64()?,
+            wal_flush_lag_ms: input.optional_u64("wal_flush_lag_ms")?,
+            last_wal_flush_duration_us: input.optional_u64("last_wal_flush_duration_us")?,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+}
+
 impl IpcFrame {
     pub fn encode(&self) -> Result<Vec<u8>, IpcError> {
         let mut payload = Vec::with_capacity(256);
@@ -253,6 +364,11 @@ impl IpcFrame {
             Self::Ack(value) => {
                 payload.push(*value as u8);
                 3_u8
+            }
+            Self::BrokerDiagnosticsRequest => 4_u8,
+            Self::BrokerDiagnosticsResponse(value) => {
+                value.encode_into(&mut payload)?;
+                5_u8
             }
         };
         if payload.len() > MAX_IPC_FRAME_BYTES - IPC_FRAME_HEADER_BYTES
@@ -300,6 +416,8 @@ impl IpcFrame {
                 completion: Completion::decode_from(&mut cursor)?,
             },
             3 => Self::Ack(BrokerAcknowledgement::decode(cursor.u8()?)?),
+            4 => Self::BrokerDiagnosticsRequest,
+            5 => Self::BrokerDiagnosticsResponse(BrokerDiagnostics::decode_from(&mut cursor)?),
             _ => return Err(IpcError::Invalid("frame_type")),
         };
         if !cursor.is_empty() {
@@ -554,6 +672,24 @@ pub struct LocalEndpoint {
 impl LocalEndpoint {
     pub fn from_state_root(root: impl AsRef<std::path::Path>) -> Result<Self, IpcError> {
         let state_root = prepare_state_root(root.as_ref())?;
+        let endpoint = Self::from_canonical_state_root(state_root);
+        endpoint.transport_dir()?;
+        Ok(endpoint)
+    }
+
+    /// Derives an endpoint only from state that is already present. This is for
+    /// read-only observers: unlike [`Self::from_state_root`], it never creates
+    /// either the state root or its IPC transport directory.
+    pub(crate) fn from_existing_state_root(
+        root: impl AsRef<std::path::Path>,
+    ) -> Result<Self, IpcError> {
+        let state_root = inspect_existing_state_root(root.as_ref())?;
+        let endpoint = Self::from_canonical_state_root(state_root);
+        endpoint.existing_transport_dir()?;
+        Ok(endpoint)
+    }
+
+    fn from_canonical_state_root(state_root: std::path::PathBuf) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(b"hookstat-g35-local-endpoint-v1\0");
         hasher.update(state_root.as_os_str().as_encoded_bytes());
@@ -569,12 +705,10 @@ impl LocalEndpoint {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect();
-        let endpoint = Self {
+        Self {
             state_root,
             endpoint_id,
-        };
-        endpoint.transport_dir()?;
-        Ok(endpoint)
+        }
     }
 
     pub fn state_root(&self) -> &std::path::Path {
@@ -586,9 +720,20 @@ impl LocalEndpoint {
 
     #[cfg(unix)]
     pub fn unix_socket_path(&self) -> Result<std::path::PathBuf, IpcError> {
-        let path = self
-            .transport_dir()?
-            .join(format!("g35-{}.sock", self.endpoint_id));
+        self.unix_socket_path_in(self.transport_dir()?)
+    }
+
+    #[cfg(unix)]
+    fn existing_unix_socket_path(&self) -> Result<std::path::PathBuf, IpcError> {
+        self.unix_socket_path_in(self.existing_transport_dir()?)
+    }
+
+    #[cfg(unix)]
+    fn unix_socket_path_in(
+        &self,
+        transport_dir: std::path::PathBuf,
+    ) -> Result<std::path::PathBuf, IpcError> {
+        let path = transport_dir.join(format!("g35-{}.sock", self.endpoint_id));
         if path.as_os_str().as_encoded_bytes().len() > 96 {
             return Err(IpcError::Invalid("unix_socket_path_length"));
         }
@@ -603,15 +748,28 @@ impl LocalEndpoint {
     pub fn transport_dir(&self) -> Result<std::path::PathBuf, IpcError> {
         let dir = self.state_root.join("ipc");
         if dir.exists() {
-            let metadata = std::fs::symlink_metadata(&dir).map_err(IpcError::Io)?;
-            if metadata.file_type().is_symlink()
-                || !metadata.is_dir()
-                || state_metadata_is_unsafe(&metadata)
-            {
-                return Err(IpcError::UnsafeStateObject);
-            }
+            return self.existing_transport_dir();
         } else {
             std::fs::create_dir(&dir).map_err(IpcError::Io)?;
+        }
+        self.existing_transport_dir()
+    }
+
+    /// Confirms that the transport directory still exists without creating it.
+    /// A read-only observer calls this immediately before connecting so a
+    /// concurrent cleanup is reported rather than silently repaired.
+    pub(crate) fn validate_existing_transport(&self) -> Result<(), IpcError> {
+        self.existing_transport_dir().map(|_| ())
+    }
+
+    fn existing_transport_dir(&self) -> Result<std::path::PathBuf, IpcError> {
+        let dir = self.state_root.join("ipc");
+        let metadata = std::fs::symlink_metadata(&dir).map_err(IpcError::Io)?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_dir()
+            || state_metadata_is_unsafe(&metadata)
+        {
+            return Err(IpcError::UnsafeStateObject);
         }
         let canonical = std::fs::canonicalize(&dir).map_err(IpcError::Io)?;
         if canonical.parent() != Some(self.state_root.as_path()) {
@@ -622,12 +780,26 @@ impl LocalEndpoint {
 
     #[cfg(unix)]
     pub fn connect_stream(&self, timeout: Duration) -> Result<Stream, IpcError> {
+        self.connect_stream_at(self.unix_socket_path()?, timeout)
+    }
+
+    /// Connects through state that is already present. The diagnostics control
+    /// plane uses this instead of `connect_stream` so a cleanup race is
+    /// reported as unavailable rather than recreating `ipc`.
+    #[cfg(unix)]
+    pub(crate) fn connect_existing_stream(&self, timeout: Duration) -> Result<Stream, IpcError> {
+        self.connect_stream_at(self.existing_unix_socket_path()?, timeout)
+    }
+
+    #[cfg(unix)]
+    fn connect_stream_at(
+        &self,
+        path: std::path::PathBuf,
+        timeout: Duration,
+    ) -> Result<Stream, IpcError> {
         use interprocess::local_socket::{GenericFilePath, ToFsName};
 
-        let name = self
-            .unix_socket_path()?
-            .to_fs_name::<GenericFilePath>()
-            .map_err(IpcError::Io)?;
+        let name = path.to_fs_name::<GenericFilePath>().map_err(IpcError::Io)?;
         let stream = ConnectOptions::new()
             .name(name)
             .wait_mode(ConnectWaitMode::Timeout(timeout))
@@ -745,6 +917,22 @@ pub fn prepare_state_root(root: &std::path::Path) -> Result<std::path::PathBuf, 
     Ok(root)
 }
 
+fn inspect_existing_state_root(root: &std::path::Path) -> Result<std::path::PathBuf, IpcError> {
+    let metadata = std::fs::symlink_metadata(root).map_err(IpcError::Io)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(IpcError::UnsafeStateObject);
+    }
+    let root = std::fs::canonicalize(root).map_err(IpcError::Io)?;
+    let metadata = std::fs::symlink_metadata(&root).map_err(IpcError::Io)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || state_metadata_is_unsafe(&metadata)
+    {
+        return Err(IpcError::UnsafeStateObject);
+    }
+    Ok(root)
+}
+
 fn state_metadata_is_unsafe(metadata: &std::fs::Metadata) -> bool {
     #[cfg(unix)]
     {
@@ -806,6 +994,58 @@ fn elapsed_nanos(started: Instant) -> u64 {
 impl IpcClient {
     pub fn connect(endpoint: &LocalEndpoint, timeout: Duration) -> Result<Self, IpcError> {
         Self::connect_with_timeouts(endpoint, timeout, timeout)
+    }
+
+    /// Connect without extending a caller-owned deadline. This is reserved for
+    /// read-only control-plane probes that must bound endpoint connection and
+    /// request/response as one operation.
+    pub(crate) fn connect_until(
+        endpoint: &LocalEndpoint,
+        deadline: Instant,
+    ) -> Result<Self, IpcError> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(timed_out("bounded IPC connection"));
+        }
+        Self::connect_with_timeouts(endpoint, remaining, remaining)
+    }
+
+    /// Connects an already-derived diagnostics endpoint without creating any
+    /// state. On Unix this uses the non-creating transport lookup; Windows
+    /// named-pipe connection has no state-directory creation path.
+    pub(crate) fn connect_existing_until(
+        endpoint: &LocalEndpoint,
+        deadline: Instant,
+    ) -> Result<Self, IpcError> {
+        #[cfg(unix)]
+        {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(timed_out("bounded IPC connection"));
+            }
+            Ok(Self {
+                stream: endpoint.connect_existing_stream(remaining)?,
+                timeout: remaining,
+            })
+        }
+        #[cfg(windows)]
+        {
+            let runtime = Arc::new(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_io()
+                    .enable_time()
+                    .build()
+                    .map_err(IpcError::Io)?,
+            );
+            // Runtime construction is part of the caller-owned control-plane
+            // operation. Recompute after it so a slow setup never grants pipe
+            // connection or response work a fresh deadline budget.
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(timed_out("bounded IPC connection"));
+            }
+            Self::connect_with_runtime(endpoint, remaining, remaining, runtime)
+        }
     }
 
     /// Connect and acknowledge under independently bounded budgets. The
@@ -889,6 +1129,44 @@ impl IpcClient {
         ))? {
             IpcFrame::Ack(value) => Ok(value),
             _ => Err(IpcError::Invalid("acknowledgement")),
+        }
+    }
+
+    /// Requests one sanitized numeric broker snapshot over the existing local
+    /// HSIP control plane. It does not enqueue, append, acknowledge, replay, or
+    /// otherwise create evidence.
+    pub fn diagnostics(&mut self) -> Result<BrokerDiagnostics, IpcError> {
+        self.diagnostics_until(Instant::now() + self.timeout)
+    }
+
+    /// Requests a sanitized numeric broker snapshot without extending a
+    /// caller-owned deadline.
+    pub(crate) fn diagnostics_until(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<BrokerDiagnostics, IpcError> {
+        if deadline <= Instant::now() {
+            return Err(timed_out("bounded IPC diagnostics"));
+        }
+        let request = IpcFrame::BrokerDiagnosticsRequest;
+        #[cfg(unix)]
+        write_frame_until(&mut self.stream, &request, deadline)?;
+        #[cfg(windows)]
+        self.runtime.block_on(write_frame_bounded_tokio(
+            &mut self.stream,
+            &request,
+            deadline.saturating_duration_since(Instant::now()),
+        ))?;
+        #[cfg(unix)]
+        let response = read_frame_until(&mut self.stream, deadline)?;
+        #[cfg(windows)]
+        let response = self.runtime.block_on(read_frame_bounded_tokio(
+            &mut self.stream,
+            deadline.saturating_duration_since(Instant::now()),
+        ))?;
+        match response {
+            IpcFrame::BrokerDiagnosticsResponse(value) => Ok(value),
+            _ => Err(IpcError::Invalid("broker_diagnostics_response")),
         }
     }
 
@@ -1507,6 +1785,15 @@ fn encode_reference(output: &mut Vec<u8>, value: &str) -> Result<(), IpcError> {
     output.extend_from_slice(value.as_bytes());
     Ok(())
 }
+fn encode_optional_u64(output: &mut Vec<u8>, value: Option<u64>) {
+    match value {
+        Some(value) => {
+            output.push(1);
+            output.extend_from_slice(&value.to_le_bytes());
+        }
+        None => output.push(0),
+    }
+}
 struct Cursor<'a> {
     input: &'a [u8],
     offset: usize,
@@ -1544,6 +1831,13 @@ impl<'a> Cursor<'a> {
         Ok(u64::from_le_bytes(
             self.bytes(8)?.try_into().map_err(|_| IpcError::Truncated)?,
         ))
+    }
+    fn optional_u64(&mut self, field: &'static str) -> Result<Option<u64>, IpcError> {
+        match self.u8()? {
+            0 => Ok(None),
+            1 => Ok(Some(self.u64()?)),
+            _ => Err(IpcError::Invalid(field)),
+        }
     }
     fn reference(&mut self, field: &'static str) -> Result<String, IpcError> {
         let length = self.u8()? as usize;
@@ -1605,6 +1899,116 @@ mod tests {
         assert!(encoded.starts_with(&IPC_MAGIC));
         assert_eq!(encoded[4], IPC_PROTOCOL_VERSION);
         assert_eq!(IpcFrame::decode(&encoded).unwrap(), frame);
+    }
+
+    #[test]
+    fn broker_diagnostics_control_frames_are_bounded_numeric_and_not_evidence() {
+        let diagnostics = BrokerDiagnostics {
+            schema_version: BROKER_DIAGNOSTICS_SCHEMA_VERSION,
+            accepted: 10,
+            rejected: 1,
+            dropped: 2,
+            malformed: 3,
+            replayed: 4,
+            duplicates: 5,
+            ack_timeouts: 6,
+            queue_depth: 7,
+            active_connections: 8,
+            queue_high_water: 9,
+            durability_requests: 10,
+            durability_requests_coalesced: 11,
+            group_flushes: 12,
+            durability_failures: 0,
+            recent_ipc_latency_samples: 13,
+            recent_ipc_latency_p50_us: 14,
+            recent_ipc_latency_p95_us: 15,
+            recent_ipc_latency_p99_us: 16,
+            recent_queue_wait_p95_us: 17,
+            wal_flush_lag_ms: Some(18),
+            last_wal_flush_duration_us: Some(19),
+        };
+        for frame in [
+            IpcFrame::BrokerDiagnosticsRequest,
+            IpcFrame::BrokerDiagnosticsResponse(diagnostics),
+        ] {
+            let encoded = frame.encode().unwrap();
+            assert!(encoded.len() <= MAX_IPC_FRAME_BYTES);
+            assert_eq!(IpcFrame::decode(&encoded).unwrap(), frame);
+            assert!(!frame.is_lifecycle());
+        }
+        let serialized = serde_json::to_string(&diagnostics).unwrap();
+        for forbidden in [
+            "runtime",
+            "handler",
+            "command",
+            "path",
+            "prompt",
+            "payload",
+            "stdout",
+            "stderr",
+            "credential",
+        ] {
+            assert!(!serialized.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn caller_owned_diagnostic_deadline_is_never_reset() {
+        let temp = tempfile::tempdir().unwrap();
+        let endpoint = LocalEndpoint::from_state_root(temp.path()).unwrap();
+        let listener = endpoint.bind().unwrap();
+        let (accepted_sender, accepted_receiver) = std::sync::mpsc::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let accept_deadline = Instant::now() + Duration::from_secs(1);
+            let _stream = loop {
+                match listener.accept() {
+                    Ok(stream) => break stream,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < accept_deadline, "client did not connect");
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("listener failed: {error}"),
+                }
+            };
+            accepted_sender.send(()).unwrap();
+            release_receiver
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap();
+        });
+
+        let mut client =
+            IpcClient::connect_until(&endpoint, Instant::now() + Duration::from_millis(100))
+                .unwrap();
+        accepted_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        let deadline = Instant::now() - Duration::from_millis(1);
+        let error = client.diagnostics_until(deadline).unwrap_err();
+        assert!(matches!(
+            error,
+            IpcError::Io(error) if error.kind() == io::ErrorKind::TimedOut
+        ));
+        release_sender.send(()).unwrap();
+        server.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_connection_does_not_recreate_a_removed_transport_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let endpoint = LocalEndpoint::from_state_root(temp.path()).unwrap();
+        let transport = temp.path().join("ipc");
+        std::fs::remove_dir(&transport).unwrap();
+
+        assert!(matches!(
+            IpcClient::connect_existing_until(
+                &endpoint,
+                Instant::now() + Duration::from_millis(20)
+            ),
+            Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::NotFound
+        ));
+        assert!(!transport.exists());
     }
     #[test]
     fn malformed_and_private_values_are_rejected_or_absent() {
