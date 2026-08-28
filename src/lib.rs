@@ -15,6 +15,7 @@ pub mod evidence;
 pub mod g36_host_admission;
 #[allow(dead_code)]
 mod hook_shim;
+pub mod hsip_reference;
 pub mod identity;
 pub mod interface_preferences;
 pub mod ipc;

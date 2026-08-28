@@ -30,7 +30,10 @@ pub const MAX_IPC_REFERENCE_BYTES: usize = 128;
 pub const BROKER_DIAGNOSTICS_SCHEMA_VERSION: u8 = 1;
 pub const RECENT_DIAGNOSTIC_SAMPLE_CAPACITY: u64 = 128;
 
-const FRAME_HEADER_BYTES: usize = 10;
+/// Fixed HSIP v1 frame header size: magic, protocol version, frame kind,
+/// flags, and payload length. Reference conformance fixtures use this public
+/// protocol constant rather than duplicating a private wire-layout guess.
+pub const IPC_FRAME_HEADER_BYTES: usize = 10;
 // The broker releases an idle server-side connection after a 50 ms bounded
 // read window. Reconnect before half that window so a long-running Hook never
 // sends a lifecycle frame over a connection whose delivery is ambiguous.
@@ -368,12 +371,12 @@ impl IpcFrame {
                 5_u8
             }
         };
-        if payload.len() > MAX_IPC_FRAME_BYTES - FRAME_HEADER_BYTES
+        if payload.len() > MAX_IPC_FRAME_BYTES - IPC_FRAME_HEADER_BYTES
             || payload.len() > u16::MAX as usize
         {
             return Err(IpcError::Oversized);
         }
-        let mut output = Vec::with_capacity(FRAME_HEADER_BYTES + payload.len());
+        let mut output = Vec::with_capacity(IPC_FRAME_HEADER_BYTES + payload.len());
         output.extend_from_slice(&IPC_MAGIC);
         output.push(IPC_PROTOCOL_VERSION);
         output.push(frame_type);
@@ -384,7 +387,7 @@ impl IpcFrame {
     }
 
     pub fn decode(input: &[u8]) -> Result<Self, IpcError> {
-        if input.len() < FRAME_HEADER_BYTES {
+        if input.len() < IPC_FRAME_HEADER_BYTES {
             return Err(IpcError::Truncated);
         }
         if input.len() > MAX_IPC_FRAME_BYTES {
@@ -400,12 +403,12 @@ impl IpcFrame {
             return Err(IpcError::Invalid("flags"));
         }
         let payload_len = u16::from_le_bytes([input[8], input[9]]) as usize;
-        if payload_len > MAX_IPC_FRAME_BYTES - FRAME_HEADER_BYTES
-            || input.len() != FRAME_HEADER_BYTES + payload_len
+        if payload_len > MAX_IPC_FRAME_BYTES - IPC_FRAME_HEADER_BYTES
+            || input.len() != IPC_FRAME_HEADER_BYTES + payload_len
         {
             return Err(IpcError::Invalid("frame_length"));
         }
-        let mut cursor = Cursor::new(&input[FRAME_HEADER_BYTES..]);
+        let mut cursor = Cursor::new(&input[IPC_FRAME_HEADER_BYTES..]);
         let frame = match input[5] {
             1 => Self::Start(LifecycleFrame::decode_from(&mut cursor)?),
             2 => Self::Complete {
@@ -429,13 +432,13 @@ impl IpcFrame {
 }
 
 pub fn read_frame(mut input: impl Read) -> Result<IpcFrame, IpcError> {
-    let mut header = [0_u8; FRAME_HEADER_BYTES];
+    let mut header = [0_u8; IPC_FRAME_HEADER_BYTES];
     input.read_exact(&mut header).map_err(IpcError::Io)?;
     let length = u16::from_le_bytes([header[8], header[9]]) as usize;
-    if length > MAX_IPC_FRAME_BYTES - FRAME_HEADER_BYTES {
+    if length > MAX_IPC_FRAME_BYTES - IPC_FRAME_HEADER_BYTES {
         return Err(IpcError::Oversized);
     }
-    let mut encoded = Vec::with_capacity(FRAME_HEADER_BYTES + length);
+    let mut encoded = Vec::with_capacity(IPC_FRAME_HEADER_BYTES + length);
     encoded.extend_from_slice(&header);
     let mut payload = vec![0_u8; length];
     input.read_exact(&mut payload).map_err(IpcError::Io)?;
@@ -452,13 +455,13 @@ pub fn read_frame_bounded(input: &mut Stream, timeout: Duration) -> Result<IpcFr
 }
 
 fn read_frame_until(input: &mut Stream, deadline: Instant) -> Result<IpcFrame, IpcError> {
-    let mut header = [0_u8; FRAME_HEADER_BYTES];
+    let mut header = [0_u8; IPC_FRAME_HEADER_BYTES];
     read_exact_bounded(input, &mut header, deadline)?;
     let length = u16::from_le_bytes([header[8], header[9]]) as usize;
-    if length > MAX_IPC_FRAME_BYTES - FRAME_HEADER_BYTES {
+    if length > MAX_IPC_FRAME_BYTES - IPC_FRAME_HEADER_BYTES {
         return Err(IpcError::Oversized);
     }
-    let mut encoded = Vec::with_capacity(FRAME_HEADER_BYTES + length);
+    let mut encoded = Vec::with_capacity(IPC_FRAME_HEADER_BYTES + length);
     encoded.extend_from_slice(&header);
     let mut payload = vec![0_u8; length];
     read_exact_bounded(input, &mut payload, deadline)?;
@@ -491,16 +494,16 @@ async fn read_frame_bounded_tokio(
     use tokio::io::AsyncReadExt;
 
     let deadline = tokio::time::Instant::now() + timeout;
-    let mut header = [0_u8; FRAME_HEADER_BYTES];
+    let mut header = [0_u8; IPC_FRAME_HEADER_BYTES];
     tokio::time::timeout_at(deadline, input.read_exact(&mut header))
         .await
         .map_err(|_| timed_out("bounded IPC read"))?
         .map_err(IpcError::Io)?;
     let length = u16::from_le_bytes([header[8], header[9]]) as usize;
-    if length > MAX_IPC_FRAME_BYTES - FRAME_HEADER_BYTES {
+    if length > MAX_IPC_FRAME_BYTES - IPC_FRAME_HEADER_BYTES {
         return Err(IpcError::Oversized);
     }
-    let mut encoded = Vec::with_capacity(FRAME_HEADER_BYTES + length);
+    let mut encoded = Vec::with_capacity(IPC_FRAME_HEADER_BYTES + length);
     encoded.extend_from_slice(&header);
     let mut payload = vec![0_u8; length];
     tokio::time::timeout_at(deadline, input.read_exact(&mut payload))
@@ -1031,6 +1034,41 @@ impl IpcClient {
         match response {
             IpcFrame::BrokerDiagnosticsResponse(value) => Ok(value),
             _ => Err(IpcError::Invalid("broker_diagnostics_response")),
+        }
+    }
+
+    /// Sends a deliberately malformed, already-encoded HSIP test fixture over
+    /// the ordinary bounded client connection. This crate-visible seam exists
+    /// solely for the reference conformance kit: production producers retain
+    /// `send`, which accepts only validated lifecycle frames.
+    pub(crate) fn send_encoded_for_conformance(
+        &mut self,
+        encoded: &[u8],
+    ) -> Result<BrokerAcknowledgement, IpcError> {
+        if encoded.is_empty() || self.timeout.is_zero() {
+            return Err(IpcError::Invalid("conformance_encoded_frame"));
+        }
+        let deadline = Instant::now() + self.timeout;
+        #[cfg(unix)]
+        write_all_bounded(&mut self.stream, encoded, deadline)?;
+        #[cfg(windows)]
+        self.runtime.block_on(write_encoded_bounded_tokio(
+            &mut self.stream,
+            encoded,
+            deadline.saturating_duration_since(Instant::now()),
+        ))?;
+        #[cfg(unix)]
+        match read_frame_until(&mut self.stream, deadline)? {
+            IpcFrame::Ack(value) => Ok(value),
+            _ => Err(IpcError::Invalid("acknowledgement")),
+        }
+        #[cfg(windows)]
+        match self.runtime.block_on(read_frame_bounded_tokio(
+            &mut self.stream,
+            deadline.saturating_duration_since(Instant::now()),
+        ))? {
+            IpcFrame::Ack(value) => Ok(value),
+            _ => Err(IpcError::Invalid("acknowledgement")),
         }
     }
 

@@ -22,12 +22,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub use crate::ipc_client::{
-    BROKER_DIAGNOSTICS_SCHEMA_VERSION, IPC_MAGIC, IPC_PROTOCOL_VERSION, IpcError,
-    MAX_IPC_FRAME_BYTES, MAX_IPC_REFERENCE_BYTES, RECENT_DIAGNOSTIC_SAMPLE_CAPACITY,
-};
-pub use crate::ipc_client::{
-    BrokerAcknowledgement, BrokerDiagnostics, BrokerStartup, Completion, ExitClassification,
-    IpcClient, IpcFrame, LifecycleFrame, LocalEndpoint, TerminalOutcome,
+    BROKER_DIAGNOSTICS_SCHEMA_VERSION, BrokerAcknowledgement, BrokerDiagnostics, BrokerStartup,
+    Completion, ExitClassification, IPC_FRAME_HEADER_BYTES, IPC_MAGIC, IPC_PROTOCOL_VERSION,
+    IpcClient, IpcError, IpcFrame, LifecycleFrame, LocalEndpoint, MAX_IPC_FRAME_BYTES,
+    MAX_IPC_REFERENCE_BYTES, ObservationDisposition, ProducerPolicy,
+    RECENT_DIAGNOSTIC_SAMPLE_CAPACITY, TerminalOutcome,
 };
 #[cfg(feature = "performance-harness")]
 pub(crate) use crate::ipc_client::{
