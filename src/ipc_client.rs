@@ -720,9 +720,20 @@ impl LocalEndpoint {
 
     #[cfg(unix)]
     pub fn unix_socket_path(&self) -> Result<std::path::PathBuf, IpcError> {
-        let path = self
-            .transport_dir()?
-            .join(format!("g35-{}.sock", self.endpoint_id));
+        self.unix_socket_path_in(self.transport_dir()?)
+    }
+
+    #[cfg(unix)]
+    fn existing_unix_socket_path(&self) -> Result<std::path::PathBuf, IpcError> {
+        self.unix_socket_path_in(self.existing_transport_dir()?)
+    }
+
+    #[cfg(unix)]
+    fn unix_socket_path_in(
+        &self,
+        transport_dir: std::path::PathBuf,
+    ) -> Result<std::path::PathBuf, IpcError> {
+        let path = transport_dir.join(format!("g35-{}.sock", self.endpoint_id));
         if path.as_os_str().as_encoded_bytes().len() > 96 {
             return Err(IpcError::Invalid("unix_socket_path_length"));
         }
@@ -769,12 +780,26 @@ impl LocalEndpoint {
 
     #[cfg(unix)]
     pub fn connect_stream(&self, timeout: Duration) -> Result<Stream, IpcError> {
+        self.connect_stream_at(self.unix_socket_path()?, timeout)
+    }
+
+    /// Connects through state that is already present. The diagnostics control
+    /// plane uses this instead of `connect_stream` so a cleanup race is
+    /// reported as unavailable rather than recreating `ipc`.
+    #[cfg(unix)]
+    pub(crate) fn connect_existing_stream(&self, timeout: Duration) -> Result<Stream, IpcError> {
+        self.connect_stream_at(self.existing_unix_socket_path()?, timeout)
+    }
+
+    #[cfg(unix)]
+    fn connect_stream_at(
+        &self,
+        path: std::path::PathBuf,
+        timeout: Duration,
+    ) -> Result<Stream, IpcError> {
         use interprocess::local_socket::{GenericFilePath, ToFsName};
 
-        let name = self
-            .unix_socket_path()?
-            .to_fs_name::<GenericFilePath>()
-            .map_err(IpcError::Io)?;
+        let name = path.to_fs_name::<GenericFilePath>().map_err(IpcError::Io)?;
         let stream = ConnectOptions::new()
             .name(name)
             .wait_mode(ConnectWaitMode::Timeout(timeout))
@@ -983,6 +1008,37 @@ impl IpcClient {
             return Err(timed_out("bounded IPC connection"));
         }
         Self::connect_with_timeouts(endpoint, remaining, remaining)
+    }
+
+    /// Connects an already-derived diagnostics endpoint without creating any
+    /// state. On Unix this uses the non-creating transport lookup; Windows
+    /// named-pipe connection has no state-directory creation path.
+    pub(crate) fn connect_existing_until(
+        endpoint: &LocalEndpoint,
+        deadline: Instant,
+    ) -> Result<Self, IpcError> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(timed_out("bounded IPC connection"));
+        }
+        #[cfg(unix)]
+        {
+            Ok(Self {
+                stream: endpoint.connect_existing_stream(remaining)?,
+                timeout: remaining,
+            })
+        }
+        #[cfg(windows)]
+        {
+            let runtime = Arc::new(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_io()
+                    .enable_time()
+                    .build()
+                    .map_err(IpcError::Io)?,
+            );
+            Self::connect_with_runtime(endpoint, remaining, remaining, runtime)
+        }
     }
 
     /// Connect and acknowledge under independently bounded budgets. The
@@ -1928,6 +1984,24 @@ mod tests {
         ));
         release_sender.send(()).unwrap();
         server.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_connection_does_not_recreate_a_removed_transport_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let endpoint = LocalEndpoint::from_state_root(temp.path()).unwrap();
+        let transport = temp.path().join("ipc");
+        std::fs::remove_dir(&transport).unwrap();
+
+        assert!(matches!(
+            IpcClient::connect_existing_until(
+                &endpoint,
+                Instant::now() + Duration::from_millis(20)
+            ),
+            Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::NotFound
+        ));
+        assert!(!transport.exists());
     }
     #[test]
     fn malformed_and_private_values_are_rejected_or_absent() {

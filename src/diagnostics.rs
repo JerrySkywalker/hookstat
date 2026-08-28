@@ -389,7 +389,7 @@ fn broker_diagnostics_report(data_root: &Path) -> BrokerDiagnosticsReport {
         return broker_diagnostics_endpoint_error(error);
     };
     let deadline = Instant::now() + BROKER_DIAGNOSTIC_QUERY_TIMEOUT;
-    match IpcClient::connect_until(&endpoint, deadline)
+    match IpcClient::connect_existing_until(&endpoint, deadline)
         .and_then(|mut client| client.diagnostics_until(deadline))
     {
         Ok(metrics) => BrokerDiagnosticsReport {
