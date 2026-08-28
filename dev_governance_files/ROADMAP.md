@@ -1,5 +1,15 @@
 # HookStat Roadmap
 
+## Active execution overlay — v0.3.1
+
+Current v0.3.1 development is governed by [`ROADMAP_V031.md`](ROADMAP_V031.md) and the corresponding `goals/HS-G38A*` through `goals/HS-G38R*` contracts.
+
+The v0.3.1 release train is deliberately **single-repository**: HookStat must be able to implement, qualify, harden, package, and prepare the release candidate without writing to another product repository. Runtime-specific cooperative producers are independent integration tracks. An external producer may become admitted after satisfying HookStat's HSIP conformance/admission contract, but no external repository, producer package, merge, or release is a prerequisite for HookStat v0.3.1.
+
+Where an ordinary runtime domain has neither admitted Native evidence nor an admitted external IPC integration, HookStat reports that domain truthfully as `NOT_ADMITTED`; it does not manufacture coverage and it does not make another repository a release dependency.
+
+The historical version sections below remain product-history context. When they conflict with the active v0.3.1 execution overlay, `ROADMAP_V031.md` is authoritative for the current train.
+
 ## v0.1 — Codex historical reliability
 
 Critical path:

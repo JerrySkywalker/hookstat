@@ -2,20 +2,25 @@
 
 ## Status
 
-PLANNED after accepted G38.
+PLANNED after accepted G38D.
 
 ## Objective
 
-Freeze the v0.3.1 architecture, close release blockers, prove upgrade/fresh-install behavior and real Codex operation, then prepare the exact public v0.3.1 candidate. Public publication remains an explicit Owner gate.
+Freeze the v0.3.1 architecture, close HookStat-owned release blockers, prove package/upgrade/fresh-install behavior, normal Codex non-interference, and prepare the exact public v0.3.1 candidate.
+
+Public publication remains an explicit Owner gate.
+
+A named external cooperative producer is not required for G38R or public v0.3.1 preparation.
 
 ## Freeze rule
 
-After G38 acceptance:
+After G38D acceptance:
 
 ```text
 NEW_ARCHITECTURE_WORK=false
 NEW_PRODUCT_FEATURE=false
 NEW_RUNTIME=false
+EXTERNAL_INTEGRATION_IMPLEMENTATION=false
 ```
 
 Allowed work is limited to:
@@ -31,7 +36,7 @@ compatibility defects
 privacy/security release blockers
 ```
 
-Do not use release hardening as permission to begin OpenCode, DeepSeek Harness, or v0.4 work.
+Do not use release hardening as permission to modify an external producer repository or begin OpenCode/DeepSeek/Claude/Agy work.
 
 ## Required release path
 
@@ -50,8 +55,10 @@ cargo package --locked
 cargo publish --dry-run --locked
 fresh local install
 upgrade public 0.3.0 -> candidate 0.3.1
-real normal `codex` smoke
-performance budget recheck
+HSIP reference/conformance smoke
+normal `codex` non-interference smoke
+reference HSIP performance budget recheck
+report/doctor/TUI consistency
 ```
 
 Use the repository-governed Rust toolchain/MSRV and exact dependency policy.
@@ -69,9 +76,9 @@ revision history
 interface preferences
 ```
 
-The migration may add new v0.3.1 evidence/broker state but may not silently rewrite historical semantics.
+The migration may add new v0.3.1 broker/diagnostic/conformance state but may not silently rewrite historical semantics.
 
-Rollback/restore behavior for Codex IPC integration must be tested against the candidate.
+If no external IPC integration is installed, upgrade validation must not invent one or mutate another repository/configuration to create coverage.
 
 ## Fresh-install proof
 
@@ -80,22 +87,51 @@ A fresh user-local installation must be able to:
 ```text
 install HookStat 0.3.1 candidate
 run report/doctor/TUI without prior state
-qualify/configure an admitted Codex IPC integration where Native is unavailable
+run HSIP v1 reference/conformance qualification
+inspect Native capability/admission truthfully
+inspect IPC integration admission truthfully
+show unsupported domains as NOT_ADMITTED
 launch normal `codex`
-collect truthful evidence
+remain non-invasive when no evidence integration is admitted
 ```
 
 No HookStat launcher wrapper is admitted.
 
-## Native release semantics
+No external repository modification is permitted as part of fresh-install proof.
 
-If ordinary Codex Native L2 is unavailable upstream, release notes and
-diagnostics must say so explicitly. IPC is authoritative only for affected
-domains with an admitted cooperative integration; every other domain is
-truthfully `NOT_ADMITTED`. The non-admitted transparent shim is not an implicit
-fallback.
+## Native and IPC release semantics
 
-Do not claim zero-overhead Native production merely because controlled App Server L1 qualification passed.
+If ordinary Codex Native L2 is unavailable upstream, release notes and diagnostics must say so explicitly.
+
+IPC is authoritative only for a domain with a separately admitted named integration.
+
+If no such integration exists, the domain remains:
+
+```text
+NOT_ADMITTED
+```
+
+This is allowed release state when represented truthfully.
+
+The non-admitted transparent shim is never an implicit fallback.
+
+The HookStat reference producer is a conformance instrument only and is never production runtime authority.
+
+## Performance release gate
+
+G38R rechecks HookStat's own substrate:
+
+```text
+REFERENCE_HSIP_P95_MS<=1
+REFERENCE_HSIP_P99_MS<=2
+REFERENCE_HSIP_OBSERVATION_GAPS=0
+HOOKSTAT_INDUCED_TIMEOUTS=0
+HOOKSTAT_INDUCED_FAILURES=0
+```
+
+External integration performance is checked only when that integration seeks admission; it is not a v0.3.1 release prerequisite.
+
+Historical transparent-shim failures remain preserved and do not become release PASS evidence.
 
 ## Public documentation
 
@@ -104,9 +140,14 @@ Update at least:
 - README installation/architecture summary;
 - CHANGELOG;
 - v0.3.1 evidence-source/diagnostics documentation;
+- HSIP v1 integration/conformance documentation;
 - migration notes from v0.3.0;
 - privacy/performance contract documentation;
-- exact Native-vs-IPC availability statement for the released Codex version.
+- exact Native availability statement for the released Codex version;
+- explicit statement that no external cooperative producer is bundled/required by HookStat v0.3.1;
+- instructions for third-party integrations to qualify against the HSIP contract without changing HookStat Core.
+
+Do not claim live runtime coverage for any domain that is `NOT_ADMITTED`.
 
 ## Public publication gate
 
@@ -122,7 +163,7 @@ A dry-run/package artifact and release notes may be prepared.
 
 ## Required release receipt
 
-Return/record at minimum:
+Record at minimum:
 
 ```text
 START_MAIN
@@ -137,10 +178,13 @@ PACKAGE
 PUBLISH_DRY_RUN
 UPGRADE_030_TO_031
 FRESH_INSTALL_031
-REAL_CODEX_DOGFOOD
-PERFORMANCE_BUDGET
+HSIP_CONFORMANCE
+REFERENCE_HSIP_PERFORMANCE
+NORMAL_CODEX_SMOKE
 NATIVE_L2_STATE
-PRODUCTION_AUTHORITY
+PRODUCTION_AUTHORITY_BY_DOMAIN
+NOT_ADMITTED_DOMAINS_EXPLICIT
+EXTERNAL_INTEGRATION_REQUIRED=false
 PUBLICATION_AUTHORIZED=false|true
 ```
 
@@ -150,7 +194,8 @@ PUBLICATION_AUTHORIZED=false|true
 CODE_CHANGED=release_blockers_only
 ARCHITECTURE_CHANGED=false
 PERSISTENCE_CHANGED=release_blockers_only
-CODEX_INTEGRATION_CHANGED=release_blockers_only
+CODEX_INTEGRATION_CHANGED=none_or_release_blocker_only
+EXTERNAL_REPOSITORY_CHANGED=false
 SECURITY_OR_PRIVACY_CHANGED=review_only_or_blockers
 RELEASE_BOUNDARY=true
 ```
@@ -167,17 +212,19 @@ PUBLISH_DRY_RUN=PASS
 
 UPGRADE_030_TO_031=PASS
 FRESH_INSTALL_031=PASS
+HSIP_CONFORMANCE=PASS
+REFERENCE_HSIP_PERFORMANCE=PASS
 NORMAL_CODEX_LAUNCH=PASS
-REAL_CODEX_DOGFOOD=PASS
 
-PERFORMANCE_BUDGET=PASS
 HOOKSTAT_INDUCED_TIMEOUTS=0
 HOOKSTAT_INDUCED_FAILURES=0
 
 NATIVE_FIRST=true
-IPC_ONLY_FALLBACK=true
+IPC_ADMITTED_INTEGRATION_ONLY_FALLBACK=true
 NO_THIRD_EVIDENCE_PATH=true
 LEGACY_EVIDENCE_PRESERVED=true
+COVERAGE_TRUTHFUL=true
+EXTERNAL_INTEGRATION_REQUIRED=false
 
 CRATES_IO_PUBLICATION=OWNER_GATE
 GITHUB_TAG=OWNER_GATE
@@ -190,4 +237,4 @@ GITHUB_RELEASE=OWNER_GATE
 
 ## Next
 
-Public v0.3.1 only after explicit Owner publication authorization. No automatic continuation into v0.4 or a future-runtime production track.
+Public v0.3.1 only after explicit Owner publication authorization. No automatic continuation into v0.4, G36T, or any external runtime-integration track.

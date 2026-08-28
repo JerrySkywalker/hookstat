@@ -2,178 +2,137 @@
 
 ## Status
 
-IN PROGRESS from public v0.3.0 baseline
-`a33a3be56982c6ca00699019883a047a1aca748b`. G36 release-scope recovery admits
-cooperative IPC for v0.3.1 while retaining the transparent shim as
-correctness-qualified but not production-admitted after both governed warm
-contracts failed.
+IN PROGRESS from public v0.3.0 baseline `a33a3be56982c6ca00699019883a047a1aca748b`.
 
-This file is the compact long-train entrypoint for v0.3.1. Product intent, architecture, invariants, performance correctness, release boundaries, and future-runtime constraints are defined in [`../goals/HS-V031-NATIVE-IPC-HIGH-PERFORMANCE-EVIDENCE-RUNTIME.md`](../goals/HS-V031-NATIVE-IPC-HIGH-PERFORMANCE-EVIDENCE-RUNTIME.md). Each numbered Goal owns its exact implementation and exit gates.
+Accepted `main` has completed G28, G29, G34, G35, G36, and G37. The current accepted main fingerprint at this scope reset is:
+
+```text
+G37_ACCEPTED_MAIN=ac9683a151741a28341b357dc11ae6fd3b701dfd
+```
+
+The previous G38 plan coupled HookStat release acceptance to a concrete external cooperative producer. That coupling is removed by G38A. HookStat v0.3.1 must be completable from the HookStat repository alone.
+
+Historical external-integration receipts remain valid historical evidence and must not be deleted or rewritten, but they are no longer mandatory predecessors for HookStat v0.3.1 release acceptance.
 
 ## Product direction
 
-**v0.3.1 — Runtime-Neutral Native & IPC High-Performance Evidence Runtime** keeps Codex as the only production runtime while replacing the v0.3 instrumentation-centric hot path with two and only two evidence paths:
+**v0.3.1 — Runtime-Neutral Native & IPC High-Performance Evidence Runtime** keeps Codex as the first runtime while establishing a runtime-neutral evidence platform.
 
-1. **Runtime-native evidence, preferred:** consume authoritative Hook lifecycle evidence produced and owned by the coding-agent runtime without proxying the observed Hook.
-2. **Runtime-neutral local IPC, conditional fallback:** when a coverage domain
-   lacks admitted native evidence, use IPC only if a concrete IPC integration
-   for that domain is itself admitted. Otherwise the domain is `NOT_ADMITTED`.
+HookStat has exactly two evidence transports:
 
-For v0.3.1 cooperative IPC is admitted. The transparent shim is implemented and
-correctness-qualified but is not performance-admitted or production-activated;
-its rearchitecture is deferred to G36T for v0.3.2 or later.
+1. **Runtime-native evidence, preferred.** Runtime-owned authoritative lifecycle evidence when a concrete Native integration is admitted for the coverage domain.
+2. **Runtime-neutral local IPC.** A bounded local HSIP v1 protocol and broker. A runtime-specific cooperative producer may use it only after that producer independently passes the integration admission contract.
 
-The release is Codex-first and Codex-only. The architecture must nevertheless allow future OpenCode, DeepSeek Harness, Claude Code, Agy, or another runtime to add a runtime integration without rewriting the evidence core, broker, ledger, analytics, workbench, or TUI.
-
-## Dependency sequence
+If neither source is admitted for a domain:
 
 ```text
-PUBLIC v0.3.0
-a33a3be56982c6ca00699019883a047a1aca748b
-        ↓
-HS-G28   Hot Path Performance Baseline
-        ↓
-HS-G29   Runtime-Neutral Evidence Core
-        ↓
-HS-G34   Native Evidence Framework + Codex Native L1 Qualification
-        ↓
-HS-G35   Runtime-Neutral IPC Broker / WAL
-        ↓
-HS-G36   Ultra-Light IPC Clients / Transparent Shim
-        ↓
-HS-G37   Codex Evidence Routing / Native L2 / Migration (acceptance candidate)
-        ↓
-HS-G38   Performance & Windows Dogfood Hardening
-        ↓
-HS-G38R  v0.3.1 Hardening & Release
-        ↓
-PUBLIC v0.3.1
+authority = NOT_ADMITTED
 ```
 
-`HS-G30X` through `HS-G33X` remain reserved future-runtime tracks and are not v0.3.1 dependencies.
+`NOT_ADMITTED` is truthful coverage state, not a failure, not a transport, and never enters a healthy denominator.
 
-Default execution is sequential. A long autonomous train may continue only after the predecessor acceptance conditions are actually satisfied and merged, except for the bounded stacked-development exception below. `HS-G38R` is a mandatory release boundary; public crates.io/tag/GitHub Release publication remains an explicit Owner gate.
+## Single-repository release boundary
 
-## Bounded stacked-development exception
-
-A predecessor Goal whose **implementation is complete** may permit implementation of exactly one successor Goal before predecessor acceptance/merge when the only remaining blockers are external to the implementation itself.
-
-The exception is admitted only when all of the following are true:
+The v0.3.1 critical path obeys:
 
 ```text
-PREDECESSOR_IMPLEMENTATION_COMPLETE=true
-PREDECESSOR_KNOWN_CODE_BLOCKERS=0
-PREDECESSOR_CI=PASS
-PREDECESSOR_ARCHITECTURE_STABLE=true
-MAX_STACK_DEPTH=1
+HOOKSTAT_RELEASE_CAN_COMPLETE_WITH_HOOKSTAT_REPO_ONLY=true
+EXTERNAL_REPOSITORY_WRITE_REQUIRED=false
+EXTERNAL_PRODUCER_REQUIRED_FOR_RELEASE=false
+EXTERNAL_PRODUCER_MERGE_REQUIRED_FOR_RELEASE=false
+EXTERNAL_PRODUCER_PACKAGE_REQUIRED_FOR_RELEASE=false
+EXTERNAL_PRODUCER_PUBLICATION_REQUIRED_FOR_RELEASE=false
 ```
 
-Admitted blocker classes are limited to:
+A HookStat unattended development train MUST NOT make correctness or release progress conditional on modifying another product repository.
+
+External producers are consumers of the HSIP contract. They own their implementation lifecycle and may be qualified/admitted independently after HookStat publishes or while it is under development.
+
+## Admission layers
+
+Do not collapse these states:
 
 ```text
-OWNER_ENVIRONMENT
-REAL_HARDWARE_OR_HOST_QUALIFICATION
-EXTERNAL_SERVICE_AVAILABILITY
-INDEPENDENT_REVIEW
-OWNER_ONLY_EVIDENCE_OR_APPROVAL
+HSIP_PROTOCOL_QUALIFIED
+HOOKSTAT_IPC_INFRASTRUCTURE_READY
+INTEGRATION_CONFORMANT
+INTEGRATION_ADMITTED
+DOMAIN_AUTHORITY_SELECTED
+PUBLICLY_RELEASED
 ```
 
-The exception is **not** available when the predecessor has an unresolved correctness bug, architecture uncertainty, persistence/data-corruption risk, privacy/security defect, unstable API/format contract, or unresolved evidence/failure semantics.
+The first two are HookStat repository responsibilities.
 
-A stacked successor must:
+`INTEGRATION_CONFORMANT` and `INTEGRATION_ADMITTED` are properties of a named runtime/integration candidate and are not HookStat release prerequisites unless that integration is bundled in HookStat itself.
 
-- branch from the exact predecessor implementation head;
-- open a stacked PR against the predecessor branch rather than `main`;
-- remain unmerged to `main` until the predecessor is accepted and merged;
-- preserve the predecessor's pending acceptance evidence rather than reclassifying it;
-- be rebased/retargeted to accepted `main` and re-run exact-head CI before its own merge;
-- stop after that one successor Goal if the predecessor still has not merged.
+No external cooperative producer is bundled in v0.3.1.
 
-Acceptance work for the predecessor may proceed in parallel with successor implementation. This exception changes execution scheduling only; it does not weaken any Goal acceptance criterion, frozen performance budget, review requirement, or release gate.
+## Performance correctness
 
-For the current G35/G36 sequence, G36 stacked implementation is permitted only while G35 has no known implementation/correctness blocker and its remaining gates are external acceptance evidence/review. G37 remains blocked until both G35 and G36 are accepted into `main`.
+The G28 budgets remain frozen; this scope reset does not weaken them.
 
-## Goal index
-
-| Goal | Scope | Estimated effort |
-| --- | --- | ---: |
-| G28 | Real Windows hot-path benchmark, current-proxy cost decomposition, provisional-to-frozen performance budget | 5–8 h |
-| G29 | `CanonicalEvidence`, runtime-neutral correlator, authority domains, coverage/admission semantics | 8–12 h |
-| G34 | Runtime-neutral Native contracts and controlled Codex HookStarted/HookCompleted qualification | 8–12 h |
-| G35 | Versioned binary IPC, Windows Named Pipe / Unix Domain Socket, bounded broker, append WAL, group durability | 9–14 h |
-| G36 | Production-admitted cooperative IPC plus retained, correctness-qualified, non-admitted transparent shim | 10–16 h |
-| G36T | Deferred transparent-shim rearchitecture; v0.3.2 or later, not a v0.3.1 dependency | Deferred |
-| G37 | Codex Native/IPC authority routing, ordinary `codex` Native L2 qualification, shadow proof, v0.3 legacy migration | 8–12 h |
-| G38 | Real Windows concurrency/dogfood, tail latency, broker recovery, diagnostics/self-observability, privacy/security review | 7–11 h |
-| G38R | v0.3.1 release freeze, upgrade/fresh-install proof, public release closure | 4–6 h |
-| **Total** | **v0.3.1** | **59–91 h** |
-
-Expected normal execution is approximately **65–75 effective engineering hours**. These are workload estimates, not permissions to bypass Goal gates.
-
-## v0.3.1 admitted outcomes
+HookStat must prove its own HSIP substrate with an in-repository reference producer/conformance harness:
 
 ```text
-PRODUCTION_RUNTIME=Codex
-CODEX_ONLY_RELEASE_REQUIREMENT=true
+REFERENCE_HSIP_P95_MS<=1
+REFERENCE_HSIP_P99_MS<=2
+REFERENCE_HSIP_OBSERVATION_GAPS=0
+HOOKSTAT_INDUCED_TIMEOUTS_FOR_HEALTHY_HOOK=0
+```
 
+Each external cooperative producer must separately satisfy the same producer-admission contract before it can become production authority:
+
+```text
+EXTERNAL_INTEGRATION_P95_MS<=1
+EXTERNAL_INTEGRATION_P99_MS<=2
+EXTERNAL_INTEGRATION_OBSERVATION_GAPS=0
+```
+
+Failure by one external producer blocks that producer's admission only. It does not retroactively make HookStat's protocol, broker, ledger, diagnostics, or release candidate invalid when the HookStat reference substrate passes.
+
+The historical transparent-shim failures remain frozen truth:
+
+```text
+G28_REFERENCE_TRANSPARENT_WARM_P95_P99_MS=20/25
+ONE_TIME_V031_TRANSPARENT_WARM_P95_P99_MS=25/30
+TRANSPARENT_SHIM_20_25=FAIL
+TRANSPARENT_SHIM_25_30=FAIL
+TRANSPARENT_SHIM_PRODUCTION_ADMISSION=false
+TRANSPARENT_SHIM_PRODUCTION_ACTIVATION=false
+FURTHER_BUDGET_RELAXATION=false
+```
+
+## Core invariants
+
+```text
 RUNTIME_NEUTRAL_EVIDENCE_CORE=true
 CANONICAL_EVIDENCE=true
 RUNTIME_NEUTRAL_CORRELATOR=true
 DOMAIN_AUTHORITY_ROUTING=true
 
-NATIVE_FRAMEWORK=true
-CODEX_NATIVE_L1=true
-CODEX_NATIVE_L2=PASS_OR_TRUTHFULLY_UPSTREAM_UNAVAILABLE
-
-RUNTIME_NEUTRAL_IPC=true
-BINARY_IPC_PROTOCOL=true
-EPHEMERAL_BROKER=true
-COMPACT_APPEND_WAL=true
-COOPERATIVE_IPC=PRODUCTION_ADMITTED
-TRANSPARENT_IPC_SHIM=QUALIFIED_NOT_ADMITTED_PERFORMANCE
-TRANSPARENT_SHIM_PRODUCTION_ACTIVATION=false
-
-FULL_CLI_HOT_PATH=false
-PER_RECORD_FSYNC_HOT_PATH=false
-JSON_RECEIPT_HOT_PATH=false
-FULL_MANIFEST_PARSE_HOT_PATH=false
-
-ORIGINAL_HANDLER_TIMEOUT_PRESERVED=true
-HOOKSTAT_INDUCED_TIMEOUTS=0
-
-LEGACY_V03_EVIDENCE_PRESERVED=true
-OPENCODE_PRODUCTION_ADAPTER=false
-DEEPSEEK_PRODUCTION_ADAPTER=false
-```
-
-## Cross-cutting invariants
-
-```text
 NATIVE_FIRST=true
 IPC_ADMITTED_INTEGRATION_ONLY_FALLBACK=true
 NO_THIRD_EVIDENCE_PATH=true
 NOT_ADMITTED_IS_EVIDENCE_PATH=false
-
-NATIVE_MEANS_RUNTIME_OWNED_EVIDENCE=true
-NATIVE_TRANSPORT_OPAQUE_TO_CORE=true
-IPC_PROTOCOL_RUNTIME_NEUTRAL=true
-IPC_BROKER_RUNTIME_NEUTRAL=true
-IPC_INTEGRATION_RUNTIME_SPECIFIC=true
 
 ONE_AUTHORITY_PER_COVERAGE_DOMAIN=true
 NO_DOUBLE_COUNTING=true
 SHADOW_EVIDENCE_IN_DENOMINATOR=false
 MISSING_EVIDENCE_NEVER_BECOMES_SUCCESS=true
 
-CANONICAL_EVIDENCE_BEFORE_HOOK_INVOCATION=true
-CORRELATION_RUNTIME_NEUTRAL=true
-IDENTITY_RESOLUTION_RUNTIME_SPECIFIC=true
+IPC_PROTOCOL_RUNTIME_NEUTRAL=true
+IPC_BROKER_RUNTIME_NEUTRAL=true
+IPC_INTEGRATION_RUNTIME_SPECIFIC=true
 
-NORMAL_CODEX_LAUNCH=codex
-HOOKSTAT_AS_CODEX_LAUNCHER=false
+BINARY_IPC_PROTOCOL=true
+EPHEMERAL_BROKER=true
+COMPACT_APPEND_WAL=true
 GLOBAL_MANDATORY_DAEMON=false
 NETWORK_LISTENER=false
 REMOTE_TELEMETRY=false
+
+NORMAL_CODEX_LAUNCH=codex
+HOOKSTAT_AS_CODEX_LAUNCHER=false
 
 RAW_PROMPT_CONTENT_PERSISTED=false
 RAW_ASSISTANT_CONTENT_PERSISTED=false
@@ -182,84 +141,238 @@ RAW_STDOUT_PERSISTED=false
 RAW_STDERR_PERSISTED=false
 RAW_COMMAND_PERSISTED_IN_LEDGER=false
 
-OBSERVABILITY_MUST_NOT_DISTURB_OBSERVED_SYSTEM=true
-MISSING_EVIDENCE_NEVER_BECOMES_SUCCESS=true
-FUTURE_RUNTIME_ADAPTER_REQUIRES_CORE_REWRITE=false
+LEGACY_V03_EVIDENCE_PRESERVED=true
 ```
 
-A local on-demand, idle-expiring per-user broker is permitted. It is not a mandatory machine-global daemon, network service, remote telemetry system, or self-update mechanism.
-
-## Performance correctness
-
-G28 is the only Goal allowed to calibrate the provisional numeric targets below. Once G28 records real Owner Windows measurements, the accepted budget becomes release-governing for G36–G38R.
-
-Current governed targets and retained results:
+## Revised dependency DAG
 
 ```text
-NATIVE_ADDED_SYNCHRONOUS_LATENCY_MS=0
-COOPERATIVE_IPC_P95_MS<=1
-COOPERATIVE_IPC_P99_MS<=2
-G28_REFERENCE_TRANSPARENT_WARM_P95_P99_MS=20/25
-ONE_TIME_V031_TRANSPARENT_WARM_P95_P99_MS=25/30
-TRANSPARENT_SHIM_20_25=FAIL
-TRANSPARENT_SHIM_25_30=FAIL
-TRANSPARENT_SHIM_PRODUCTION_ADMISSION=false
-TRANSPARENT_SHIM_COLD_P95_MS<=50
-HOOKSTAT_INDUCED_TIMEOUTS_FOR_HEALTHY_HOOK=0
-FURTHER_BUDGET_RELAXATION=false
+PUBLIC v0.3.0
+      │
+      ▼
+HS-G28 — Hot Path Performance Baseline                 [ACCEPTED]
+      │
+      ▼
+HS-G29 — Runtime-Neutral Evidence Core                 [ACCEPTED]
+      │
+      ▼
+HS-G34 — Native Framework / Codex Native L1            [ACCEPTED]
+      │
+      ▼
+HS-G35 — Runtime-Neutral IPC Broker / WAL              [ACCEPTED]
+      │
+      ▼
+HS-G36 — Ultra-Light IPC Clients / Transparent Shim    [ACCEPTED]
+      │
+      ▼
+HS-G37 — Authority Routing / Native L2 / Migration     [ACCEPTED]
+      │
+      ▼
+HS-G38A — Single-Repo Scope & Admission Contract Reset
+      │
+      ├──────────────────────────┐
+      ▼                          ▼
+HS-G38B                      HS-G38C
+HSIP v1 Conformance Kit      HookStat Windows Hardening
+      │                          │
+      └────────────┬─────────────┘
+                   ▼
+              HS-G38D
+         Acceptance / PR Closeout
+                   │
+                   ▼
+              HS-G38R
+       v0.3.1 Hardening & Release
+                   │
+                   ▼
+            PUBLIC v0.3.1
 ```
 
-Hosted CI may detect structural performance regressions but does not replace the real Windows p50/p95/p99 release gate.
+G38B and G38C are independent after G38A. A single unattended writer should normally execute G38B then G38C sequentially. Separate isolated writers may execute them in parallel only when they do not share a branch/worktree and repository governance permits it. G38D is the convergence gate and cannot pass until both are accepted.
+
+## External integration DAG
+
+External integrations consume the contract but are not on the release critical path:
+
+```text
+                 HSIP v1 conformance contract
+                         /      |      \
+                        /       |       \
+                       ▼        ▼        ▼
+                 Integration A  B        C
+                       │        │        │
+                       ▼        ▼        ▼
+                  conformance conformance conformance
+                       │        │        │
+                       ▼        ▼        ▼
+                   admission admission admission
+```
+
+For every such track:
+
+```text
+BLOCKS_HOOKSTAT_V031_RELEASE=false
+CROSS_REPO_WRITE_FROM_HOOKSTAT_TRAIN=false
+```
+
+A historical or future TabBeacon integration is one possible external integration; it has no special authority in HookStat Core.
+
+## Goal index
+
+| Goal | Scope | Estimated effort |
+| --- | --- | ---: |
+| G28 | Windows hot-path baseline and frozen budgets | accepted |
+| G29 | CanonicalEvidence, neutral correlator, authority/coverage | accepted |
+| G34 | Native contracts and Codex Native L1 | accepted |
+| G35 | Versioned IPC, Named Pipe/UDS, bounded broker, WAL | accepted |
+| G36 | IPC clients and retained non-admitted transparent shim | accepted |
+| G37 | Codex authority routing, Native L2 state, legacy migration | accepted |
+| G38A | Single-repo release boundary and admission-contract reset | 2–3 h |
+| G38B | HSIP v1 reference producer + conformance/performance/privacy kit | 4–7 h |
+| G38C | Diagnostics, broker/WAL recovery, Windows concurrency/resource hardening | 3–5 h |
+| G38D | Exact-head qualification, independent review, reconcile/merge G38 | 2–4 h |
+| G38R | Release freeze, package/dry-run, upgrade/fresh-install, docs | 4–6 h |
+| **Remaining** | **from G38A** | **15–25 h** |
+
+Existing draft G38 implementation may satisfy substantial G38C work. Preserve valid tests and evidence; do not rewrite working code simply because the execution contract changed.
+
+## G38A — scope reset
+
+G38A updates governance only. It must establish:
+
+```text
+EXTERNAL_INTEGRATION_REQUIRED_FOR_RELEASE=false
+HSIP_PROTOCOL_RELEASE_OWNED_BY_HOOKSTAT=true
+INTEGRATION_ADMISSION_SEPARATE=true
+DOMAIN_WITHOUT_ADMITTED_SOURCE=NOT_ADMITTED
+```
+
+It must not delete historical receipts or hide previous external-producer performance findings.
+
+## G38B — HSIP v1 conformance kit
+
+HookStat must provide an in-repository reference producer and deterministic conformance harness covering at minimum:
+
+```text
+START / COMPLETE
+start-only / complete-only
+out-of-order
+duplicate / replay
+uncertain ACK / no replay
+malformed frame
+oversized frame / identifier
+broker unavailable / restart
+concurrent producers
+privacy/data minimization
+identity stability
+WAL recovery
+performance p50/p95/p99
+```
+
+The reference producer is a test/conformance instrument, not a production runtime adapter and not a third evidence path.
+
+## G38C — HookStat-only Windows hardening
+
+Qualify HookStat itself on Owner-controlled Windows using the reference producer and controlled clients:
+
+```text
+1 / 5 / 10 concurrent clients
+10,000+ controlled evidence frames
+broker idle/restart/reconnect
+WAL valid-prefix and partial-tail recovery
+bounded diagnostics
+process/resource leak checks
+report/doctor/TUI consistency
+privacy/security review
+```
+
+Also run ordinary `codex` smoke to prove HookStat does not require a launcher, trust bypass, or unwanted configuration mutation. If no admitted Native or external IPC producer exists, the corresponding runtime domains must remain `NOT_ADMITTED`; that is an allowed truthful state.
+
+## G38D — convergence and closeout
+
+G38D requires:
+
+```text
+G38A=PASS
+G38B=PASS
+G38C=PASS
+REFERENCE_HSIP_PERFORMANCE=PASS
+DIAGNOSTICS=PASS
+RECOVERY=PASS
+PRIVACY_REVIEW=PASS
+SECURITY_REVIEW=PASS
+WINDOWS_CI=PASS
+UBUNTU_CI=PASS
+FRESH_INDEPENDENT_REVIEW=PASS
+EXTERNAL_INTEGRATION_REQUIRED=false
+```
+
+The existing G38 draft PR should be reconciled with accepted main after G38A and with G38B/G38C results before merge. Stale text that names an external product as a mandatory G38 blocker must be removed, while historical receipts remain intact.
+
+## G38R release semantics
+
+A fresh v0.3.1 install must be able to:
+
+```text
+run report / doctor / TUI with no prior state
+run HSIP conformance/reference qualification
+report Native capability truthfully
+report IPC integration admission truthfully
+report uncovered domains as NOT_ADMITTED
+launch ordinary codex without HookStat wrapper semantics
+```
+
+An admitted external cooperative producer is optional. If none is installed/admitted, release notes must say so explicitly rather than imply live evidence coverage.
 
 ## Explicitly deferred
 
-Do not fold these into v0.3.1 merely because time remains:
+Do not fold these into v0.3.1:
 
+- any external producer implementation as a HookStat release dependency;
 - OpenCode production adapter;
 - DeepSeek Harness production adapter;
 - Claude Code production adapter;
 - Agy production adapter;
+- transparent-shim rearchitecture (`G36T`, v0.3.2 or later);
 - OTel as reliability evidence;
-- rollout/session-history inference as a third evidence path;
-- polling as a third evidence path;
-- Web UI or remote dashboard;
+- session-history inference or polling as a third evidence path;
+- Web UI / remote dashboard;
 - cloud/distributed aggregation;
-- remote or network broker;
+- remote/network broker;
 - AI root-cause diagnosis;
-- general daemon framework;
-- Codex launcher wrapper;
+- HookStat-as-Codex launcher;
 - broad TUI redesign.
 
-Synthetic multi-runtime fixtures in G29 prove the core abstraction only; they do not constitute non-Codex runtime support.
+## Unattended-train authority
 
-## Suggested 12h train partitions
+After this roadmap is accepted, an unattended HookStat train may autonomously:
+
+- implement G38B/G38C/G38D and then G38R in dependency order;
+- add/refine in-repository reference producer and test fixtures;
+- run Windows/Ubuntu/local tests and benchmarks;
+- repair HookStat-only CI and correctness defects;
+- update HookStat docs and sanitized receipts;
+- create/reconcile HookStat branches and PRs;
+- merge a Goal after its exact acceptance gates and review pass.
+
+It may not:
 
 ```text
-Train A: G28 + begin G29
-Train B: finish G29 + G34
-Train C: G35
-Train D: G36
-Train E: G37
-Train F: G38
-Train G: G38R -> Owner publication gate
+WRITE_EXTERNAL_REPOSITORY=true
+WEAKEN_COVERAGE_TRUTHFULNESS=true
+ADD_THIRD_EVIDENCE_PATH=true
+WEAKEN_FROZEN_PERFORMANCE_BUDGET=true
+DELETE_LEGACY_EVIDENCE=true
+PUBLISH_CRATES_IO=true
+CREATE_PUBLIC_V031_TAG=true
+CREATE_PUBLIC_GITHUB_RELEASE=true
 ```
 
-Partitions are estimates. Goal acceptance and truthful state remain authoritative. A stacked train created by the bounded exception remains capped at one successor Goal and does not advance the downstream train schedule.
+Public publication remains an explicit Owner gate.
 
 ## Mandatory stop gates
 
-### Gate A — after G28
-
-If the chosen local IPC transport cannot satisfy a credible low-latency hot-path budget on the Owner Windows environment, stop before G35 and revise the transport design. Do not proceed on an unmeasured assumption.
-
-### Gate B — during G34/G37 Native qualification
-
-If ordinary `codex` offers no supported external attach path for authoritative
-HookStarted/HookCompleted evidence, record Native L2 as upstream-unavailable.
-Use IPC only for domains with an admitted cooperative integration; otherwise
-route the domain to `NOT_ADMITTED`. Do not introduce a HookStat launcher or the
-non-admitted transparent shim to force coverage.
-
-### Gate C — before G38R
-
-Any reproducible HookStat-induced timeout or execution failure in a previously healthy Hook blocks release.
+1. **HSIP substrate:** if the HookStat reference producer + broker cannot satisfy the frozen 1/2 ms cooperative transport budget on the admitted Owner Windows test methodology, stop G38B/G38D and fix HookStat substrate; do not blame or modify an external producer.
+2. **Native:** ordinary Codex Native L2 may remain upstream-unavailable. Record it truthfully; it is not a release blocker by itself.
+3. **Coverage:** a domain with no admitted source remains `NOT_ADMITTED`; never convert it into success.
+4. **Before G38R:** any reproducible HookStat-induced timeout/failure, persistence corruption, privacy/security defect, or false coverage blocks release.

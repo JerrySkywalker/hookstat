@@ -2,39 +2,57 @@
 
 ## Status
 
-IN PROGRESS after public v0.3.0 baseline
-`a33a3be56982c6ca00699019883a047a1aca748b`. The Owner-approved v0.3.1 scope
-admits cooperative IPC and preserves the transparent shim as implemented and
-correctness-qualified but not performance-admitted or production-activated.
+IN PROGRESS after public v0.3.0 baseline `a33a3be56982c6ca00699019883a047a1aca748b`.
 
-v0.3.1 remains **Codex-only in production**. Future OpenCode, DeepSeek Harness, Claude Code, Agy, or other runtime integrations are not release dependencies. The purpose of this release is to establish the runtime-neutral evidence architecture those future integrations can use without rewriting HookStat Core.
+G28, G29, G34, G35, G36, and G37 are accepted on `main`. G38A resets the remaining v0.3.1 release contract so HookStat can complete its own architecture, hardening, and release candidate without writing to another product repository.
+
+v0.3.1 remains Codex-first, but a named external cooperative producer is not a release dependency. Runtime-specific producers consume HookStat's HSIP contract and have independent admission lifecycles.
 
 ## Problem statement
 
-HookStat measures Hook reliability and performance. Its own instrumentation therefore cannot be allowed to become a material source of Hook latency, timeout, failure, or identity drift.
+HookStat measures Hook reliability and performance. Its own instrumentation cannot be allowed to become a material source of Hook latency, timeout, failure, identity drift, false coverage, or cross-product coupling.
 
-Owner Windows dogfood of v0.3.0 exposed the current architectural limit:
+The v0.3 instrumentation-centric path exposed two separate concerns:
 
-- the v0.3 proxy path launches the full HookStat executable for individual handlers;
-- it loads a private manifest, writes start/completion receipt files, appends a journal, and performs synchronous durability work;
-- it invokes the original Windows command through an additional shell layer;
-- high-frequency PreToolUse/PostToolUse paths can therefore amplify instrumentation overhead thousands of times;
-- observed one-second Hook declarations timed out when enabled under the current instrumentation path, while old evidence contained a large start-only/incomplete population.
+1. **HookStat substrate correctness:** canonical evidence, correlation, broker/WAL, diagnostics, performance, recovery, privacy, and truthful authority routing.
+2. **Runtime integration admission:** whether a concrete runtime-owned Native source or cooperative IPC producer satisfies HookStat's contract for a specific coverage domain.
 
-v0.3.1 treats this as an architecture and performance-correctness problem, not as a reason to blindly increase Hook timeout values.
+v0.3.1 owns the first concern completely. The second is integration-specific and may be completed independently.
 
 ## Product objective
 
-Replace the instrumentation-centric evidence model with exactly two production evidence paths:
+HookStat has exactly two evidence transports:
 
-1. **Runtime-native evidence — preferred.** Consume authoritative Hook lifecycle evidence produced and owned by the coding-agent runtime. HookStat does not proxy the observed Hook and adds zero synchronous Hook latency.
-2. **Runtime-neutral local IPC — conditional fallback.** For a coverage domain
-   without admitted Native evidence, use IPC only when a concrete IPC
-   integration for that domain is admitted. Cooperative IPC is admitted for
-   v0.3.1. The transparent shim remains the same IPC evidence path but is not a
-   production fallback in this release.
+1. **Runtime-native evidence — preferred.** Authoritative lifecycle evidence produced and owned by the runtime without HookStat proxying the observed Hook.
+2. **Runtime-neutral local IPC.** A versioned bounded local HSIP protocol and HookStat broker. Concrete cooperative producers are runtime/integration-owned and must be admitted independently.
+
+Production authority is selected per coverage domain:
+
+```text
+if Native is admitted for the domain:
+    authority = Native
+else if a concrete IPC integration is admitted for the domain:
+    authority = IPC
+else:
+    authority = NOT_ADMITTED
+```
 
 No third production evidence path is admitted in v0.3.1.
+
+## Single-repository release invariant
+
+```text
+HOOKSTAT_RELEASE_CAN_COMPLETE_WITH_HOOKSTAT_REPO_ONLY=true
+EXTERNAL_REPOSITORY_WRITE_REQUIRED=false
+EXTERNAL_INTEGRATION_REQUIRED_FOR_RELEASE=false
+EXTERNAL_INTEGRATION_MERGE_REQUIRED_FOR_RELEASE=false
+EXTERNAL_INTEGRATION_PACKAGE_REQUIRED_FOR_RELEASE=false
+EXTERNAL_INTEGRATION_PUBLICATION_REQUIRED_FOR_RELEASE=false
+```
+
+HookStat development may read public integration evidence for compatibility analysis, but an unattended HookStat release train must not modify another product repository or make its progress conditional on doing so.
+
+Historical cross-repository qualification receipts remain historical truth. This scope reset changes their release-critical status, not their factual content.
 
 ## Four non-negotiable correctness principles
 
@@ -42,7 +60,7 @@ No third production evidence path is admitted in v0.3.1.
 
 > A measurement tool must not materially perturb the measurement target.
 
-Performance is a release property, not an optional optimization.
+Performance is a correctness property.
 
 ### 2. Evidence correctness
 
@@ -50,22 +68,20 @@ Performance is a release property, not an optional optimization.
 
 ### 3. Authority correctness
 
-> Each coverage domain has exactly one production evidence authority. Native and IPC may shadow each other for qualification, but shadow evidence never contributes to a production denominator.
+> Each coverage domain has exactly one production evidence authority.
 
-### 4. Future-runtime correctness
+Native and IPC may shadow each other only for qualification; shadow evidence never contributes to the production denominator.
 
-> Supporting a future runtime must require adding runtime integration code, not rewriting HookStat Core, broker, ledger, analytics, workbench, or TUI.
+### 4. Integration-boundary correctness
+
+> Supporting or admitting a runtime integration must not require rewriting HookStat Core, broker, ledger, analytics, workbench, or TUI, and HookStat release work must not require writing the integration's repository.
 
 ## Production invariants
 
 ```text
 HOOKSTAT_VERSION_TARGET=0.3.1
 
-PRODUCTION_RUNTIME=Codex
 CODEX_FIRST=true
-CODEX_ONLY_RELEASE_REQUIREMENT=true
-NON_CODEX_RUNTIME_REQUIRED_FOR_RELEASE=false
-
 RUNTIME_CORE_NEUTRAL=true
 
 EVIDENCE_PATHS=2
@@ -81,12 +97,16 @@ IPC_PROTOCOL_RUNTIME_NEUTRAL=true
 IPC_BROKER_RUNTIME_NEUTRAL=true
 IPC_INTEGRATION_RUNTIME_SPECIFIC=true
 
+HSIP_PROTOCOL_RELEASE_OWNED_BY_HOOKSTAT=true
+COOPERATIVE_IPC_INFRASTRUCTURE=PRODUCTION_READY_TARGET
+COOPERATIVE_INTEGRATION_ADMISSION=PER_INTEGRATION
+BUNDLED_EXTERNAL_COOPERATIVE_PRODUCER=false
+
 ONE_AUTHORITY_PER_COVERAGE_DOMAIN=true
 NO_DOUBLE_COUNTING=true
 SHADOW_EVIDENCE_IN_DENOMINATOR=false
 MISSING_EVIDENCE_NEVER_BECOMES_SUCCESS=true
 
-COOPERATIVE_IPC_ADMISSION=ADMITTED
 TRANSPARENT_SHIM_ADMISSION=QUALIFIED_NOT_ADMITTED_PERFORMANCE
 TRANSPARENT_SHIM_PRODUCTION_ACTIVATION=false
 
@@ -105,48 +125,35 @@ SELF_UPDATE=false
 RAW_PRIVATE_CONTENT_PERSISTED=false
 COVERAGE_TRUTHFUL=true
 FAILURE_RATE_WITH_SAMPLE_COUNT=true
+LEGACY_V03_EVIDENCE_PRESERVED=true
 ```
 
 ## Runtime and transport are orthogonal
 
 `Runtime` identifies the coding-agent runtime. `EvidenceTransport` identifies how HookStat receives evidence.
 
-The architecture must be able to represent:
+The core must be able to represent:
 
 ```text
 Codex + Native
 Codex + IPC
-
 OpenCode + Native
 OpenCode + IPC
-
 DeepSeekHarness + Native
 DeepSeekHarness + IPC
 ```
 
-Core enums and persistence schemas must not encode runtime-specific transport names such as `CodexAppServer`, `OpenCodePlugin`, or `DeepSeekSessionLog` as evidence transports. Those remain adapter-internal diagnostics.
+Core enums and persistence schemas must not encode runtime-specific transport names such as `CodexAppServer`, `OpenCodePlugin`, or `DeepSeekSessionLog` as evidence transports. Those are adapter/internal diagnostics.
 
-## What Native means
+## Native evidence and admission
 
-Native evidence is authoritative lifecycle evidence produced and owned by the runtime without HookStat proxying the observed Hook.
+Native evidence is runtime-owned authoritative lifecycle evidence received without HookStat proxying the observed Hook.
 
-A Native adapter may internally use any runtime-owned mechanism, including:
+A Native adapter may internally use a supported runtime-owned mechanism such as live protocol notifications, event bus callbacks, durable event logs, runtime databases, or official local protocols.
 
-- live protocol notifications;
-- an event bus;
-- a plugin callback;
-- a durable event log;
-- a runtime database or official local protocol.
+For v0.3.1 only Codex Native has an implemented qualification path. Controlled App Server L1 qualification is retained. Ordinary-CLI Native L2 is admitted only if upstream exposes a supported attach path.
 
-Therefore the Native abstraction must not assume that every runtime supports a live `subscribe()` API.
-
-For v0.3.1 only Codex Native is implemented. The current target is the runtime-owned HookStarted/HookCompleted lifecycle evidence exposed by the Codex App Server protocol. Controlled App Server qualification is mandatory; production ordinary-CLI attachment is admitted only if upstream provides a supported attach path.
-
-## Native admission
-
-A runtime-native source becomes production authority only after evidence qualification proves the required semantics for the relevant coverage domain.
-
-Native admission states:
+Native admission states remain:
 
 ```text
 Unavailable
@@ -157,61 +164,23 @@ Degraded
 Revoked
 ```
 
-Capability qualification must explicitly cover at least:
-
-```text
-invocation start
-terminal result
-handler attribution
-duration semantics
-source scope
-revision attribution
-ordering/correlation
-replay or delivery characteristics
-event-surface completeness
-privacy boundary
-version compatibility
-```
-
-`Qualified` is not automatically `Admitted`.
+Ordinary Codex Native L2 being upstream-unavailable is truthful state, not a reason to invent a third evidence path and not by itself a v0.3.1 release blocker.
 
 ## Coverage-domain routing
 
-Native availability may differ by event or source class. Authority selection therefore operates on a coverage domain rather than on a runtime-wide boolean.
-
-Minimum conceptual domain:
+Authority operates over a domain such as:
 
 ```text
 runtime + event family + source class
 ```
 
-Example future state:
-
-```text
-DeepSeekHarness / PreToolUse / bridge-owned -> Native
-DeepSeekHarness / SessionStart / bridge-owned -> IPC
-```
-
-The production router is a three-state authority decision over two evidence
-paths:
-
-```text
-if Native is admitted for the domain:
-    authority = Native
-else if an IPC integration is admitted for the domain:
-    authority = IPC
-else:
-    authority = NOT_ADMITTED
-```
-
-`NOT_ADMITTED` is coverage truth, not an `EvidenceTransport` variant. Evidence
-in that state cannot enter a production denominator or become success.
+If no source is admitted, diagnostics/report/TUI must display truthful incomplete or `NOT_ADMITTED` coverage. Such a domain does not enter a healthy production denominator.
 
 ## Runtime-neutral canonical evidence
 
-Runtime-specific raw events normalize first into `CanonicalEvidence`, before they become `HookInvocation`.
+Runtime-specific raw events normalize into `CanonicalEvidence` before becoming `HookInvocation`.
 
-Conceptual fields:
+Conceptual fields include:
 
 ```text
 schema_version
@@ -235,7 +204,7 @@ The canonical layer must not persist raw prompt, assistant, tool, stdout, stderr
 
 ## Runtime-neutral correlation
 
-`EvidenceCorrelator` owns lifecycle pairing and reconciliation for every runtime and transport:
+`EvidenceCorrelator` owns lifecycle reconciliation for every runtime and transport:
 
 ```text
 START + COMPLETE -> complete HookInvocation
@@ -245,40 +214,20 @@ duplicate        -> idempotent
 out-of-order     -> deterministic reconciliation
 ```
 
-These semantics must not be reimplemented independently in each runtime adapter.
+Adapters must not reimplement these semantics independently.
 
 ## Runtime-specific identity resolution
 
-Runtime identity semantics differ and remain adapter-owned. A runtime adapter may use its own opaque `RuntimeHandlerRef` and runtime-specific definition evidence, but it must resolve to HookStat's stable handler key/revision/display metadata before ledger attribution.
+Runtime identity remains adapter-owned. Runtime-specific opaque references must resolve to HookStat stable handler/revision/display metadata before ledger attribution.
 
-No core assumption may depend on Codex `hooks.json` path, group index, handler index, App Server identifiers, or any future OpenCode/DeepSeek-specific field.
-
-## Native adapter composition
-
-Do not create one giant `RuntimeAdapter` trait. Prefer narrow contracts:
-
-```text
-NativeCapabilityProbe
-NativeEvidenceReader
-NativeNormalizer
-RuntimeIdentityResolver
-IpcIntegrationAdapter
-```
-
-A small `RuntimeIntegration` object may compose these components and report the runtime it serves.
-
-`NativeEvidenceReader` must allow adapter-owned opaque cursor/state so a future runtime can implement live notifications, event-sequence replay, or durable-log offsets without changing core interfaces.
+Core assumptions must not depend on Codex `hooks.json` indexes, App Server identifiers, or future runtime-specific fields.
 
 ## IPC architecture
 
-IPC is the only fallback evidence path and is runtime-neutral after
-integration. Its existence does not imply that an IPC integration is admitted
-for every domain.
-
 ```text
-runtime-specific integration
+runtime-specific producer
         ↓
-generic local IPC producer
+HSIP v1 local transport
         ↓
 generic HookStat broker
         ↓
@@ -289,267 +238,222 @@ CanonicalEvidence
 EvidenceCorrelator
 ```
 
-### Platform transport
+Platform transport remains:
 
 ```text
 Windows -> Named Pipe
 Unix    -> Unix Domain Socket
 ```
 
-Both implement one local transport abstraction.
+The broker is per-user, local-only, on-demand, idle-expiring, bounded, and non-networked. It receives, validates, queues, appends WAL, acknowledges, performs group durability/recovery, and expires when idle. It does not own runtime-specific identity inference, analytics, trust decisions, or TUI work.
 
-### IPC producer modes
+## IPC producer modes
 
-Both are the same evidence path:
+### Cooperative producer
 
-1. **Cooperative IPC:** a Hook under our control emits START/COMPLETE directly to HookStat IPC. No HookStat wrapper process is introduced.
-2. **Transparent shim:** a dedicated minimal HookStat shim emits START, executes the original third-party Hook, emits COMPLETE, and forwards the original terminal semantics.
+A runtime/integration under its own control emits START/COMPLETE directly through HSIP. No HookStat wrapper process is introduced.
 
-For v0.3.1 cooperative IPC is production-admitted. TabBeacon is the first
-controlled real cooperative proof. `hookstat-hook` remains implemented and
-correctness-qualified but has
-`QualifiedNotAdmittedPerformance` admission and cannot be selected by a
-production activation path. G36T owns any v0.3.2-or-later rearchitecture.
+HookStat v0.3.1 provides the protocol, broker, conformance kit, reference producer, diagnostics, and admission contract. It does not bundle or require a named external cooperative producer.
 
-### Dedicated minimal shim
+### Transparent shim
 
-The v0.3 full `hookstat.exe codex proxy` must leave the production hot path.
-The presence of the retained `hookstat-hook` executable does not admit it as a
-replacement production authority in v0.3.1.
+The dedicated minimal `hookstat-hook` implementation remains correctness/security-qualified but performance-not-admitted. Its historical 20/25 and 25/30 failures are retained. It cannot become production authority in v0.3.1.
 
-A dedicated minimal executable conceptually named `hookstat-hook` owns only:
+G36T owns any v0.3.2-or-later rearchitecture.
 
-```text
-IPC protocol
-handler capsule reader
-clock
-process spawn
-Windows process containment
-exit/timeout propagation
-```
+## HSIP v1 conformance and integration admission
 
-It must not link product-level TUI, analytics, workbench, report, localization, or SQLite functionality.
+The normative conformance/admission contract is defined by `docs/architecture/HSIP-V1-CONFORMANCE-AND-ADMISSION.md`.
 
-### Handler capsule
+HookStat owns an in-repository reference producer and conformance harness. The reference producer exists only to prove protocol/broker behavior and is not a production runtime integration.
 
-Instrumentation precompiles per-handler bounded execution metadata rather than loading the full private manifest for each invocation.
-
-Conceptual capsule fields:
+A named external producer becomes eligible for production authority only after independent evidence proves:
 
 ```text
-schema
-stable key
-revision
-bounded execution plan
-original timeout semantics
-definition fingerprint
+PROTOCOL=PASS
+CORRELATION=PASS
+FAIL_OPEN=PASS
+NO_REPLAY_AFTER_UNCERTAIN_WRITE=PASS
+PRIVACY=PASS
+SECURITY=PASS
+PACKAGE_PROVENANCE=PASS
+PERFORMANCE=PASS
+INDEPENDENT_REVIEW=PASS
 ```
 
-A provably simple executable/argv command may use a direct process fast path. Shell-dependent commands fall back to the platform shell; HookStat must not invent an incomplete Windows shell parser.
-
-## IPC broker
-
-The broker is per-user, local-only, on-demand, and idle-expiring. It is not a mandatory machine-global daemon.
-
-Broker responsibilities are deliberately narrow:
-
-```text
-receive
-validate
-enqueue
-append WAL
-acknowledge
-batch/group durability
-recover
-idle-expire
-```
-
-The broker does not perform runtime-specific identity inference, analytics, trust decisions, TUI work, or source-authority decisions.
-
-The broker must use bounded queues and bounded frame sizes. The network stack is not part of this subsystem.
-
-## Persistence policy
-
-The v0.3 hot path creates per-invocation JSON files and synchronously appends the receipt journal. v0.3.1 replaces this production hot path with a compact append WAL and group durability.
-
-Per-record `fsync`/`sync_data` is prohibited on the synchronous Hook path.
-
-The exact group-durability interval/size is calibrated by G28/G35 performance and crash-recovery evidence. Losing a very small final power-loss window is preferable to making every high-frequency observed Hook pay synchronous disk-flush latency, provided crash/restart semantics remain explicit and truthful.
-
-## Timeout correctness
-
-HookStat instrumentation overhead must not silently consume the original Hook's business timeout budget.
-
-The implementation distinguishes:
-
-```text
-OriginalHandlerBudget
-InstrumentationEnvelope
-```
-
-The original handler receives no more execution time than its original semantics allow. A bounded outer envelope may exist solely to permit HookStat startup/finalization overhead; its size must be derived from the frozen G28 performance budget, not guessed.
-
-Blindly increasing all Hook timeouts is not an accepted fix.
+An external producer's failed admission does not block HookStat v0.3.1.
 
 ## Performance contract
 
-G28 records the real Owner Windows baseline. The original transparent warm
-`20/25` contract and the Owner-approved one-time v0.3.1 `25/30` recalibration
-both failed under admitted Windows substrate. Neither result is rewritten and
-no further relaxation is authorized. The v0.3.1 release scope therefore admits
-only cooperative IPC performance while retaining transparent correctness.
+G28 budgets remain frozen.
+
+### HookStat release substrate gate
+
+The in-repository reference producer + HookStat broker must prove:
 
 ```text
-NATIVE_ADDED_SYNCHRONOUS_LATENCY_MS=0
-COOPERATIVE_IPC_P95_MS<=1
-COOPERATIVE_IPC_P99_MS<=2
-COOPERATIVE_OBSERVATION_GAPS=0
+REFERENCE_HSIP_P95_MS<=1
+REFERENCE_HSIP_P99_MS<=2
+REFERENCE_HSIP_OBSERVATION_GAPS=0
+HOOKSTAT_INDUCED_TIMEOUTS_FOR_HEALTHY_HOOK=0
+HOOKSTAT_INDUCED_FAILURES_FOR_HEALTHY_HOOK=0
+```
+
+If HookStat's own substrate cannot meet this gate, G38B/G38D are blocked.
+
+### External integration admission gate
+
+Each external cooperative producer must independently satisfy:
+
+```text
+INTEGRATION_HSIP_P95_MS<=1
+INTEGRATION_HSIP_P99_MS<=2
+INTEGRATION_OBSERVATION_GAPS=0
+```
+
+A failure blocks that integration's admission only.
+
+### Transparent historical result
+
+```text
 G28_REFERENCE_TRANSPARENT_WARM_P95_P99_MS=20/25
 ONE_TIME_V031_TRANSPARENT_WARM_P95_P99_MS=25/30
 TRANSPARENT_SHIM_20_25=FAIL
 TRANSPARENT_SHIM_25_30=FAIL
 TRANSPARENT_SHIM_PRODUCTION_ADMISSION=false
-TRANSPARENT_SHIM_COLD_P95_MS<=50
-HOOKSTAT_INDUCED_TIMEOUTS_FOR_HEALTHY_HOOK=0
 FURTHER_BUDGET_RELAXATION=false
 ```
 
-## Legacy compatibility
+## Persistence policy
 
-Existing v0.3 evidence is historical truth and must not be rewritten or deleted merely because v0.3.1 changes transport.
+v0.3.1 uses compact append WAL and group durability for the production IPC substrate. Per-record `fsync`/`sync_data` is prohibited on the synchronous producer path.
 
-Required model:
-
-```text
-legacy v1 JSON receipts -> read-only compatibility
-legacy ledger history   -> preserved
-new Native evidence     -> new evidence generation/source
-new IPC evidence        -> new evidence generation/source
-```
-
-Historical incomplete rows remain incomplete unless later real evidence can truthfully upgrade the same invocation under existing idempotent semantics.
+Legacy v0.3 JSON receipts and ledger history remain historical truth and read-only compatible. They may not be silently rewritten or deleted.
 
 ## Diagnostics / self-observability
 
-HookStat must make its own evidence path and overhead inspectable without introducing meaningful hot-path overhead.
-
-Target diagnostics include:
+HookStat diagnostics must expose, without raw private content:
 
 ```text
 runtime
-authoritative evidence source per domain
-Native admission state
-IPC integration admission state
-IPC mode: cooperative
-transparent shim status: qualified_not_admitted_performance (never active)
-broker health
+Native capability/admission
+IPC protocol/broker state
+named IPC integration admission where known
+authoritative source per domain
+NOT_ADMITTED domains
 queue lag
-dropped frames
+dropped/malformed frames
 WAL flush lag
-cooperative IPC p50/p95/p99
+reference/recent IPC latency percentiles
+transparent shim status: qualified_not_admitted_performance
 ```
 
-Hosted CI checks structural regressions; real Windows performance evidence remains the release gate.
+Diagnostics control frames are not lifecycle evidence and never enter WAL, ledger, replay, or denominators.
 
-## Goal dependency DAG
+## Revised Goal dependency DAG
 
 ```text
 PUBLIC v0.3.0
   ↓
-HS-G28 — Hot Path Performance Baseline
+HS-G28 — Hot Path Performance Baseline                         [accepted]
   ↓
-HS-G29 — Runtime-Neutral Evidence Core
+HS-G29 — Runtime-Neutral Evidence Core                         [accepted]
   ↓
-HS-G34 — Native Evidence Framework + Codex Native L1 Qualification
+HS-G34 — Native Evidence Framework / Codex Native L1           [accepted]
   ↓
-HS-G35 — Runtime-Neutral IPC Broker / WAL
+HS-G35 — Runtime-Neutral IPC Broker / WAL                      [accepted]
   ↓
-HS-G36 — Ultra-Light IPC Clients / Transparent Shim
+HS-G36 — Ultra-Light IPC Clients / Transparent Shim            [accepted]
   ↓
-HS-G37 — Codex Evidence Routing / Native L2 / Migration
+HS-G37 — Authority Routing / Native L2 / Migration             [accepted]
   ↓
-HS-G38 — Performance & Windows Dogfood Hardening
-  ↓
-HS-G38R — v0.3.1 Hardening & Release
+HS-G38A — Single-Repo Scope & Admission Contract Reset
+  ├───────────────┐
+  ▼               ▼
+HS-G38B         HS-G38C
+Conformance     Windows Hardening
+  └───────┬───────┘
+          ▼
+       HS-G38D
+ Acceptance / Closeout
+          ↓
+       HS-G38R
+ Hardening & Release
+          ↓
+    PUBLIC v0.3.1
 ```
 
-`HS-G36T — Transparent Shim Rearchitecture` is a deferred v0.3.2-or-later
-track. It is not on the v0.3.1 dependency path.
+External producer tracks branch from the HSIP contract and never sit on this critical path.
 
-`HS-G30X`–`HS-G33X` remain future-runtime tracks and are not changed by this version.
+## G38 acceptance semantics
+
+G38 is decomposed into G38A/B/C/D.
+
+A successful G38 proves HookStat's own protocol, reference producer, broker/WAL, recovery, diagnostics, privacy/security, Windows concurrency/resource behavior, CI, and review.
+
+It does **not** require a real external producer to cover every Codex event family. Event-family coverage is a requirement of a named admitted runtime integration. If no such integration is admitted, production runtime domains remain explicit `NOT_ADMITTED`.
+
+Normal `codex` smoke remains required to prove HookStat preserves ordinary launch semantics and does not require a launcher, trust bypass, or unwanted persistent mutation.
+
+## Release semantics
+
+G38R freezes architecture and may prepare the exact v0.3.1 release candidate.
+
+Fresh install must prove:
+
+```text
+report/doctor/TUI work without prior state
+HSIP reference/conformance qualification works
+Native state is truthful
+IPC integration admission state is truthful
+uncovered domains are NOT_ADMITTED
+normal codex launch remains codex
+legacy upgrade/history is preserved
+```
+
+If no external producer is admitted, documentation and release notes must say so explicitly. Do not imply live Hook coverage that the release cannot observe.
 
 ## Explicit non-goals
 
-v0.3.1 MUST NOT ship or require:
+v0.3.1 MUST NOT require or silently begin:
 
+- modification of TabBeacon or any other external producer repository;
+- a bundled external cooperative producer;
 - OpenCode production adapter;
 - DeepSeek Harness production adapter;
 - Claude Code production adapter;
 - Agy production adapter;
-- OTel as Hook reliability evidence;
-- rollout/session-history inference as a third evidence path;
-- polling as a third evidence path;
+- transparent-shim rearchitecture;
+- OTel/session-history/polling as a third reliability path;
 - Web/remote dashboard;
 - cloud/distributed aggregation;
 - remote/network broker;
 - AI root-cause diagnosis;
-- general machine daemon framework;
 - HookStat-as-Codex launcher;
 - broad TUI redesign.
 
-Synthetic future-runtime fixtures prove abstraction quality only and must never be described as production support.
-
 ## Unattended-train authority
 
-An implementer may autonomously perform routine implementation, tests, bounded refactors inside this accepted design, fixtures, benchmarks, documentation, CI repair, PR creation/review repair, merge after acceptance, and continuation into the next adjacent Goal after predecessor acceptance.
+An unattended implementer may autonomously implement, test, benchmark, document, review-repair, reconcile PRs, and merge accepted HookStat G38A/B/C/D and G38R work.
 
-The implementer may not autonomously:
-
-- add a third evidence path;
-- weaken privacy or coverage semantics;
-- change failure-rate denominator semantics;
-- delete or rewrite legacy evidence;
-- promote a non-Codex runtime;
-- convert HookStat into a Codex launcher;
-- require a global/network daemon;
-- publish crates.io, create the public v0.3.1 tag, or create the public GitHub Release.
-
-## Bounded stacked-development exception
-
-A predecessor Goal with complete/stable implementation may permit implementation of **one and only one** successor Goal before predecessor acceptance/merge when its remaining blockers are external acceptance conditions rather than unresolved implementation defects.
-
-Required predecessor state:
+It may not:
 
 ```text
-PREDECESSOR_IMPLEMENTATION_COMPLETE=true
-PREDECESSOR_KNOWN_CODE_BLOCKERS=0
-PREDECESSOR_CI=PASS
-PREDECESSOR_ARCHITECTURE_STABLE=true
-MAX_STACK_DEPTH=1
+WRITE_EXTERNAL_REPOSITORY=true
+ADD_THIRD_EVIDENCE_PATH=true
+WEAKEN_PRIVACY=true
+WEAKEN_COVERAGE_SEMANTICS=true
+WEAKEN_FROZEN_PERFORMANCE_BUDGET=true
+DELETE_OR_REWRITE_LEGACY_EVIDENCE=true
+REQUIRE_GLOBAL_OR_NETWORK_DAEMON=true
+PUBLISH_CRATES_IO=true
+CREATE_PUBLIC_V031_TAG=true
+CREATE_PUBLIC_GITHUB_RELEASE=true
 ```
 
-Admitted blocker classes are limited to Owner/environment qualification, real-hardware/host qualification, external-service availability, independent review, or another Owner-only evidence/approval gate.
+## Mandatory stop gates
 
-This exception MUST NOT be used when the predecessor has an unresolved correctness defect, architecture uncertainty, persistence/data-corruption risk, privacy/security defect, unstable protocol/API/format contract, or unresolved evidence/failure semantics.
-
-The successor must branch from the exact predecessor implementation head and target the predecessor branch as a stacked PR. It may be implemented, tested, reviewed, and kept CI-green, but it MUST NOT merge to `main` until the predecessor is accepted and merged. After predecessor merge, the successor must be rebased/retargeted to accepted `main` and exact-head CI must be repeated before successor merge.
-
-Acceptance work on the predecessor may proceed in parallel. If the predecessor remains unmerged after the one successor Goal is implemented, downstream development stops; stacking may not continue to a second successor.
-
-This exception changes scheduling only. It does not weaken Goal acceptance criteria, performance budgets, review requirements, evidence truthfulness, or release gates.
-
-The historical G35/G36 stacked exception is closed: both Goals are accepted in
-`main`. G37 now runs directly from accepted main and must merge before any G38
-product implementation begins.
-
-## Mandatory version stop gates
-
-1. **After G28:** stop if the selected IPC transport cannot satisfy a credible low-latency Windows budget.
-2. **Native L2:** ordinary-Codex external attach being upstream-unavailable is
-   not a version stop. Record it truthfully; use IPC only for a domain with an
-   admitted IPC integration, otherwise report `NOT_ADMITTED`.
-3. **Before G38R:** any reproducible HookStat-induced timeout/failure in a previously healthy Hook blocks release.
-
-## Release boundary
-
-`HS-G38R` freezes new architecture and feature work. Public publication remains an explicit Owner authorization after exact-head CI, upgrade/fresh-install proof, real Windows Codex dogfood, and performance acceptance.
+1. Stop G38B/G38D if the HookStat reference HSIP substrate cannot meet the frozen 1/2 ms Windows budget.
+2. Native L2 upstream unavailability is not a release blocker; record it and retain `NOT_ADMITTED` where needed.
+3. Any false healthy coverage, persistence corruption, privacy/security defect, or reproducible HookStat-induced timeout/failure blocks G38R.
+4. Public crates.io/tag/GitHub Release publication remains an explicit Owner gate after G38R acceptance.
