@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 /// This invariant is deliberately present in the public conformance surface so
 /// a reference run cannot be confused with admitted runtime coverage.
 pub const REFERENCE_PRODUCER_PRODUCTION_AUTHORITY: bool = false;
+/// Maximum accepted serialized candidate descriptor. This is an admission
+/// metadata bound, not an HSIP lifecycle-frame allowance.
+pub const MAX_INTEGRATION_CANDIDATE_JSON_BYTES: usize = 1_024;
 
 /// A deterministic, sanitized lifecycle used by the in-repository HSIP v1
 /// conformance producer. Its values are structural fixture identifiers, never
@@ -186,7 +189,7 @@ pub enum IntegrationAdmissionDisposition {
 /// Bounded candidate identity supplied to a future external conformance run.
 /// It deliberately accepts identifiers and hashes only, never a command,
 /// endpoint, raw configuration, or producer payload.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct IntegrationCandidate {
     pub integration_id: String,
     pub runtime: String,
@@ -224,6 +227,18 @@ pub struct IntegrationAdmissionReceiptSkeleton {
 }
 
 impl IntegrationAdmissionReceiptSkeleton {
+    /// Reads one bounded machine descriptor for a future integration
+    /// candidate and produces a non-admitting receipt skeleton. The input has
+    /// no field for a path, command, endpoint, payload, or raw output.
+    pub fn from_candidate_json(input: &str) -> Result<Self, IpcError> {
+        if input.len() > MAX_INTEGRATION_CANDIDATE_JSON_BYTES {
+            return Err(IpcError::Invalid("integration_candidate_json"));
+        }
+        let candidate = serde_json::from_str(input)
+            .map_err(|_| IpcError::Invalid("integration_candidate_json"))?;
+        Self::for_candidate(candidate)
+    }
+
     pub fn for_candidate(candidate: IntegrationCandidate) -> Result<Self, IpcError> {
         validate_identifier("integration_id", &candidate.integration_id)?;
         validate_identifier("runtime", &candidate.runtime)?;
@@ -335,6 +350,23 @@ mod tests {
         let mut invalid = candidate();
         invalid.package_or_binary_sha256 = "not-a-sha".into();
         assert!(IntegrationAdmissionReceiptSkeleton::for_candidate(invalid).is_err());
+    }
+
+    #[test]
+    fn admission_skeleton_consumes_only_bounded_machine_candidate_metadata() {
+        let input = serde_json::to_string(&candidate()).unwrap();
+        let receipt = IntegrationAdmissionReceiptSkeleton::from_candidate_json(&input).unwrap();
+        assert_eq!(receipt.integration_id, "example.integration");
+        assert_eq!(
+            receipt.admission_disposition,
+            IntegrationAdmissionDisposition::Unproven
+        );
+        assert!(
+            IntegrationAdmissionReceiptSkeleton::from_candidate_json(
+                &"x".repeat(MAX_INTEGRATION_CANDIDATE_JSON_BYTES + 1)
+            )
+            .is_err()
+        );
     }
 
     #[test]
