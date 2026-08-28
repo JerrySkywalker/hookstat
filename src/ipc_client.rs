@@ -672,6 +672,24 @@ pub struct LocalEndpoint {
 impl LocalEndpoint {
     pub fn from_state_root(root: impl AsRef<std::path::Path>) -> Result<Self, IpcError> {
         let state_root = prepare_state_root(root.as_ref())?;
+        let endpoint = Self::from_canonical_state_root(state_root);
+        endpoint.transport_dir()?;
+        Ok(endpoint)
+    }
+
+    /// Derives an endpoint only from state that is already present. This is for
+    /// read-only observers: unlike [`Self::from_state_root`], it never creates
+    /// either the state root or its IPC transport directory.
+    pub(crate) fn from_existing_state_root(
+        root: impl AsRef<std::path::Path>,
+    ) -> Result<Self, IpcError> {
+        let state_root = inspect_existing_state_root(root.as_ref())?;
+        let endpoint = Self::from_canonical_state_root(state_root);
+        endpoint.existing_transport_dir()?;
+        Ok(endpoint)
+    }
+
+    fn from_canonical_state_root(state_root: std::path::PathBuf) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(b"hookstat-g35-local-endpoint-v1\0");
         hasher.update(state_root.as_os_str().as_encoded_bytes());
@@ -687,12 +705,10 @@ impl LocalEndpoint {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect();
-        let endpoint = Self {
+        Self {
             state_root,
             endpoint_id,
-        };
-        endpoint.transport_dir()?;
-        Ok(endpoint)
+        }
     }
 
     pub fn state_root(&self) -> &std::path::Path {
@@ -721,15 +737,28 @@ impl LocalEndpoint {
     pub fn transport_dir(&self) -> Result<std::path::PathBuf, IpcError> {
         let dir = self.state_root.join("ipc");
         if dir.exists() {
-            let metadata = std::fs::symlink_metadata(&dir).map_err(IpcError::Io)?;
-            if metadata.file_type().is_symlink()
-                || !metadata.is_dir()
-                || state_metadata_is_unsafe(&metadata)
-            {
-                return Err(IpcError::UnsafeStateObject);
-            }
+            return self.existing_transport_dir();
         } else {
             std::fs::create_dir(&dir).map_err(IpcError::Io)?;
+        }
+        self.existing_transport_dir()
+    }
+
+    /// Confirms that the transport directory still exists without creating it.
+    /// A read-only observer calls this immediately before connecting so a
+    /// concurrent cleanup is reported rather than silently repaired.
+    pub(crate) fn validate_existing_transport(&self) -> Result<(), IpcError> {
+        self.existing_transport_dir().map(|_| ())
+    }
+
+    fn existing_transport_dir(&self) -> Result<std::path::PathBuf, IpcError> {
+        let dir = self.state_root.join("ipc");
+        let metadata = std::fs::symlink_metadata(&dir).map_err(IpcError::Io)?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_dir()
+            || state_metadata_is_unsafe(&metadata)
+        {
+            return Err(IpcError::UnsafeStateObject);
         }
         let canonical = std::fs::canonicalize(&dir).map_err(IpcError::Io)?;
         if canonical.parent() != Some(self.state_root.as_path()) {
@@ -851,6 +880,22 @@ pub fn prepare_state_root(root: &std::path::Path) -> Result<std::path::PathBuf, 
         }
     } else {
         std::fs::create_dir_all(root).map_err(IpcError::Io)?;
+    }
+    let root = std::fs::canonicalize(root).map_err(IpcError::Io)?;
+    let metadata = std::fs::symlink_metadata(&root).map_err(IpcError::Io)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || state_metadata_is_unsafe(&metadata)
+    {
+        return Err(IpcError::UnsafeStateObject);
+    }
+    Ok(root)
+}
+
+fn inspect_existing_state_root(root: &std::path::Path) -> Result<std::path::PathBuf, IpcError> {
+    let metadata = std::fs::symlink_metadata(root).map_err(IpcError::Io)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(IpcError::UnsafeStateObject);
     }
     let root = std::fs::canonicalize(root).map_err(IpcError::Io)?;
     let metadata = std::fs::symlink_metadata(&root).map_err(IpcError::Io)?;

@@ -378,36 +378,15 @@ fn production_evidence_diagnostics(
 }
 
 fn broker_diagnostics_report(data_root: &Path) -> BrokerDiagnosticsReport {
-    let transport_dir = data_root.join("ipc");
-    if !data_root.exists() || !transport_dir.exists() {
-        return BrokerDiagnosticsReport {
-            state: BrokerDiagnosticState::Absent,
-            metrics: None,
-        };
-    }
-    let safe_transport = std::fs::symlink_metadata(&transport_dir)
-        .map(|metadata| !metadata.file_type().is_symlink() && metadata.is_dir())
-        .unwrap_or(false);
-    if !safe_transport {
-        return BrokerDiagnosticsReport {
-            state: BrokerDiagnosticState::UnsafeState,
-            metrics: None,
-        };
-    }
-    let endpoint = match LocalEndpoint::from_state_root(data_root) {
+    let endpoint = match LocalEndpoint::from_existing_state_root(data_root) {
         Ok(endpoint) => endpoint,
-        Err(IpcError::UnsafeStateObject) => {
-            return BrokerDiagnosticsReport {
-                state: BrokerDiagnosticState::UnsafeState,
-                metrics: None,
-            };
-        }
-        Err(_) => {
-            return BrokerDiagnosticsReport {
-                state: BrokerDiagnosticState::Unavailable,
-                metrics: None,
-            };
-        }
+        Err(error) => return broker_diagnostics_endpoint_error(error),
+    };
+    // The directory can disappear after endpoint derivation. Validate at the
+    // final read-only boundary so diagnostics never recreate it while trying
+    // to report that the broker is unavailable.
+    if let Err(error) = endpoint.validate_existing_transport() {
+        return broker_diagnostics_endpoint_error(error);
     };
     match IpcClient::connect(&endpoint, BROKER_DIAGNOSTIC_QUERY_TIMEOUT)
         .and_then(|mut client| client.diagnostics())
@@ -420,6 +399,20 @@ fn broker_diagnostics_report(data_root: &Path) -> BrokerDiagnosticsReport {
             state: BrokerDiagnosticState::Unavailable,
             metrics: None,
         },
+    }
+}
+
+fn broker_diagnostics_endpoint_error(error: IpcError) -> BrokerDiagnosticsReport {
+    let state = match error {
+        IpcError::UnsafeStateObject => BrokerDiagnosticState::UnsafeState,
+        IpcError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            BrokerDiagnosticState::Absent
+        }
+        _ => BrokerDiagnosticState::Unavailable,
+    };
+    BrokerDiagnosticsReport {
+        state,
+        metrics: None,
     }
 }
 
@@ -928,6 +921,24 @@ mod tests {
         assert!(!report.production_evidence.third_transport_present);
         assert!(!report.production_evidence.shadow_in_denominator);
         assert_eq!(report.broker.state, BrokerDiagnosticState::Absent);
+    }
+
+    #[test]
+    fn broker_observation_does_not_recreate_a_transport_removed_after_endpoint_derivation() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("HookStat");
+        let endpoint = LocalEndpoint::from_state_root(&root).unwrap();
+        fs::remove_dir(root.join("ipc")).unwrap();
+
+        assert!(matches!(
+            endpoint.validate_existing_transport(),
+            Err(IpcError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+        assert!(!root.join("ipc").exists());
+
+        let report = broker_diagnostics_report(&root);
+        assert_eq!(report.state, BrokerDiagnosticState::Absent);
+        assert!(!root.join("ipc").exists());
     }
 
     /// G38 regression scale proof: ordinary diagnostics must leave a large
