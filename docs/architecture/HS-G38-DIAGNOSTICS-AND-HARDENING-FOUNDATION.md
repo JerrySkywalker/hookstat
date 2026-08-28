@@ -79,10 +79,11 @@ contribution, and transparent-shim production lockout.
 ## Remaining acceptance boundary
 
 The Draft foundation is synthetic and controlled evidence only, so it cannot
-by itself accept G38C. Remaining HookStat-owned proof includes reference
-producer performance, recovery/resource behavior, bounded diagnostics,
-privacy/security review, exact-head CI, and a normal-Codex non-interference
-smoke where no trust or configuration mutation is needed. A named external
-producer is not a G38C release prerequisite: any domain without an admitted
-Native or IPC producer remains `NOT_ADMITTED`. No live Owner Codex
-configuration was read for private content or mutated by this checkpoint.
+by itself accept G38C. Remaining G38C proof includes recovery/resource
+behavior, bounded diagnostics, privacy/security review, exact-head CI, and a
+normal-Codex non-interference smoke where no trust or configuration mutation
+is needed. G38B owns reference-producer performance; that separate proof
+converges with G38C only at G38D. A named external producer is not a G38C
+release prerequisite: any domain without an admitted Native or IPC producer
+remains `NOT_ADMITTED`. No live Owner Codex configuration was read for private
+content or mutated by this checkpoint.
