@@ -194,8 +194,13 @@ fn reference_malformed_wire_fixtures_are_rejected_at_broker_ingress_without_wal_
     let producer = ReferenceProducer::new(host.endpoint().clone(), conformance_policy()).unwrap();
 
     for fixture in [
+        ReferenceWireFixture::MalformedMagic,
+        ReferenceWireFixture::UnknownVersion,
+        ReferenceWireFixture::UnknownFrameKind,
         ReferenceWireFixture::OversizedFrame,
         ReferenceWireFixture::OversizedIdentifier,
+        ReferenceWireFixture::TrailingPayload,
+        ReferenceWireFixture::TruncatedFrame,
     ] {
         assert_eq!(
             producer.send_wire_fixture_to_broker(fixture).unwrap(),
@@ -207,7 +212,7 @@ fn reference_malformed_wire_fixtures_are_rejected_at_broker_ingress_without_wal_
         ReferenceScenario::StartOnly,
     ));
     let health = host.stop();
-    assert_eq!(health.malformed, 2);
+    assert_eq!(health.malformed, 7);
     assert_eq!(health.accepted, 1);
     assert_eq!(health.dropped, 0);
 

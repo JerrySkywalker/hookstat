@@ -99,7 +99,14 @@ impl ReferenceInvocation {
                 encoded[8..10].copy_from_slice(&(payload_length + 1).to_le_bytes());
                 encoded.push(0);
             }
-            ReferenceWireFixture::TruncatedFrame => encoded.truncate(9),
+            ReferenceWireFixture::TruncatedFrame => {
+                // Keep a complete bounded transport header so the fixture
+                // reaches the broker decoder rather than depending on an
+                // operating-system half-close. The empty START payload is
+                // still structurally truncated at the HSIP lifecycle layer.
+                encoded.truncate(IPC_FRAME_HEADER_BYTES);
+                encoded[8..10].copy_from_slice(&0_u16.to_le_bytes());
+            }
             ReferenceWireFixture::OversizedFrame | ReferenceWireFixture::OversizedIdentifier => {
                 unreachable!("handled before normal frame encoding")
             }
