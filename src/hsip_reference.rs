@@ -63,9 +63,17 @@ impl ReferenceInvocation {
             return Ok(vec![0_u8; MAX_IPC_FRAME_BYTES + 1]);
         }
         if fixture == ReferenceWireFixture::OversizedIdentifier {
-            let mut lifecycle = self.lifecycle();
-            lifecycle.runtime = "r".repeat(MAX_IPC_REFERENCE_BYTES + 1);
-            return IpcFrame::Start(lifecycle).encode();
+            // This fixture must exercise the decoder rather than only the
+            // encoder's input validation. Start from a complete, bounded v1
+            // frame and change the first reference length (the runtime) to a
+            // value just over the accepted identifier bound. The payload
+            // length remains internally consistent and under the frame cap;
+            // `IpcFrame::decode` rejects it before any broker/WAL state can
+            // observe a lifecycle frame.
+            let mut encoded = IpcFrame::Start(self.lifecycle()).encode()?;
+            encoded[10] =
+                u8::try_from(MAX_IPC_REFERENCE_BYTES + 1).map_err(|_| IpcError::Oversized)?;
+            return Ok(encoded);
         }
         let mut encoded = IpcFrame::Start(self.lifecycle()).encode()?;
         match fixture {
@@ -195,7 +203,7 @@ pub struct IntegrationCandidate {
     pub runtime: String,
     pub producer_version_or_sha: String,
     pub package_or_binary_sha256: String,
-    pub hookstat_sha: String,
+    pub hookstat_reference_sha: String,
     pub platform: String,
 }
 
@@ -208,7 +216,7 @@ pub struct IntegrationAdmissionReceiptSkeleton {
     pub producer_version_or_sha: String,
     pub package_or_binary_sha256: String,
     pub hsip_protocol_version: u8,
-    pub hookstat_sha: String,
+    pub hookstat_reference_sha: String,
     pub platform: String,
     pub protocol_conformance: ConformanceDisposition,
     pub correlation: ConformanceDisposition,
@@ -250,7 +258,7 @@ impl IntegrationAdmissionReceiptSkeleton {
             "package_or_binary_sha256",
             &candidate.package_or_binary_sha256,
         )?;
-        validate_sha256("hookstat_sha", &candidate.hookstat_sha)?;
+        validate_hookstat_reference_sha(&candidate.hookstat_reference_sha)?;
         validate_identifier("platform", &candidate.platform)?;
         Ok(Self {
             integration_id: candidate.integration_id,
@@ -258,7 +266,7 @@ impl IntegrationAdmissionReceiptSkeleton {
             producer_version_or_sha: candidate.producer_version_or_sha,
             package_or_binary_sha256: candidate.package_or_binary_sha256,
             hsip_protocol_version: IPC_PROTOCOL_VERSION,
-            hookstat_sha: candidate.hookstat_sha,
+            hookstat_reference_sha: candidate.hookstat_reference_sha,
             platform: candidate.platform,
             protocol_conformance: ConformanceDisposition::Unproven,
             correlation: ConformanceDisposition::Unproven,
@@ -297,6 +305,16 @@ fn validate_sha256(field: &'static str, value: &str) -> Result<(), IpcError> {
     Ok(())
 }
 
+fn validate_hookstat_reference_sha(value: &str) -> Result<(), IpcError> {
+    // HookStat source identity may be a current Git SHA-1 commit (40 hex), a
+    // SHA-256 Git object name (64 hex), or a 64-hex content hash. This field
+    // is deliberately distinct from the package/binary SHA-256.
+    if !matches!(value.len(), 40 | 64) || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(IpcError::Invalid("hookstat_reference_sha"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,7 +329,7 @@ mod tests {
             runtime: "example_runtime".into(),
             producer_version_or_sha: "v1.2.3".into(),
             package_or_binary_sha256: "a".repeat(64),
-            hookstat_sha: "b".repeat(64),
+            hookstat_reference_sha: "b".repeat(64),
             platform: "windows-x86_64".into(),
         }
     }
@@ -350,6 +368,17 @@ mod tests {
         let mut invalid = candidate();
         invalid.package_or_binary_sha256 = "not-a-sha".into();
         assert!(IntegrationAdmissionReceiptSkeleton::for_candidate(invalid).is_err());
+        let mut invalid = candidate();
+        invalid.hookstat_reference_sha = "f".repeat(39);
+        assert!(IntegrationAdmissionReceiptSkeleton::for_candidate(invalid).is_err());
+    }
+
+    #[test]
+    fn admission_skeleton_accepts_current_git_head_shape() {
+        let mut candidate = candidate();
+        candidate.hookstat_reference_sha = "a".repeat(40);
+        let receipt = IntegrationAdmissionReceiptSkeleton::for_candidate(candidate).unwrap();
+        assert_eq!(receipt.hookstat_reference_sha.len(), 40);
     }
 
     #[test]
@@ -405,8 +434,16 @@ mod tests {
             IpcFrame::decode(&oversized),
             Err(IpcError::Oversized)
         ));
+        let oversized_identifier = invocation
+            .encoded_wire_fixture(ReferenceWireFixture::OversizedIdentifier)
+            .unwrap();
+        assert!(oversized_identifier.len() <= MAX_IPC_FRAME_BYTES);
+        assert_eq!(
+            oversized_identifier[10],
+            (MAX_IPC_REFERENCE_BYTES + 1) as u8
+        );
         assert!(matches!(
-            invocation.encoded_wire_fixture(ReferenceWireFixture::OversizedIdentifier),
+            IpcFrame::decode(&oversized_identifier),
             Err(IpcError::Invalid("runtime"))
         ));
         let trailing = invocation
