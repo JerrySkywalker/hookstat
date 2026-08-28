@@ -9,6 +9,8 @@ use hookstat::hsip_reference::{
 use hookstat::ipc::{
     BrokerConfig, BrokerHost, GroupDurabilityPolicy, ObservationDisposition, ProducerPolicy,
 };
+use std::sync::{Arc, Barrier};
+use std::thread;
 use std::time::Duration;
 
 fn config(root: &std::path::Path) -> BrokerConfig {
@@ -30,6 +32,16 @@ fn conformance_policy() -> ProducerPolicy {
     ProducerPolicy {
         connect_timeout: Duration::from_millis(100),
         acknowledgement_timeout: Duration::from_millis(100),
+    }
+}
+
+fn staging_policy() -> ProducerPolicy {
+    ProducerPolicy {
+        // This finite staging allowance validates conformance under deliberate
+        // scheduler contention. It is not the frozen release-performance
+        // measurement, which retains the 1 ms / 2 ms P95/P99 gate.
+        connect_timeout: Duration::from_secs(5),
+        acknowledgement_timeout: Duration::from_secs(5),
     }
 }
 
@@ -121,4 +133,43 @@ fn reference_producer_reports_absence_then_recovers_after_broker_restart_without
     let final_host = BrokerHost::start(config(temp.path())).unwrap();
     assert_eq!(final_host.recovery().frames.len(), 2);
     final_host.stop();
+}
+
+#[test]
+fn reference_producer_controlled_matrix_covers_one_five_ten_clients_and_ten_thousand_frames() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut configuration = config(temp.path());
+    configuration.ack_timeout = Duration::from_secs(5);
+    let host = BrokerHost::start(configuration).unwrap();
+
+    let mut expected_frames = 0_u64;
+    for (stage, clients, samples_per_client) in
+        [(1_u32, 1_u32, 1_000_u32), (2, 5, 200), (3, 10, 1_000)]
+    {
+        let barrier = Arc::new(Barrier::new(clients as usize));
+        thread::scope(|scope| {
+            for client in 0..clients {
+                let barrier = Arc::clone(&barrier);
+                let endpoint = host.endpoint().clone();
+                scope.spawn(move || {
+                    let producer = ReferenceProducer::new(endpoint, staging_policy()).unwrap();
+                    barrier.wait();
+                    for sequence in 0..samples_per_client {
+                        assert_accepted(&producer.emit_scenario(
+                            &ReferenceInvocation::new(stage * 100 + client, sequence),
+                            ReferenceScenario::StartOnly,
+                        ));
+                    }
+                });
+            }
+        });
+        expected_frames += u64::from(clients) * u64::from(samples_per_client);
+    }
+
+    let health = host.stop();
+    assert_eq!(expected_frames, 12_000);
+    assert_eq!(health.accepted, expected_frames);
+    assert_eq!(health.dropped, 0);
+    assert_eq!(health.rejected, 0);
+    assert_eq!(health.ack_timeouts, 0);
 }

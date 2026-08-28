@@ -5,8 +5,9 @@
 //! would, but it is never a runtime adapter or production authority.
 
 use crate::ipc::{
-    Completion, ExitClassification, IPC_PROTOCOL_VERSION, IpcError, LifecycleFrame, LocalEndpoint,
-    MAX_IPC_REFERENCE_BYTES, ObservationDisposition, ProducerPolicy, TerminalOutcome,
+    Completion, ExitClassification, IPC_PROTOCOL_VERSION, IpcError, IpcFrame, LifecycleFrame,
+    LocalEndpoint, MAX_IPC_FRAME_BYTES, MAX_IPC_REFERENCE_BYTES, ObservationDisposition,
+    ProducerPolicy, TerminalOutcome,
 };
 use crate::ipc_client::CooperativeProducer;
 use serde::{Deserialize, Serialize};
@@ -50,6 +51,37 @@ impl ReferenceInvocation {
             duration_ms: 1,
         }
     }
+
+    /// Produces one deterministic valid or invalid HSIP v1 decoder fixture.
+    /// The values contain only synthetic structural identifiers and never raw
+    /// Hook/runtime content.
+    pub fn encoded_wire_fixture(&self, fixture: ReferenceWireFixture) -> Result<Vec<u8>, IpcError> {
+        if fixture == ReferenceWireFixture::OversizedFrame {
+            return Ok(vec![0_u8; MAX_IPC_FRAME_BYTES + 1]);
+        }
+        if fixture == ReferenceWireFixture::OversizedIdentifier {
+            let mut lifecycle = self.lifecycle();
+            lifecycle.runtime = "r".repeat(MAX_IPC_REFERENCE_BYTES + 1);
+            return IpcFrame::Start(lifecycle).encode();
+        }
+        let mut encoded = IpcFrame::Start(self.lifecycle()).encode()?;
+        match fixture {
+            ReferenceWireFixture::ValidStart => {}
+            ReferenceWireFixture::MalformedMagic => encoded[0] = b'X',
+            ReferenceWireFixture::UnknownVersion => encoded[4] = IPC_PROTOCOL_VERSION + 1,
+            ReferenceWireFixture::UnknownFrameKind => encoded[5] = u8::MAX,
+            ReferenceWireFixture::TrailingPayload => {
+                let payload_length = u16::from_le_bytes([encoded[8], encoded[9]]);
+                encoded[8..10].copy_from_slice(&(payload_length + 1).to_le_bytes());
+                encoded.push(0);
+            }
+            ReferenceWireFixture::TruncatedFrame => encoded.truncate(9),
+            ReferenceWireFixture::OversizedFrame | ReferenceWireFixture::OversizedIdentifier => {
+                unreachable!("handled before normal frame encoding")
+            }
+        }
+        Ok(encoded)
+    }
 }
 
 /// Deterministic lifecycle shapes required to exercise broker and correlator
@@ -62,6 +94,21 @@ pub enum ReferenceScenario {
     DuplicateStart,
     DuplicateComplete,
     CompleteThenStart,
+}
+
+/// Deliberately bounded wire fixtures for decoder and broker conformance.
+/// They are test input only: a reference producer never emits one of these as
+/// lifecycle evidence during ordinary operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReferenceWireFixture {
+    ValidStart,
+    MalformedMagic,
+    UnknownVersion,
+    UnknownFrameKind,
+    OversizedFrame,
+    OversizedIdentifier,
+    TrailingPayload,
+    TruncatedFrame,
 }
 
 /// A small wrapper around the real bounded cooperative producer. It owns no
@@ -238,6 +285,10 @@ fn validate_sha256(field: &'static str, value: &str) -> Result<(), IpcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc_client::read_frame_bounded;
+    use interprocess::local_socket::prelude::*;
+    use std::io::ErrorKind;
+    use std::time::{Duration, Instant};
 
     fn candidate() -> IntegrationCandidate {
         IntegrationCandidate {
@@ -284,5 +335,119 @@ mod tests {
         let mut invalid = candidate();
         invalid.package_or_binary_sha256 = "not-a-sha".into();
         assert!(IntegrationAdmissionReceiptSkeleton::for_candidate(invalid).is_err());
+    }
+
+    #[test]
+    fn wire_fixtures_are_deterministic_bounded_and_fail_closed() {
+        let invocation = ReferenceInvocation::new(3, 9);
+        let valid = invocation
+            .encoded_wire_fixture(ReferenceWireFixture::ValidStart)
+            .unwrap();
+        assert!(matches!(IpcFrame::decode(&valid), Ok(IpcFrame::Start(_))));
+
+        let malformed_magic = invocation
+            .encoded_wire_fixture(ReferenceWireFixture::MalformedMagic)
+            .unwrap();
+        assert!(matches!(
+            IpcFrame::decode(&malformed_magic),
+            Err(IpcError::BadMagic)
+        ));
+        let unknown_version = invocation
+            .encoded_wire_fixture(ReferenceWireFixture::UnknownVersion)
+            .unwrap();
+        assert!(matches!(
+            IpcFrame::decode(&unknown_version),
+            Err(IpcError::UnsupportedVersion)
+        ));
+        let unknown_kind = invocation
+            .encoded_wire_fixture(ReferenceWireFixture::UnknownFrameKind)
+            .unwrap();
+        assert!(matches!(
+            IpcFrame::decode(&unknown_kind),
+            Err(IpcError::Invalid("frame_type"))
+        ));
+        let oversized = invocation
+            .encoded_wire_fixture(ReferenceWireFixture::OversizedFrame)
+            .unwrap();
+        assert!(matches!(
+            IpcFrame::decode(&oversized),
+            Err(IpcError::Oversized)
+        ));
+        assert!(matches!(
+            invocation.encoded_wire_fixture(ReferenceWireFixture::OversizedIdentifier),
+            Err(IpcError::Invalid("runtime"))
+        ));
+        let trailing = invocation
+            .encoded_wire_fixture(ReferenceWireFixture::TrailingPayload)
+            .unwrap();
+        assert!(matches!(
+            IpcFrame::decode(&trailing),
+            Err(IpcError::Invalid("trailing_payload"))
+        ));
+        let truncated = invocation
+            .encoded_wire_fixture(ReferenceWireFixture::TruncatedFrame)
+            .unwrap();
+        assert!(matches!(
+            IpcFrame::decode(&truncated),
+            Err(IpcError::Truncated)
+        ));
+    }
+
+    #[test]
+    fn reference_producer_never_replays_after_an_uncertain_ack() {
+        let temporary = tempfile::tempdir().unwrap();
+        let endpoint = LocalEndpoint::from_state_root(temporary.path()).unwrap();
+        let listener = endpoint.bind().unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let mut first = loop {
+                match listener.accept() {
+                    Ok(stream) => break stream,
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "reference producer did not connect"
+                        );
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("test listener failed: {error}"),
+                }
+            };
+            assert!(matches!(
+                read_frame_bounded(&mut first, Duration::from_millis(100)),
+                Ok(IpcFrame::Start(_))
+            ));
+            drop(first); // The broker received the frame but its ACK is lost.
+
+            let no_replay_deadline = Instant::now() + Duration::from_millis(150);
+            loop {
+                match listener.accept() {
+                    Ok(_) => panic!("reference producer replayed an uncertain lifecycle frame"),
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        if Instant::now() >= no_replay_deadline {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("test listener failed after ACK loss: {error}"),
+                }
+            }
+        });
+        let producer = ReferenceProducer::new(
+            endpoint,
+            ProducerPolicy {
+                connect_timeout: Duration::from_millis(100),
+                acknowledgement_timeout: Duration::from_millis(100),
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            producer.emit_scenario(
+                &ReferenceInvocation::new(8, 1),
+                ReferenceScenario::StartOnly
+            )[0],
+            ObservationDisposition::Unavailable | ObservationDisposition::BudgetExhausted
+        ));
+        server.join().unwrap();
     }
 }
