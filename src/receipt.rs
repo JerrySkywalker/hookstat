@@ -374,6 +374,18 @@ impl ReceiptSpool {
         }
         let (entries, next_offset, journal_malformed) =
             self.read_journal_from(state.journal_offset)?;
+        if entries.is_empty()
+            && journal_malformed == 0
+            && let Some(catalog) =
+                ledger.receipt_catalog_diagnostics_if_present(RECONCILIATION_SOURCE_KEY)?
+        {
+            return Ok(ReceiptReconciliation {
+                malformed: state.malformed_receipts,
+                incomplete: catalog.incomplete,
+                ingest: IngestReceipt::default(),
+                work: ReceiptWork::default(),
+            });
+        }
         let mut values = Vec::new();
         let mut work = ReceiptWork::default();
         let mut malformed_delta = journal_malformed;
@@ -394,9 +406,12 @@ impl ReceiptSpool {
             now_unix_ms,
             &values,
         )?;
+        let catalog = ledger
+            .receipt_catalog_diagnostics_if_present(RECONCILIATION_SOURCE_KEY)?
+            .ok_or(ReceiptError::Invalid("receipt_catalog"))?;
         Ok(ReceiptReconciliation {
             malformed: state.malformed_receipts.saturating_add(malformed_delta),
-            incomplete: ledger.incomplete_receipt_count()?,
+            incomplete: catalog.incomplete,
             ingest,
             work,
         })
@@ -419,9 +434,12 @@ impl ReceiptSpool {
             now_unix_ms,
             &scan.invocations,
         )?;
+        let catalog = ledger
+            .receipt_catalog_diagnostics_if_present(RECONCILIATION_SOURCE_KEY)?
+            .ok_or(ReceiptError::Invalid("receipt_catalog"))?;
         Ok(ReceiptReconciliation {
             malformed: scan.malformed,
-            incomplete: ledger.incomplete_receipt_count()?,
+            incomplete: catalog.incomplete,
             ingest,
             work: ReceiptWork {
                 files_inspected: scan.files_inspected,
