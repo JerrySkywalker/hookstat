@@ -986,25 +986,29 @@ impl IpcClient {
         let deadline = Instant::now() + timeout;
         #[cfg(unix)]
         write_frame_until(&mut self.stream, frame, deadline)?;
-        #[cfg(windows)]
-        self.runtime.block_on(write_frame_bounded_tokio(
-            &mut self.stream,
-            frame,
-            deadline.saturating_duration_since(Instant::now()),
-        ))?;
         #[cfg(unix)]
         match read_frame_until(&mut self.stream, deadline)? {
             IpcFrame::Ack(value) => Ok(value),
             _ => Err(IpcError::Invalid("acknowledgement")),
         }
         #[cfg(windows)]
-        match self.runtime.block_on(read_frame_bounded_tokio(
-            &mut self.stream,
-            deadline.saturating_duration_since(Instant::now()),
-        ))? {
-            IpcFrame::Ack(value) => Ok(value),
-            _ => Err(IpcError::Invalid("acknowledgement")),
-        }
+        self.runtime.block_on(async {
+            write_frame_bounded_tokio(
+                &mut self.stream,
+                frame,
+                deadline.saturating_duration_since(Instant::now()),
+            )
+            .await?;
+            match read_frame_bounded_tokio(
+                &mut self.stream,
+                deadline.saturating_duration_since(Instant::now()),
+            )
+            .await?
+            {
+                IpcFrame::Ack(value) => Ok(value),
+                _ => Err(IpcError::Invalid("acknowledgement")),
+            }
+        })
     }
 
     /// Requests one sanitized numeric broker snapshot over the existing local
@@ -1015,19 +1019,22 @@ impl IpcClient {
         let request = IpcFrame::BrokerDiagnosticsRequest;
         #[cfg(unix)]
         write_frame_until(&mut self.stream, &request, deadline)?;
-        #[cfg(windows)]
-        self.runtime.block_on(write_frame_bounded_tokio(
-            &mut self.stream,
-            &request,
-            deadline.saturating_duration_since(Instant::now()),
-        ))?;
         #[cfg(unix)]
         let response = read_frame_until(&mut self.stream, deadline)?;
         #[cfg(windows)]
-        let response = self.runtime.block_on(read_frame_bounded_tokio(
-            &mut self.stream,
-            deadline.saturating_duration_since(Instant::now()),
-        ))?;
+        let response = self.runtime.block_on(async {
+            write_frame_bounded_tokio(
+                &mut self.stream,
+                &request,
+                deadline.saturating_duration_since(Instant::now()),
+            )
+            .await?;
+            read_frame_bounded_tokio(
+                &mut self.stream,
+                deadline.saturating_duration_since(Instant::now()),
+            )
+            .await
+        })?;
         match response {
             IpcFrame::BrokerDiagnosticsResponse(value) => Ok(value),
             _ => Err(IpcError::Invalid("broker_diagnostics_response")),
