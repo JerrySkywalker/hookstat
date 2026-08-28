@@ -5,10 +5,14 @@
 //! disposable state; it never inspects processes, Hook configuration, commands,
 //! prompts, payloads, power settings, process priority, or affinity.
 
+use crate::hsip_reference::{
+    REFERENCE_PRODUCER_PRODUCTION_AUTHORITY, ReferenceInvocation, ReferenceProducer,
+    ReferenceScenario,
+};
 use crate::ipc::{
     BrokerAcknowledgement, BrokerConfig, BrokerHost, CooperativeProducer, GroupDurabilityPolicy,
-    IpcClient, IpcError, IpcFrame, LifecycleFrame, QualificationBrokerStageSample,
-    QualificationClientStageSample, QualificationSendFailure,
+    IpcClient, IpcError, IpcFrame, LifecycleFrame, ObservationDisposition,
+    QualificationBrokerStageSample, QualificationClientStageSample, QualificationSendFailure,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -48,6 +52,97 @@ impl Default for QualificationConfig {
             client16_samples_per_client: 100,
         }
     }
+}
+
+/// Controlled reference-producer workload sizes. Each series uses release
+/// artifacts, a disposable local state root, and only synthetic metadata.
+#[derive(Clone, Debug)]
+pub struct ReferenceHsipPerformanceConfig {
+    pub one_producer_frames: usize,
+    pub five_producer_frames_per_producer: usize,
+    pub ten_producer_frames_per_producer: usize,
+}
+
+impl Default for ReferenceHsipPerformanceConfig {
+    fn default() -> Self {
+        Self {
+            one_producer_frames: 1_000,
+            five_producer_frames_per_producer: 200,
+            ten_producer_frames_per_producer: 1_000,
+        }
+    }
+}
+
+/// Sanitized outcome counts for an entire reference-producer series.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ReferenceHsipObservationCounts {
+    pub accepted: usize,
+    pub busy: usize,
+    pub dropped: usize,
+    pub rejected: usize,
+    pub unavailable: usize,
+    pub budget_exhausted: usize,
+}
+
+impl ReferenceHsipObservationCounts {
+    fn record(&mut self, outcome: ObservationDisposition) {
+        match outcome {
+            ObservationDisposition::Accepted => self.accepted += 1,
+            ObservationDisposition::Busy => self.busy += 1,
+            ObservationDisposition::DroppedOverloaded => self.dropped += 1,
+            ObservationDisposition::Rejected => self.rejected += 1,
+            ObservationDisposition::Unavailable => self.unavailable += 1,
+            ObservationDisposition::BudgetExhausted => self.budget_exhausted += 1,
+        }
+    }
+
+    fn observation_gaps(&self) -> usize {
+        self.busy
+            .saturating_add(self.dropped)
+            .saturating_add(self.rejected)
+            .saturating_add(self.unavailable)
+            .saturating_add(self.budget_exhausted)
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.accepted += other.accepted;
+        self.busy += other.busy;
+        self.dropped += other.dropped;
+        self.rejected += other.rejected;
+        self.unavailable += other.unavailable;
+        self.budget_exhausted += other.budget_exhausted;
+    }
+}
+
+/// One unaveraged reference-producer workload result. Percentiles cover every
+/// attempted frame in the series; all non-accepted observations remain in the
+/// explicit counters and gate result.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ReferenceHsipPerformanceSeries {
+    pub series: String,
+    pub concurrent_producers: usize,
+    pub frames_per_producer: usize,
+    pub attempted_frames: usize,
+    pub latency: LatencyStatistics,
+    pub outcomes: ReferenceHsipObservationCounts,
+    pub observation_gaps: usize,
+    pub frozen_budget_passed: bool,
+}
+
+/// A sanitized, release-mode measurement of the reference producer and the
+/// ordinary local broker boundary. It is diagnostic evidence until the G38B
+/// acceptance methodology (including review and exact-head CI) is complete.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ReferenceHsipPerformanceReceipt {
+    pub schema_version: u8,
+    pub run_kind: String,
+    pub acceptance_evidence: bool,
+    pub reference_producer_production_authority: bool,
+    pub frozen_g28_budget_ms: FrozenBudget,
+    pub series: Vec<ReferenceHsipPerformanceSeries>,
+    pub performance_gate: String,
+    pub owner_live_codex_config_mutated: bool,
+    pub raw_private_content_captured: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -421,6 +516,132 @@ pub fn run_g35(config: &QualificationConfig) -> Result<QualificationReceipt, Qua
         "BLOCKED_NO_QUALIFYING_WINDOW".into()
     };
     Ok(receipt)
+}
+
+/// Measures the in-repository reference producer over the same bounded local
+/// HSIP broker path exposed to integrations. The result preserves every tail
+/// and every non-accepted observation; it never treats an observation gap as
+/// a Hook success.
+pub fn run_reference_hsip_performance(
+    config: &ReferenceHsipPerformanceConfig,
+) -> Result<ReferenceHsipPerformanceReceipt, QualificationError> {
+    validate_reference_hsip_performance_config(config)?;
+    let mut series = Vec::with_capacity(3);
+    for (name, producers, frames_per_producer) in [
+        ("one_producer_release", 1, config.one_producer_frames),
+        (
+            "five_producer_release",
+            5,
+            config.five_producer_frames_per_producer,
+        ),
+        (
+            "ten_producer_release",
+            10,
+            config.ten_producer_frames_per_producer,
+        ),
+    ] {
+        series.push(measure_reference_hsip_series(
+            name,
+            producers,
+            frames_per_producer,
+        )?);
+    }
+    let performance_gate_passed = series.iter().all(|value| value.frozen_budget_passed);
+    Ok(ReferenceHsipPerformanceReceipt {
+        schema_version: 1,
+        run_kind: "hs_g38b_reference_hsip_release_measurement".into(),
+        // This runner performs a truthful local measurement. It cannot alone
+        // satisfy G38B because acceptance additionally needs repeatability,
+        // exact-head hosted CI, and independent review.
+        acceptance_evidence: false,
+        reference_producer_production_authority: REFERENCE_PRODUCER_PRODUCTION_AUTHORITY,
+        frozen_g28_budget_ms: FrozenBudget {
+            cooperative_p95_ms_max: FROZEN_P95_MS,
+            cooperative_p99_ms_max: FROZEN_P99_MS,
+            changed: false,
+        },
+        series,
+        performance_gate: if performance_gate_passed {
+            "PASS_FROZEN_REFERENCE_BUDGET_DIAGNOSTIC_ONLY".into()
+        } else {
+            "FAIL_FROZEN_REFERENCE_BUDGET".into()
+        },
+        owner_live_codex_config_mutated: false,
+        raw_private_content_captured: false,
+    })
+}
+
+fn measure_reference_hsip_series(
+    series: &str,
+    concurrent_producers: usize,
+    frames_per_producer: usize,
+) -> Result<ReferenceHsipPerformanceSeries, QualificationError> {
+    let root = DisposableStateRoot::create()?;
+    let host = BrokerHost::start(BrokerConfig::for_state_root(root.path()))?;
+    let endpoint = host.endpoint().clone();
+    let result = thread::scope(|scope| {
+        let barrier = Arc::new(Barrier::new(concurrent_producers));
+        let mut workers = Vec::with_capacity(concurrent_producers);
+        for client in 0..concurrent_producers {
+            let barrier = Arc::clone(&barrier);
+            let endpoint = endpoint.clone();
+            workers.push(scope.spawn(
+                move || -> Result<ReferenceHsipWorker, QualificationError> {
+                    let producer = ReferenceProducer::new(endpoint, Default::default())?;
+                    barrier.wait();
+                    let mut worker = ReferenceHsipWorker {
+                        latency_ns: Vec::with_capacity(frames_per_producer),
+                        outcomes: ReferenceHsipObservationCounts::default(),
+                    };
+                    for sequence in 0..frames_per_producer {
+                        let started = Instant::now();
+                        let outcome = producer.emit_scenario(
+                            &ReferenceInvocation::new(
+                                u32::try_from(client)
+                                    .map_err(|_| QualificationError::Invalid("reference_client"))?,
+                                u32::try_from(sequence).map_err(|_| {
+                                    QualificationError::Invalid("reference_sequence")
+                                })?,
+                            ),
+                            ReferenceScenario::StartOnly,
+                        )[0];
+                        worker.latency_ns.push(capture_elapsed_nanos(started));
+                        worker.outcomes.record(outcome);
+                    }
+                    Ok(worker)
+                },
+            ));
+        }
+        let mut latency_ns = Vec::with_capacity(concurrent_producers * frames_per_producer);
+        let mut outcomes = ReferenceHsipObservationCounts::default();
+        for worker in workers {
+            let worker = worker
+                .join()
+                .map_err(|_| QualificationError::Invalid("reference_worker"))??;
+            latency_ns.extend(worker.latency_ns);
+            outcomes.merge(worker.outcomes);
+        }
+        Ok::<_, QualificationError>((latency_ns, outcomes))
+    });
+    host.stop();
+    let (latency_ns, outcomes) = result?;
+    let latency = latency_statistics(latency_ns)?;
+    let observation_gaps = outcomes.observation_gaps();
+    Ok(ReferenceHsipPerformanceSeries {
+        series: series.into(),
+        concurrent_producers,
+        frames_per_producer,
+        attempted_frames: concurrent_producers * frames_per_producer,
+        frozen_budget_passed: observation_gaps == 0 && frozen_budget_passes(&latency),
+        latency,
+        outcomes,
+        observation_gaps,
+    })
+}
+
+struct ReferenceHsipWorker {
+    latency_ns: Vec<u64>,
+    outcomes: ReferenceHsipObservationCounts,
 }
 
 /// Measures the superseded and corrected collector models against identical
@@ -1369,6 +1590,22 @@ fn validate_config(config: &QualificationConfig) -> Result<(), QualificationErro
     Ok(())
 }
 
+fn validate_reference_hsip_performance_config(
+    config: &ReferenceHsipPerformanceConfig,
+) -> Result<(), QualificationError> {
+    if !(1_000..=10_000).contains(&config.one_producer_frames)
+        || !(200..=10_000).contains(&config.five_producer_frames_per_producer)
+        || !(1_000..=10_000).contains(&config.ten_producer_frames_per_producer)
+        || config.five_producer_frames_per_producer.saturating_mul(5) < 1_000
+        || config.ten_producer_frames_per_producer.saturating_mul(10) < 10_000
+    {
+        return Err(QualificationError::Invalid(
+            "reference_hsip_performance_config",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_collector_comparison_config(
     config: &CollectorComparisonConfig,
 ) -> Result<(), QualificationError> {
@@ -1558,5 +1795,52 @@ mod tests {
         assert_eq!(correlation.p95_tail_samples, 2);
         assert_eq!(correlation.p95_tail_samples_overlapping_group_sync, 2);
         assert_eq!(correlation.total_group_sync_overlap_ns, 2_100);
+    }
+
+    #[test]
+    fn reference_performance_config_requires_the_declared_workload_floor() {
+        assert!(
+            validate_reference_hsip_performance_config(&ReferenceHsipPerformanceConfig::default())
+                .is_ok()
+        );
+        assert!(
+            validate_reference_hsip_performance_config(&ReferenceHsipPerformanceConfig {
+                one_producer_frames: 999,
+                ..Default::default()
+            })
+            .is_err()
+        );
+        assert!(
+            validate_reference_hsip_performance_config(&ReferenceHsipPerformanceConfig {
+                ten_producer_frames_per_producer: 999,
+                ..Default::default()
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn reference_performance_receipt_is_non_authoritative_and_sanitized() {
+        let receipt =
+            run_reference_hsip_performance(&ReferenceHsipPerformanceConfig::default()).unwrap();
+        assert!(!receipt.acceptance_evidence);
+        assert!(!receipt.reference_producer_production_authority);
+        assert!(!receipt.raw_private_content_captured);
+        assert_eq!(
+            receipt
+                .series
+                .iter()
+                .map(|series| series.concurrent_producers)
+                .collect::<Vec<_>>(),
+            vec![1, 5, 10]
+        );
+        assert_eq!(receipt.series[0].attempted_frames, 1_000);
+        assert_eq!(receipt.series[1].attempted_frames, 1_000);
+        assert_eq!(receipt.series[2].attempted_frames, 10_000);
+        let serialized = serde_json::to_value(receipt).unwrap();
+        assert!(serialized.get("prompt").is_none());
+        assert!(serialized.get("command").is_none());
+        assert!(serialized.get("stdout").is_none());
+        assert!(serialized.get("stderr").is_none());
     }
 }

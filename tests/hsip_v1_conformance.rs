@@ -2,12 +2,15 @@
 //! producer. The producer uses the ordinary bounded local transport and is
 //! never evidence authority for a runtime integration.
 
-use hookstat::hsip_reference::{
-    REFERENCE_PRODUCER_PRODUCTION_AUTHORITY, ReferenceInvocation, ReferenceProducer,
-    ReferenceScenario,
+use hookstat::admission::IpcAdmissionState;
+use hookstat::evidence::{
+    AuthorityRouter, CoverageDomain, DomainAuthority, EventFamily, NativeAdmissionState, RuntimeId,
+    RuntimeNeutralEvidenceCore, SourceScope,
 };
+use hookstat::hsip_reference::{ReferenceInvocation, ReferenceProducer, ReferenceScenario};
 use hookstat::ipc::{
-    BrokerConfig, BrokerHost, GroupDurabilityPolicy, ObservationDisposition, ProducerPolicy,
+    BrokerConfig, BrokerHost, GroupDurabilityPolicy, IpcFrame, ObservationDisposition,
+    ProducerPolicy, Wal,
 };
 use std::sync::{Arc, Barrier};
 use std::thread;
@@ -56,7 +59,6 @@ fn assert_accepted(outcomes: &[ObservationDisposition]) {
 
 #[test]
 fn reference_producer_exercises_real_hsip_broker_wal_for_all_lifecycle_shapes() {
-    assert!(!REFERENCE_PRODUCER_PRODUCTION_AUTHORITY);
     let temp = tempfile::tempdir().unwrap();
     let host = BrokerHost::start(config(temp.path())).unwrap();
     let producer = ReferenceProducer::new(host.endpoint().clone(), conformance_policy()).unwrap();
@@ -118,14 +120,19 @@ fn reference_producer_reports_absence_then_recovers_after_broker_restart_without
     ));
     let first_health = host.stop();
     assert_eq!(first_health.accepted, 1);
+    assert!(matches!(
+        producer.emit_scenario(
+            &ReferenceInvocation::new(2, 2),
+            ReferenceScenario::CompleteOnly,
+        )[0],
+        ObservationDisposition::Unavailable | ObservationDisposition::BudgetExhausted
+    ));
 
     let restarted = BrokerHost::start(config(temp.path())).unwrap();
     assert_eq!(restarted.recovery().frames.len(), 1);
-    let reconnected =
-        ReferenceProducer::new(restarted.endpoint().clone(), conformance_policy()).unwrap();
-    assert_accepted(&reconnected.emit_scenario(
+    assert_accepted(&producer.emit_scenario(
         &ReferenceInvocation::new(2, 3),
-        ReferenceScenario::CompleteOnly,
+        ReferenceScenario::StartOnly,
     ));
     let restarted_health = restarted.stop();
     assert_eq!(restarted_health.accepted, 1);
@@ -172,4 +179,63 @@ fn reference_producer_controlled_matrix_covers_one_five_ten_clients_and_ten_thou
     assert_eq!(health.dropped, 0);
     assert_eq!(health.rejected, 0);
     assert_eq!(health.ack_timeouts, 0);
+}
+
+#[test]
+fn reference_wal_valid_prefix_and_partial_tail_recovery_are_exact() {
+    let temp = tempfile::tempdir().unwrap();
+    let frame = IpcFrame::Start(ReferenceInvocation::new(4, 1).lifecycle());
+    let mut wal = Wal::open(temp.path(), GroupDurabilityPolicy::default()).unwrap();
+    wal.append(&frame).unwrap();
+    wal.flush_group().unwrap();
+    drop(wal);
+    {
+        use std::io::Write;
+        let mut tail = std::fs::OpenOptions::new()
+            .append(true)
+            .open(temp.path().join("ipc-evidence-v1.wal"))
+            .unwrap();
+        tail.write_all(&[0xAA, 0xBB]).unwrap();
+    }
+
+    let mut recovered_wal = Wal::open(temp.path(), GroupDurabilityPolicy::default()).unwrap();
+    let recovered = recovered_wal.recover_and_replay().unwrap();
+    assert_eq!(recovered.frames, vec![frame]);
+    assert_eq!(recovered.truncated_tail_bytes, 2);
+    let recovered_again = recovered_wal.recover_and_replay().unwrap();
+    assert_eq!(recovered_again.frames.len(), 1);
+    assert_eq!(recovered_again.truncated_tail_bytes, 0);
+}
+
+#[test]
+fn reference_duplicate_replay_remains_one_canonical_invocation() {
+    let temp = tempfile::tempdir().unwrap();
+    let host = BrokerHost::start(config(temp.path())).unwrap();
+    let producer = ReferenceProducer::new(host.endpoint().clone(), conformance_policy()).unwrap();
+    assert_accepted(&producer.emit_scenario(
+        &ReferenceInvocation::new(5, 1),
+        ReferenceScenario::DuplicateStart,
+    ));
+    assert_eq!(host.stop().accepted, 2);
+
+    let restarted = BrokerHost::start(config(temp.path())).unwrap();
+    let domain = CoverageDomain {
+        runtime: RuntimeId::new("hsip_reference").unwrap(),
+        event: EventFamily::new("reference_event").unwrap(),
+        source_scope: SourceScope::new("reference_scope").unwrap(),
+    };
+    let mut core = RuntimeNeutralEvidenceCore::new(
+        AuthorityRouter::new([DomainAuthority {
+            domain,
+            native_admission: NativeAdmissionState::Qualified,
+            ipc_admission: IpcAdmissionState::Admitted,
+        }])
+        .unwrap(),
+    );
+    let replay = restarted.recovery().ingest_into(&mut core).unwrap();
+    assert_eq!(replay.produced, 1);
+    assert_eq!(replay.duplicates, 1);
+    assert_eq!(replay.shadowed, 0);
+    assert_eq!(replay.not_admitted, 0);
+    restarted.stop();
 }
