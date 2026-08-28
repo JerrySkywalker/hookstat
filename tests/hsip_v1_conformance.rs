@@ -3,14 +3,17 @@
 //! never evidence authority for a runtime integration.
 
 use hookstat::admission::IpcAdmissionState;
+use hookstat::domain::{EvidenceCoverage, TerminalStatus};
 use hookstat::evidence::{
-    AuthorityRouter, CoverageDomain, DomainAuthority, EventFamily, NativeAdmissionState, RuntimeId,
-    RuntimeNeutralEvidenceCore, SourceScope,
+    AuthorityRouter, CoreIngestOutcome, CoverageDomain, DomainAuthority, EventFamily,
+    NativeAdmissionState, RuntimeId, RuntimeNeutralEvidenceCore, SourceScope,
 };
-use hookstat::hsip_reference::{ReferenceInvocation, ReferenceProducer, ReferenceScenario};
+use hookstat::hsip_reference::{
+    ReferenceInvocation, ReferenceProducer, ReferenceScenario, ReferenceWireFixture,
+};
 use hookstat::ipc::{
-    BrokerConfig, BrokerHost, GroupDurabilityPolicy, IpcFrame, ObservationDisposition,
-    ProducerPolicy, Wal,
+    BrokerAcknowledgement, BrokerConfig, BrokerHost, GroupDurabilityPolicy, IpcFrame,
+    ObservationDisposition, ProducerPolicy, Wal,
 };
 use std::sync::{Arc, Barrier};
 use std::thread;
@@ -140,6 +143,77 @@ fn reference_producer_reports_absence_then_recovers_after_broker_restart_without
     let final_host = BrokerHost::start(config(temp.path())).unwrap();
     assert_eq!(final_host.recovery().frames.len(), 2);
     final_host.stop();
+}
+
+#[test]
+fn reference_withheld_completion_is_visible_as_unknown_coverage() {
+    let temp = tempfile::tempdir().unwrap();
+    let host = BrokerHost::start(config(temp.path())).unwrap();
+    let producer = ReferenceProducer::new(host.endpoint().clone(), conformance_policy()).unwrap();
+    let invocation = ReferenceInvocation::new(7, 1);
+    assert_accepted(&producer.emit_scenario(&invocation, ReferenceScenario::StartOnly));
+    assert_eq!(host.stop().accepted, 1);
+
+    // The broker is gone before COMPLETE; the producer is fail-open, and the
+    // withheld observation must remain a visible coverage degradation rather
+    // than becoming a fabricated successful invocation.
+    assert!(matches!(
+        producer.emit_scenario(&invocation, ReferenceScenario::CompleteOnly)[0],
+        ObservationDisposition::Unavailable | ObservationDisposition::BudgetExhausted
+    ));
+
+    let restarted = BrokerHost::start(config(temp.path())).unwrap();
+    let evidence = restarted.recovery().canonical_evidence().unwrap();
+    assert_eq!(evidence.len(), 1);
+    let domain = CoverageDomain {
+        runtime: RuntimeId::new("hsip_reference").unwrap(),
+        event: EventFamily::new("reference_event").unwrap(),
+        source_scope: SourceScope::new("reference_scope").unwrap(),
+    };
+    let mut core = RuntimeNeutralEvidenceCore::new(
+        AuthorityRouter::new([DomainAuthority {
+            domain,
+            native_admission: NativeAdmissionState::Qualified,
+            ipc_admission: IpcAdmissionState::Admitted,
+        }])
+        .unwrap(),
+    );
+    let correlated = match core.ingest(evidence.into_iter().next().unwrap()).unwrap() {
+        CoreIngestOutcome::Produced(value) => value,
+        outcome => panic!("expected production ingress, got {outcome:?}"),
+    };
+    assert_eq!(correlated.terminal_status, TerminalStatus::Incomplete);
+    assert_eq!(correlated.legacy_coverage(), EvidenceCoverage::Unknown);
+    restarted.stop();
+}
+
+#[test]
+fn reference_malformed_wire_fixtures_are_rejected_at_broker_ingress_without_wal_corruption() {
+    let temp = tempfile::tempdir().unwrap();
+    let host = BrokerHost::start(config(temp.path())).unwrap();
+    let producer = ReferenceProducer::new(host.endpoint().clone(), conformance_policy()).unwrap();
+
+    for fixture in [
+        ReferenceWireFixture::OversizedFrame,
+        ReferenceWireFixture::OversizedIdentifier,
+    ] {
+        assert_eq!(
+            producer.send_wire_fixture_to_broker(fixture).unwrap(),
+            BrokerAcknowledgement::Rejected
+        );
+    }
+    assert_accepted(&producer.emit_scenario(
+        &ReferenceInvocation::new(8, 1),
+        ReferenceScenario::StartOnly,
+    ));
+    let health = host.stop();
+    assert_eq!(health.malformed, 2);
+    assert_eq!(health.accepted, 1);
+    assert_eq!(health.dropped, 0);
+
+    let restarted = BrokerHost::start(config(temp.path())).unwrap();
+    assert_eq!(restarted.recovery().frames.len(), 1);
+    restarted.stop();
 }
 
 #[test]

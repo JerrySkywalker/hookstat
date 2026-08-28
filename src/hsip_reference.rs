@@ -5,11 +5,11 @@
 //! would, but it is never a runtime adapter or production authority.
 
 use crate::ipc::{
-    Completion, ExitClassification, IPC_PROTOCOL_VERSION, IpcError, IpcFrame, LifecycleFrame,
-    LocalEndpoint, MAX_IPC_FRAME_BYTES, MAX_IPC_REFERENCE_BYTES, ObservationDisposition,
-    ProducerPolicy, TerminalOutcome,
+    BrokerAcknowledgement, Completion, ExitClassification, IPC_FRAME_HEADER_BYTES, IPC_MAGIC,
+    IPC_PROTOCOL_VERSION, IpcError, IpcFrame, LifecycleFrame, LocalEndpoint, MAX_IPC_FRAME_BYTES,
+    MAX_IPC_REFERENCE_BYTES, ObservationDisposition, ProducerPolicy, TerminalOutcome,
 };
-use crate::ipc_client::CooperativeProducer;
+use crate::ipc_client::{CooperativeProducer, IpcClient};
 use serde::{Deserialize, Serialize};
 
 /// This invariant is deliberately present in the public conformance surface so
@@ -60,7 +60,20 @@ impl ReferenceInvocation {
     /// Hook/runtime content.
     pub fn encoded_wire_fixture(&self, fixture: ReferenceWireFixture) -> Result<Vec<u8>, IpcError> {
         if fixture == ReferenceWireFixture::OversizedFrame {
-            return Ok(vec![0_u8; MAX_IPC_FRAME_BYTES + 1]);
+            // The bounded broker reader checks this valid v1 header before it
+            // allocates or reads the declared payload. This intentionally is
+            // not an overlong byte vector: it proves the transport's declared
+            // length guard rather than only `IpcFrame::decode`'s in-memory
+            // size guard.
+            let mut encoded = Vec::with_capacity(IPC_FRAME_HEADER_BYTES);
+            encoded.extend_from_slice(&IPC_MAGIC);
+            encoded.push(IPC_PROTOCOL_VERSION);
+            encoded.push(1); // START
+            encoded.extend_from_slice(&0_u16.to_le_bytes());
+            let oversized_payload = u16::try_from(MAX_IPC_FRAME_BYTES - IPC_FRAME_HEADER_BYTES + 1)
+                .map_err(|_| IpcError::Oversized)?;
+            encoded.extend_from_slice(&oversized_payload.to_le_bytes());
+            return Ok(encoded);
         }
         if fixture == ReferenceWireFixture::OversizedIdentifier {
             // This fixture must exercise the decoder rather than only the
@@ -127,19 +140,24 @@ pub enum ReferenceWireFixture {
 #[derive(Clone)]
 pub struct ReferenceProducer {
     producer: CooperativeProducer,
+    endpoint: LocalEndpoint,
+    policy: ProducerPolicy,
 }
 
 impl ReferenceProducer {
     pub fn new(endpoint: LocalEndpoint, policy: ProducerPolicy) -> Result<Self, IpcError> {
         Ok(Self {
-            producer: CooperativeProducer::new(endpoint, policy)?,
+            producer: CooperativeProducer::new(endpoint.clone(), policy)?,
+            endpoint,
+            policy,
         })
     }
 
     pub fn for_state_root(root: impl AsRef<std::path::Path>) -> Result<Self, IpcError> {
-        Ok(Self {
-            producer: CooperativeProducer::for_state_root(root)?,
-        })
+        Self::new(
+            LocalEndpoint::from_state_root(root)?,
+            ProducerPolicy::default(),
+        )
     }
 
     pub fn emit_scenario(
@@ -171,6 +189,19 @@ impl ReferenceProducer {
                 self.producer.emit_start(lifecycle),
             ],
         }
+    }
+
+    /// Sends one deliberately invalid v1 fixture through the same bounded
+    /// local connection/ACK boundary used by a producer. This is conformance
+    /// input only; it cannot produce canonical evidence or production
+    /// authority.
+    pub fn send_wire_fixture_to_broker(
+        &self,
+        fixture: ReferenceWireFixture,
+    ) -> Result<BrokerAcknowledgement, IpcError> {
+        let encoded = ReferenceInvocation::new(0, 0).encoded_wire_fixture(fixture)?;
+        let mut client = IpcClient::connect(&self.endpoint, self.policy.connect_timeout)?;
+        client.send_encoded_for_conformance(&encoded)
     }
 }
 
@@ -430,9 +461,14 @@ mod tests {
         let oversized = invocation
             .encoded_wire_fixture(ReferenceWireFixture::OversizedFrame)
             .unwrap();
+        assert_eq!(oversized.len(), IPC_FRAME_HEADER_BYTES);
+        assert_eq!(
+            u16::from_le_bytes([oversized[8], oversized[9]]) as usize,
+            MAX_IPC_FRAME_BYTES - IPC_FRAME_HEADER_BYTES + 1
+        );
         assert!(matches!(
             IpcFrame::decode(&oversized),
-            Err(IpcError::Oversized)
+            Err(IpcError::Invalid("frame_length"))
         ));
         let oversized_identifier = invocation
             .encoded_wire_fixture(ReferenceWireFixture::OversizedIdentifier)
