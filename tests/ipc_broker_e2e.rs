@@ -401,14 +401,26 @@ fn broker_ack_latency_smoke_reports_sanitized_percentiles() {
 fn concurrent_producer_latency_smoke_is_sanitized_and_bounded() {
     let _guard = e2e_serial_guard();
     let temp = tempfile::tempdir().unwrap();
-    let host = BrokerHost::start(production_performance_config(temp.path())).unwrap();
+    let mut configuration = production_performance_config(temp.path());
+    // A debug test binary is not the frozen release-performance measurement.
+    // Its 16 simultaneously scheduled synthetic clients need the same bounded
+    // CI staging window as the larger correctness matrix above. Release tests
+    // keep the real 5 ms producer/broker acknowledgement budget and enforce
+    // the G28 p95/p99 limits below.
+    let client_timeout = if cfg!(debug_assertions) {
+        configuration.ack_timeout = Duration::from_secs(5);
+        Duration::from_secs(5)
+    } else {
+        Duration::from_millis(5)
+    };
+    let host = BrokerHost::start(configuration).unwrap();
     let samples = Arc::new(Mutex::new(Vec::with_capacity(1_600)));
     thread::scope(|scope| {
         let host_ref = &host;
         for client_id in 0..16 {
             let samples = Arc::clone(&samples);
             scope.spawn(move || {
-                let mut client = started_production_client(host_ref);
+                let mut client = IpcClient::connect(host_ref.endpoint(), client_timeout).unwrap();
                 for sequence in 0..100 {
                     let before = Instant::now();
                     assert_eq!(
@@ -446,6 +458,10 @@ fn concurrent_producer_latency_smoke_is_sanitized_and_bounded() {
             "G28 cooperative IPC p99 budget exceeded under 16 clients"
         );
     }
+    let health = host.health();
+    assert_eq!(health.accepted, 1_600);
+    assert_eq!(health.dropped, 0);
+    assert_eq!(health.ack_timeouts, 0);
     host.stop();
 }
 
