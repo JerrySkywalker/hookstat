@@ -12,7 +12,8 @@ use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
 
 fn run(binary: &str, arguments: &[&str], app_data: &Path) -> std::process::Output {
@@ -203,8 +204,12 @@ fn doctor_reports_authority_policy_and_live_broker_without_persisting_control_fr
         "not_admitted"
     );
     assert_eq!(
-        json["production_evidence"]["cooperative_ipc_admission"],
+        json["production_evidence"]["cooperative_ipc_substrate_state"],
         "admitted"
+    );
+    assert_eq!(
+        json["production_evidence"]["default_cooperative_ipc_authority"],
+        "not_admitted"
     );
     assert_eq!(
         json["production_evidence"]["transparent_shim_admission"],
@@ -235,4 +240,31 @@ fn doctor_reports_authority_policy_and_live_broker_without_persisting_control_fr
     }
     assert_eq!(host.health().accepted, 10);
     host.stop();
+}
+
+#[test]
+fn repeated_broker_diagnostics_do_not_extend_the_idle_lease() {
+    let temporary = tempdir().unwrap();
+    let data_root = temporary.path().join("HookStat");
+    let mut configuration = BrokerConfig::for_state_root(&data_root);
+    configuration.idle_timeout = Duration::from_millis(250);
+    configuration.ack_timeout = Duration::from_millis(100);
+    let mut host = BrokerHost::start(configuration).unwrap();
+
+    // These control-plane reads deliberately span most of the idle interval.
+    // If a query refreshed broker activity, the host would still be alive
+    // after the bounded wait below. A lifecycle frame is intentionally never
+    // sent in this fixture. Each query uses the ordinary short-lived doctor
+    // connection pattern; the broker's peer-read window is intentionally
+    // shorter than this test's spacing.
+    for _ in 0..3 {
+        let mut client = IpcClient::connect(host.endpoint(), Duration::from_millis(100)).unwrap();
+        assert_eq!(client.diagnostics().unwrap().accepted, 0);
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let waiting_started = Instant::now();
+    assert!(host.wait_for_idle(Duration::from_millis(150)));
+    assert!(waiting_started.elapsed() < Duration::from_millis(150));
+    assert!(IpcClient::connect(host.endpoint(), Duration::from_millis(2)).is_err());
 }

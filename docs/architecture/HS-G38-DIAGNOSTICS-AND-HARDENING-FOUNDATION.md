@@ -27,7 +27,9 @@ Diagnostics schema v2 adds:
 - the admission and selected authority for each supplied bounded coverage
   domain, with a truthful `NOT_ADMITTED` default when no integration table is
   supplied;
-- cooperative IPC admission and transparent-shim admission/activation status;
+- the HookStat cooperative-IPC substrate state, plus an explicit
+  `NOT_ADMITTED` default IPC authority until a named coverage domain is
+  governed, and transparent-shim admission/activation status;
 - broker state, accepted/rejected/dropped/malformed counts, bounded queue
   state, grouped-durability counters, WAL flush lag, and recent latency
   percentiles.

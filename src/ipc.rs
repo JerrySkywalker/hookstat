@@ -1600,7 +1600,10 @@ fn connection_loop(
                 }
             }
             Ok(IpcFrame::BrokerDiagnosticsRequest) => {
-                core.touch();
+                // A read-only control query must not keep this on-demand
+                // broker alive. Only lifecycle evidence extends the idle
+                // lease; otherwise a polling doctor or TUI would turn the
+                // broker into an accidental service.
                 let response = core.diagnostics();
                 let _ = write_frame_bounded(
                     &mut stream,

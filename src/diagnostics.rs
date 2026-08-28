@@ -120,7 +120,13 @@ pub struct ProductionEvidenceDiagnostics {
     pub runtime: Runtime,
     pub native_l2_status: CodexNativeL2Status,
     pub native_admission: NativeAdmissionState,
-    pub cooperative_ipc_admission: IpcAdmissionState,
+    /// This is HookStat's protocol/broker substrate state, never an
+    /// assertion that an unnamed runtime coverage domain is admitted.
+    pub cooperative_ipc_substrate_state: IpcAdmissionState,
+    /// The authority used when the caller did not provide a named coverage
+    /// domain. It remains `not_admitted` until such a domain has a governed
+    /// Native or IPC authority.
+    pub default_cooperative_ipc_authority: DomainAuthoritySelection,
     pub transparent_shim_admission: IpcAdmissionState,
     pub transparent_shim_active: bool,
     pub default_authority: DomainAuthoritySelection,
@@ -358,7 +364,8 @@ fn production_evidence_diagnostics(
         runtime: Runtime::Codex,
         native_l2_status,
         native_admission: native_l2_status.native_admission(),
-        cooperative_ipc_admission: V031_COOPERATIVE_IPC_ADMISSION.state,
+        cooperative_ipc_substrate_state: V031_COOPERATIVE_IPC_ADMISSION.state,
+        default_cooperative_ipc_authority: DomainAuthoritySelection::NotAdmitted,
         transparent_shim_admission: V031_TRANSPARENT_SHIM_ADMISSION.state,
         transparent_shim_active: false,
         default_authority: DomainAuthoritySelection::NotAdmitted,
@@ -909,6 +916,14 @@ mod tests {
             report.production_evidence.default_authority,
             DomainAuthoritySelection::NotAdmitted
         );
+        assert_eq!(
+            report.production_evidence.default_cooperative_ipc_authority,
+            DomainAuthoritySelection::NotAdmitted
+        );
+        assert_eq!(
+            report.production_evidence.cooperative_ipc_substrate_state,
+            IpcAdmissionState::Admitted
+        );
         assert_eq!(report.production_evidence.evidence_transport_count, 2);
         assert!(!report.production_evidence.third_transport_present);
         assert!(!report.production_evidence.shadow_in_denominator);
@@ -1112,6 +1127,14 @@ mod tests {
         assert_eq!(
             diagnostics.native_admission,
             NativeAdmissionState::Unavailable
+        );
+        assert_eq!(
+            diagnostics.default_cooperative_ipc_authority,
+            DomainAuthoritySelection::NotAdmitted
+        );
+        assert_eq!(
+            diagnostics.cooperative_ipc_substrate_state,
+            IpcAdmissionState::Admitted
         );
         assert!(!diagnostics.transparent_shim_active);
         assert!(!diagnostics.domains_truncated);
