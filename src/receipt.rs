@@ -146,14 +146,17 @@ impl ReceiptSpool {
         &self.root
     }
 
-    /// Returns only the durable journal byte length. This never enumerates or
-    /// parses receipt files, so diagnostics can compare an existing catalog
-    /// cursor without turning a routine health query into a legacy-history
-    /// scan.
-    pub(crate) fn journal_length_read_only(&self) -> Result<u64, ReceiptError> {
-        match fs::metadata(self.journal_path()) {
-            Ok(metadata) => Ok(metadata.len()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(0),
+    /// Returns only the durable journal byte length when the journal is a
+    /// regular existing file. This never enumerates or parses receipt files,
+    /// so diagnostics can compare an existing catalog cursor without turning a
+    /// routine health query into a legacy-history scan. Missing, symbolic, and
+    /// non-file journals remain unobserved rather than being conflated with an
+    /// existing empty journal.
+    pub(crate) fn journal_length_read_only(&self) -> Result<Option<u64>, ReceiptError> {
+        match fs::symlink_metadata(self.journal_path()) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => Ok(None),
+            Ok(metadata) => Ok(Some(metadata.len())),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.into()),
         }
     }

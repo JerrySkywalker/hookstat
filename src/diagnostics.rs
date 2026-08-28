@@ -296,7 +296,7 @@ fn receipt_catalog_for_diagnostics(
     data_root: &Path,
     spool: &ReceiptSpool,
 ) -> Option<ReceiptCatalogDiagnostics> {
-    let journal_length = spool.journal_length_read_only().ok()?;
+    let journal_length = spool.journal_length_read_only().ok()??;
     let ledger = Ledger::open_read_only(data_root.join("ledger.sqlite3")).ok()?;
     let catalog = ledger
         .receipt_catalog_diagnostics_if_present(RECONCILIATION_SOURCE_KEY)
@@ -1074,6 +1074,64 @@ mod tests {
                         incomplete: 1,
                         malformed: 0,
                     }]
+        }));
+    }
+
+    #[test]
+    fn missing_empty_journal_leaves_a_legacy_catalog_unobserved() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("HookStat");
+        let spool = ReceiptSpool::open(root.join("receipts")).unwrap();
+        let start = ReceiptStart {
+            schema_version: 1,
+            invocation_id: "legacy-without-journal".into(),
+            handler: HandlerIdentity {
+                key: "hk_legacy_without_journal".into(),
+                revision: "fixture-r1".into(),
+                label: "Legacy without journal".into(),
+                source_kind: "fixture".into(),
+                event: HookEvent::Stop,
+                matcher_identity: "fixture".into(),
+                structural_identity: "fixture".into(),
+                execution_mode: ExecutionMode::Sync,
+            },
+            source: "fixture".into(),
+            started_at_unix_ms: 1_000,
+            coverage: EvidenceCoverage::Partial,
+        };
+        fs::write(
+            spool
+                .root()
+                .join("records")
+                .join("legacy-without-journal.start.json"),
+            serde_json::to_vec(&start).unwrap(),
+        )
+        .unwrap();
+
+        let mut ledger = Ledger::open_path(root.join("ledger.sqlite3")).unwrap();
+        spool.reconcile_full(&mut ledger, 1_000).unwrap();
+        drop(ledger);
+        assert_eq!(spool.journal_length_read_only().unwrap(), Some(0));
+
+        fs::remove_file(spool.root().join("receipt-journal-v1.ndjson")).unwrap();
+        assert_eq!(spool.journal_length_read_only().unwrap(), None);
+        assert!(receipt_catalog_for_diagnostics(&root, &spool).is_none());
+
+        let report = collect(&root, 1_001);
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::ReceiptSpool
+                && check.status == DiagnosticStatus::Warning
+                && check.facts.is_empty()
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::ReceiptIntegrity
+                && check.status == DiagnosticStatus::Unknown
+                && check.facts.is_empty()
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::EvidenceFreshness
+                && check.status == DiagnosticStatus::Unknown
+                && check.facts.is_empty()
         }));
     }
 
