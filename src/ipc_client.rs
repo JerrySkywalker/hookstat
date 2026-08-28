@@ -1017,12 +1017,12 @@ impl IpcClient {
         endpoint: &LocalEndpoint,
         deadline: Instant,
     ) -> Result<Self, IpcError> {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(timed_out("bounded IPC connection"));
-        }
         #[cfg(unix)]
         {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(timed_out("bounded IPC connection"));
+            }
             Ok(Self {
                 stream: endpoint.connect_existing_stream(remaining)?,
                 timeout: remaining,
@@ -1037,6 +1037,13 @@ impl IpcClient {
                     .build()
                     .map_err(IpcError::Io)?,
             );
+            // Runtime construction is part of the caller-owned control-plane
+            // operation. Recompute after it so a slow setup never grants pipe
+            // connection or response work a fresh deadline budget.
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(timed_out("bounded IPC connection"));
+            }
             Self::connect_with_runtime(endpoint, remaining, remaining, runtime)
         }
     }
