@@ -246,3 +246,16 @@ G38C owns HookStat Windows broker/diagnostics/recovery/resource hardening.
 G38D converges those proofs and closes the existing G38 implementation PR.
 
 External integrations are independent tracks and do not block G38D or G38R unless HookStat later chooses to bundle one, which v0.3.1 explicitly does not.
+
+## v0.3.1 release statement
+
+HookStat v0.3.1 ships HSIP infrastructure and conformance. External cooperative
+producers have independent admission lifecycles. A release candidate may prove
+the reference producer, broker, WAL, diagnostics, and conformance surface while
+still reporting every unadmitted runtime domain as `NOT_ADMITTED`.
+
+The reference producer is a test and qualification instrument only. It cannot
+be used to assert Native availability, IPC admission, live runtime coverage, or
+production authority for Codex or another runtime. Third-party producers must
+qualify their own exact package/binary and receive an explicit domain-scoped
+admission receipt; no HookStat Core change is needed to begin that process.

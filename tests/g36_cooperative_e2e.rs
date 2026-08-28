@@ -6,8 +6,8 @@ mod ipc_client;
 
 use hookstat::ipc::{BrokerConfig, BrokerHost};
 use ipc_client::{
-    Completion, CooperativeProducer, ExitClassification, LifecycleFrame, ObservationDisposition,
-    TerminalOutcome,
+    Completion, CooperativeProducer, ExitClassification, LifecycleFrame, LocalEndpoint,
+    ObservationDisposition, ProducerPolicy, TerminalOutcome,
 };
 use std::time::Duration;
 
@@ -24,13 +24,24 @@ fn lifecycle() -> LifecycleFrame {
     }
 }
 
+fn staging_producer(root: &std::path::Path) -> CooperativeProducer {
+    CooperativeProducer::new(
+        LocalEndpoint::from_state_root(root).unwrap(),
+        ProducerPolicy {
+            connect_timeout: Duration::from_millis(100),
+            acknowledgement_timeout: Duration::from_millis(100),
+        },
+    )
+    .unwrap()
+}
+
 #[test]
 fn cooperative_start_complete_reaches_the_broker_without_application_dependencies() {
     let temp = tempfile::tempdir().unwrap();
     let mut config = BrokerConfig::for_state_root(temp.path());
     config.ack_timeout = Duration::from_millis(100);
     let host = BrokerHost::start(config).unwrap();
-    let producer = CooperativeProducer::for_state_root(temp.path()).unwrap();
+    let producer = staging_producer(temp.path());
     assert_eq!(
         producer.emit_start(lifecycle()),
         ObservationDisposition::Accepted
@@ -54,7 +65,7 @@ fn cooperative_start_complete_reaches_the_broker_without_application_dependencie
 #[test]
 fn broker_absence_and_mid_lifecycle_exit_are_fail_open_observation_gaps() {
     let absent = tempfile::tempdir().unwrap();
-    let absent_producer = CooperativeProducer::for_state_root(absent.path()).unwrap();
+    let absent_producer = staging_producer(absent.path());
     assert_eq!(
         absent_producer.emit_start(lifecycle()),
         ObservationDisposition::Unavailable
@@ -64,7 +75,7 @@ fn broker_absence_and_mid_lifecycle_exit_are_fail_open_observation_gaps() {
     let mut config = BrokerConfig::for_state_root(temp.path());
     config.ack_timeout = Duration::from_millis(100);
     let host = BrokerHost::start(config).unwrap();
-    let producer = CooperativeProducer::for_state_root(temp.path()).unwrap();
+    let producer = staging_producer(temp.path());
     assert_eq!(
         producer.emit_start(lifecycle()),
         ObservationDisposition::Accepted

@@ -2,9 +2,9 @@
 
 **Local-first reliability analytics for hooks across coding-agent runtimes.**
 
-HookStat v0.3.0 is the public release for the Codex Reliability Workbench: a
-local-first terminal UI that turns admitted local hook receipts
-into a bilingual, human-readable operational view. It adds a Changes workbench,
+HookStat v0.3.1 is the release candidate for the Codex Reliability Workbench:
+a local-first terminal UI that turns admitted local hook receipts into a
+bilingual, human-readable operational view. It retains the Changes workbench,
 Hook Catalog, revision timeline, safe Human aliases, and bounded failure
 exploration through the shared TabBeacon-compatible Human interface. It is
 Codex-first today, while its canonical ledger, analytics, JSON, and TUI remain
@@ -23,23 +23,56 @@ daemon.
 
 ## Install and update
 
-Install the public v0.3.0 release from crates.io with Cargo:
+Install the current public v0.3.0 release from crates.io with Cargo:
 
 ```powershell
 cargo install hookstat --version 0.3.0 --locked
 cargo install hookstat --version 0.3.0 --locked --force
 ```
 
-For local development from an owned checkout instead:
+v0.3.1 is a local release candidate until an Owner authorizes publication. To
+test that candidate from an owned checkout without replacing a user-wide
+installation, use an isolated Cargo root:
 
 ```powershell
-cargo install --path . --locked
-hookstat --version
+$candidateRoot = Join-Path $env:TEMP 'hookstat-v031-candidate'
+cargo install --path . --locked --root $candidateRoot
+& "$candidateRoot\\bin\\hookstat.exe" --version
 ```
 
-Release notes for the public v0.3.0 and v0.2.1 releases are in
-[CHANGELOG.md](CHANGELOG.md). Local checkout installs remain
-development builds; use the crates.io package for ordinary stable installation.
+See [the v0.3.1 candidate notes](docs/release/HOOKSTAT-V031-RELEASE-CANDIDATE.md)
+and [CHANGELOG.md](CHANGELOG.md) for the release boundary. No `cargo publish`,
+public tag, or GitHub Release is implied by a local candidate install.
+
+## v0.3.1 HSIP and runtime availability
+
+HookStat v0.3.1 ships HSIP infrastructure and conformance. External
+cooperative producers have independent admission lifecycles. The included
+reference producer exercises the real bounded local broker for conformance,
+recovery, and performance tests; it is never a production runtime adapter or
+evidence authority.
+
+Production authority remains per domain:
+
+```text
+Native admitted                 -> Native
+else named IPC integration admitted -> IPC
+else                             -> NOT_ADMITTED
+```
+
+`NOT_ADMITTED` is truthful coverage, not a healthy zero-rate result and not an
+evidence transport. v0.3.1 bundles no external cooperative producer and does
+not require one. The release-qualified Windows Codex Native L2 result remains
+`UPSTREAM_UNAVAILABLE` for the pinned `codex-cli 0.149.0` audit; it is not a
+claim of qualification for newer Codex versions. The transparent shim remains
+non-admitted and is never an implicit fallback or a `hookstat codex` launcher.
+
+The HSIP protocol is local-only, bounded, and privacy preserving. Its frozen
+HookStat substrate gate is P95 <= 1 ms, P99 <= 2 ms, and zero observation gaps.
+Performance and conformance tools are development/qualification tools; they do
+not manufacture runtime coverage. See
+[HSIP v1 conformance and admission](docs/architecture/HSIP-V1-CONFORMANCE-AND-ADMISSION.md)
+for a third-party producer's independent qualification contract.
 
 ## Opt-in Codex instrumentation
 
@@ -219,8 +252,9 @@ cargo package --locked
 cargo publish --dry-run --locked
 ```
 
-The Owner-authorized v0.3.0 public-release closure binds the exact release
-commit to its crates.io package, `v0.3.0` tag, and GitHub Release.
+The Owner-authorized v0.3.0 public-release closure binds the historical exact
+release commit to its crates.io package, `v0.3.0` tag, and GitHub Release.
+v0.3.1 remains at package/dry-run candidate status until separately authorized.
 
 See the architecture, ADRs, and execution contracts under `docs/`,
 `dev_governance_files/`, and `goals/`.

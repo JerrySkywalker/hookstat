@@ -244,10 +244,16 @@ fn reference_producer_controlled_matrix_covers_one_five_ten_clients_and_ten_thou
                     let producer = ReferenceProducer::new(endpoint, staging_policy()).unwrap();
                     barrier.wait();
                     for sequence in 0..samples_per_client {
-                        assert_accepted(&producer.emit_scenario(
+                        let outcomes = producer.emit_scenario(
                             &ReferenceInvocation::new(stage * 100 + client, sequence),
                             ReferenceScenario::StartOnly,
-                        ));
+                        );
+                        assert!(
+                            outcomes
+                                .iter()
+                                .all(|outcome| *outcome == ObservationDisposition::Accepted),
+                            "stage={stage} client={client} sequence={sequence} outcomes={outcomes:?}"
+                        );
                     }
                 });
             }

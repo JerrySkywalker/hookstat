@@ -73,3 +73,11 @@ store, prompt, command, tool payload, or hook output was read or changed.
 Unix acquisition remains `NOT_QUALIFIED` by this checkpoint. The existence of
 the Unix daemon is not itself a proof that a passive external observer can join
 an already-owned ordinary thread without affecting session ownership.
+
+## v0.3.1 release interpretation
+
+For v0.3.1, this is the exact Native availability statement for the qualified
+`codex-cli 0.149.0` Windows audit: `UPSTREAM_UNAVAILABLE`. It does not infer an
+identical result for newer Codex versions. Until a newer exact version receives
+its own Native qualification, HookStat continues to select an admitted named
+IPC integration for a domain when one exists, otherwise `NOT_ADMITTED`.
