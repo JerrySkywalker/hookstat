@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 // Historical rows remain byte-for-byte durable even when a future or malformed
 // taxonomy value cannot be represented by the current domain model. Canonical
@@ -204,7 +204,11 @@ impl Ledger {
                 source_key TEXT PRIMARY KEY,
                 journal_offset INTEGER NOT NULL,
                 malformed_receipts INTEGER NOT NULL,
-                updated_at_unix_ms INTEGER NOT NULL
+                updated_at_unix_ms INTEGER NOT NULL,
+                catalog_version INTEGER NOT NULL DEFAULT 0,
+                catalog_record_count INTEGER,
+                catalog_incomplete INTEGER,
+                catalog_latest_occurred_at_unix_ms INTEGER
             );
             CREATE TABLE IF NOT EXISTS hookstat_migration_issues (
                 issue_kind TEXT PRIMARY KEY,
@@ -245,6 +249,28 @@ impl Ledger {
                 connection.execute(statement, [])?;
             }
         }
+        for (column, statement) in [
+            (
+                "catalog_version",
+                "ALTER TABLE receipt_reconciliation ADD COLUMN catalog_version INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "catalog_record_count",
+                "ALTER TABLE receipt_reconciliation ADD COLUMN catalog_record_count INTEGER",
+            ),
+            (
+                "catalog_incomplete",
+                "ALTER TABLE receipt_reconciliation ADD COLUMN catalog_incomplete INTEGER",
+            ),
+            (
+                "catalog_latest_occurred_at_unix_ms",
+                "ALTER TABLE receipt_reconciliation ADD COLUMN catalog_latest_occurred_at_unix_ms INTEGER",
+            ),
+        ] {
+            if !table_column_exists(&connection, "receipt_reconciliation", column)? {
+                connection.execute(statement, [])?;
+            }
+        }
         connection.execute(
             "DELETE FROM hookstat_migration_issues WHERE issue_kind = 'invalid_legacy_taxonomy'",
             [],
@@ -268,7 +294,7 @@ impl Ledger {
         // retry without claiming a schema it did not finish.
         connection.execute_batch(
             "DELETE FROM hookstat_schema;
-             INSERT INTO hookstat_schema (version) VALUES (4);",
+             INSERT INTO hookstat_schema (version) VALUES (5);",
         )?;
         Ok(Self {
             connection,
@@ -298,6 +324,7 @@ impl Ledger {
     pub fn ingest_receipt_reconciliation(
         &mut self,
         source_key: &str,
+        receipt_source_key: &str,
         journal_offset: u64,
         malformed_receipts: u64,
         updated_at_unix_ms: i64,
@@ -311,14 +338,32 @@ impl Ledger {
         }
         let transaction = self.connection.transaction()?;
         let receipt = Self::ingest_transaction(&transaction, values)?;
+        // This aggregation runs only while reconciliation is already mutating
+        // the catalog. The resulting fixed facts make routine diagnostics a
+        // single-row lookup rather than an unbounded historical scan.
+        let (record_count, incomplete, latest_occurred_at_unix_ms): (i64, i64, Option<i64>) =
+            transaction.query_row(
+                "SELECT count(*),
+                        COALESCE(SUM(CASE WHEN terminal_status = 'incomplete' THEN 1 ELSE 0 END), 0),
+                        MAX(occurred_at_unix_ms)
+                 FROM hook_invocations WHERE source_key = ?1",
+                [receipt_source_key],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
         transaction.execute(
             "INSERT INTO receipt_reconciliation (
-                source_key, journal_offset, malformed_receipts, updated_at_unix_ms
-             ) VALUES (?1, ?2, ?3, ?4)
+                source_key, journal_offset, malformed_receipts, updated_at_unix_ms,
+                catalog_version, catalog_record_count, catalog_incomplete,
+                catalog_latest_occurred_at_unix_ms
+             ) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7)
              ON CONFLICT(source_key) DO UPDATE SET
                 journal_offset = excluded.journal_offset,
                 malformed_receipts = excluded.malformed_receipts,
-                updated_at_unix_ms = excluded.updated_at_unix_ms",
+                updated_at_unix_ms = excluded.updated_at_unix_ms,
+                catalog_version = excluded.catalog_version,
+                catalog_record_count = excluded.catalog_record_count,
+                catalog_incomplete = excluded.catalog_incomplete,
+                catalog_latest_occurred_at_unix_ms = excluded.catalog_latest_occurred_at_unix_ms",
             params![
                 source_key,
                 i64::try_from(journal_offset)
@@ -326,6 +371,9 @@ impl Ledger {
                 i64::try_from(malformed_receipts)
                     .map_err(|_| ValidationError::new("malformed_receipts"))?,
                 updated_at_unix_ms,
+                record_count,
+                incomplete,
+                latest_occurred_at_unix_ms,
             ],
         )?;
         transaction.commit()?;
@@ -394,34 +442,42 @@ impl Ledger {
     /// than being fabricated into a zero-integrity result.
     pub(crate) fn receipt_catalog_diagnostics_if_present(
         &self,
-        receipt_source_key: &str,
         reconciliation_source_key: &str,
     ) -> Result<Option<ReceiptCatalogDiagnostics>, LedgerError> {
-        let Some(state) =
-            self.receipt_reconciliation_state_if_present(reconciliation_source_key)?
-        else {
+        if !table_column_exists(
+            &self.connection,
+            "receipt_reconciliation",
+            "catalog_version",
+        )? {
             return Ok(None);
-        };
-        let (record_count, incomplete, latest_occurred_at_unix_ms): (i64, i64, Option<i64>) = self
-            .connection
+        }
+        self.connection
             .query_row(
-                "SELECT count(*),
-                        COALESCE(SUM(CASE WHEN terminal_status = 'incomplete' THEN 1 ELSE 0 END), 0),
-                        MAX(occurred_at_unix_ms)
-                 FROM hook_invocations
-                 WHERE source_key = ?1",
-                [receipt_source_key],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )?;
-        Ok(Some(ReceiptCatalogDiagnostics {
-            journal_offset: state.journal_offset,
-            record_count: u64::try_from(record_count)
-                .map_err(|_| ValidationError::new("receipt_record_count"))?,
-            incomplete: u64::try_from(incomplete)
-                .map_err(|_| ValidationError::new("receipt_incomplete"))?,
-            malformed: state.malformed_receipts,
-            latest_occurred_at_unix_ms,
-        }))
+                "SELECT journal_offset, catalog_record_count, catalog_incomplete,
+                        malformed_receipts, catalog_latest_occurred_at_unix_ms
+                 FROM receipt_reconciliation
+                 WHERE source_key = ?1 AND catalog_version = 1",
+                [reconciliation_source_key],
+                |row| {
+                    let offset: i64 = row.get(0)?;
+                    let record_count: i64 = row.get(1)?;
+                    let incomplete: i64 = row.get(2)?;
+                    let malformed: i64 = row.get(3)?;
+                    Ok(ReceiptCatalogDiagnostics {
+                        journal_offset: u64::try_from(offset)
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        record_count: u64::try_from(record_count)
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        incomplete: u64::try_from(incomplete)
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        malformed: u64::try_from(malformed)
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        latest_occurred_at_unix_ms: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     /// Reads the bounded working set needed for every finite reliability view.
@@ -1069,7 +1125,15 @@ impl Ledger {
 }
 
 fn invocation_column_exists(connection: &Connection, column: &str) -> Result<bool, LedgerError> {
-    let mut statement = connection.prepare("PRAGMA table_info(hook_invocations)")?;
+    table_column_exists(connection, "hook_invocations", column)
+}
+
+fn table_column_exists(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+) -> Result<bool, LedgerError> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
     let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
     for value in columns {
         if value? == column {
@@ -1310,6 +1374,7 @@ mod tests {
         let receipt = ledger
             .ingest_receipt_reconciliation(
                 "receipt_catalog_journal_v1",
+                "codex_instrumented_receipts_v1",
                 42,
                 1,
                 1_000,
@@ -1327,16 +1392,20 @@ mod tests {
             })
         );
         let replay = ledger
-            .ingest_receipt_reconciliation("receipt_catalog_journal_v1", 42, 1, 1_001, &[first])
+            .ingest_receipt_reconciliation(
+                "receipt_catalog_journal_v1",
+                "codex_instrumented_receipts_v1",
+                42,
+                1,
+                1_001,
+                &[first],
+            )
             .unwrap();
         assert_eq!(replay.duplicates, 1);
         assert_eq!(ledger.invocation_count().unwrap(), 1);
         assert_eq!(
             ledger
-                .receipt_catalog_diagnostics_if_present(
-                    "codex_instrumented_receipts_v1",
-                    "receipt_catalog_journal_v1",
-                )
+                .receipt_catalog_diagnostics_if_present("receipt_catalog_journal_v1")
                 .unwrap(),
             Some(ReceiptCatalogDiagnostics {
                 journal_offset: 42,

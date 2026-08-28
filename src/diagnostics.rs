@@ -12,7 +12,7 @@ use crate::domain::{EvidenceCoverage, Runtime};
 use crate::evidence::{DomainAuthority, DomainAuthoritySelection, NativeAdmissionState};
 use crate::ipc::{BrokerDiagnostics, IpcClient, IpcError, LocalEndpoint};
 use crate::ledger::{Ledger, ReceiptCatalogDiagnostics};
-use crate::receipt::{RECONCILIATION_SOURCE_KEY, ReceiptSpool, SOURCE_KEY};
+use crate::receipt::{RECONCILIATION_SOURCE_KEY, ReceiptSpool};
 use crate::runtime::codex::{
     CODEX_TESTED_CLI_VERSION, CodexHostPlatform, CodexNativeCapabilityProbe, CodexNativeL2Status,
     CodexProtocolVersion,
@@ -293,7 +293,7 @@ fn receipt_catalog_for_diagnostics(
     let journal_length = spool.journal_length_read_only().ok()?;
     let ledger = Ledger::open_read_only(data_root.join("ledger.sqlite3")).ok()?;
     let catalog = ledger
-        .receipt_catalog_diagnostics_if_present(SOURCE_KEY, RECONCILIATION_SOURCE_KEY)
+        .receipt_catalog_diagnostics_if_present(RECONCILIATION_SOURCE_KEY)
         .ok()??;
     (catalog.journal_offset == journal_length).then_some(catalog)
 }
@@ -950,6 +950,58 @@ mod tests {
                 && check.status == DiagnosticStatus::Unknown
                 && check.facts.is_empty()
         }));
+    }
+
+    /// G38 regression scale proof for an established catalog. Reconciliation
+    /// may build the durable catalog, but a routine diagnostics refresh must
+    /// then use its one-row aggregate rather than revisit the 6,769 records.
+    #[test]
+    #[ignore = "explicit G38 catalogued diagnostics boundedness scale proof"]
+    fn large_catalogued_history_uses_the_fixed_receipt_catalog() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("HookStat");
+        let spool = ReceiptSpool::open(root.join("receipts")).unwrap();
+        let handler = HandlerIdentity {
+            key: "hk_catalogued_scale".into(),
+            revision: "fixture-r1".into(),
+            label: "Catalogued scale fixture".into(),
+            source_kind: "fixture".into(),
+            event: HookEvent::Stop,
+            matcher_identity: "fixture".into(),
+            structural_identity: "fixture".into(),
+            execution_mode: ExecutionMode::Sync,
+        };
+        for index in 0..6_769 {
+            spool
+                .write_start(&ReceiptStart {
+                    schema_version: 1,
+                    invocation_id: format!("catalogued-scale-{index:05}"),
+                    handler: handler.clone(),
+                    source: "fixture".into(),
+                    started_at_unix_ms: 1_000 + index,
+                    coverage: EvidenceCoverage::Partial,
+                })
+                .unwrap();
+        }
+        let mut ledger = Ledger::open_path(root.join("ledger.sqlite3")).unwrap();
+        let reconciled = spool.reconcile_incremental(&mut ledger, 10_000).unwrap();
+        assert!(reconciled.work.full_reconciliation);
+        drop(ledger);
+
+        let report = collect(&root, 10_001);
+        assert!(report.checks.iter().any(|check| {
+            check.id == DiagnosticCheckId::ReceiptSpool
+                && check.status == DiagnosticStatus::Pass
+                && check.facts == vec![DiagnosticFact::ReceiptRecords { count: 6_769 }]
+        }));
+        let catalog_reader = include_str!("ledger.rs")
+            .split_once("pub(crate) fn receipt_catalog_diagnostics_if_present")
+            .unwrap()
+            .1
+            .split_once("/// Reads the bounded working set")
+            .unwrap()
+            .0;
+        assert!(!catalog_reader.contains("hook_invocations"));
     }
 
     #[test]

@@ -385,6 +385,7 @@ impl ReceiptSpool {
         }
         let ingest = ledger.ingest_receipt_reconciliation(
             RECONCILIATION_SOURCE_KEY,
+            SOURCE_KEY,
             next_offset,
             state.malformed_receipts.saturating_add(malformed_delta),
             now_unix_ms,
@@ -409,6 +410,7 @@ impl ReceiptSpool {
         let journal_length = self.journal_length()?;
         let ingest = ledger.ingest_receipt_reconciliation(
             RECONCILIATION_SOURCE_KEY,
+            SOURCE_KEY,
             journal_length,
             scan.malformed,
             now_unix_ms,
