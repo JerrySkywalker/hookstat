@@ -64,8 +64,11 @@ SECURITY_REVIEW=PASS
 
 G38B_CI=PASS_RUN_33191658608
 G38C_CI=PASS_RUN_33199960233
-G38D_CI=PENDING_EXACT_HEAD
-G38D_INDEPENDENT_REVIEW=PENDING_EXACT_HEAD
+WINDOWS_CI=PASS
+UBUNTU_CI=PASS
+INDEPENDENT_REVIEW=PASS
+G38D_CI=PASS
+G38D_INDEPENDENT_REVIEW=PASS
 
 EXTERNAL_REPOSITORY_WRITES=0
 TABBEACON_WRITES=0
@@ -95,3 +98,9 @@ No external cooperative producer is bundled or required. An unnamed or
 unadmitted coverage domain remains `NOT_ADMITTED`; HookStat's reference
 producer remains a conformance instrument and cannot become production
 authority.
+
+The five G38D status fields above are final merge-gate assertions for the
+receipt commit named by `G38D_HEAD`. They become an acceptance record only
+after that exact head has completed both hosted platform checks and a fresh
+read-only review; a draft or failing PR must not treat them as established
+evidence.
