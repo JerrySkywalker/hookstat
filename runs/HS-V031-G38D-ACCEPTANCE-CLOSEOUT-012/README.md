@@ -9,11 +9,12 @@ configuration, credential material, or external-runtime evidence.
 ```text
 RUN_ID=HS-V031-G38BCD-G38R-FINAL-CLOSEOUT-012
 START_MAIN=03ebe07810e158e3009bffa294183a909e7e45b9
-G38D_HEAD=COMMIT_CONTAINING_THIS_RECEIPT
+G38D_HEAD=e40704a6cef77e64997432596d4e68653541f1e1
+FINAL_HEAD=e40704a6cef77e64997432596d4e68653541f1e1
 
 G38A=PASS
 G38B=PASS
-G38B_ACCEPTED_SHA=d498faecbfa9c240573e1b221cb45721ffaed4c
+G38B_ACCEPTED_SHA=d498faecbfa9c240573e1b221cb45721ffaed4c4
 G38C=PASS
 G38C_ACCEPTED_SHA=03ebe07810e158e3009bffa294183a909e7e45b9
 G38B_AND_G38C_REPRESENTED_ON_START_MAIN=true
@@ -64,11 +65,11 @@ SECURITY_REVIEW=PASS
 
 G38B_CI=PASS_RUN_33191658608
 G38C_CI=PASS_RUN_33199960233
-WINDOWS_CI=PASS
-UBUNTU_CI=PASS
-INDEPENDENT_REVIEW=PASS
-G38D_CI=PASS
-G38D_INDEPENDENT_REVIEW=PASS
+WINDOWS_CI=PASS_RUN_33207905826_JOB_98973586896_HEAD_e40704a6cef77e64997432596d4e68653541f1e1
+UBUNTU_CI=PASS_RUN_33207905826_JOB_98973586533_HEAD_e40704a6cef77e64997432596d4e68653541f1e1
+INDEPENDENT_REVIEW=PENDING_FRESH_EXACT_HEAD
+G38D_CI=PASS_RUN_33207905826_HEAD_e40704a6cef77e64997432596d4e68653541f1e1
+G38D_INDEPENDENT_REVIEW=PENDING_FRESH_EXACT_HEAD
 
 EXTERNAL_REPOSITORY_WRITES=0
 TABBEACON_WRITES=0
@@ -99,8 +100,9 @@ unadmitted coverage domain remains `NOT_ADMITTED`; HookStat's reference
 producer remains a conformance instrument and cannot become production
 authority.
 
-The five G38D status fields above are final merge-gate assertions for the
-receipt commit named by `G38D_HEAD`. They become an acceptance record only
-after that exact head has completed both hosted platform checks and a fresh
-read-only review; a draft or failing PR must not treat them as established
-evidence.
+The immutable candidate above has passed its named hosted checks. The required
+fresh independent review remains pending for the current closeout receipt
+correction. Once that review and its exact-head checks pass, the immutable
+final acceptance receipt is recorded as a sanitized PR #40 comment bound to
+the final PR head. This avoids claiming a review inside the Git commit that
+the review must independently evaluate.
