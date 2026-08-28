@@ -1,114 +1,143 @@
-# HS-G38 — Performance & Windows Dogfood Hardening
+# HS-G38 — Performance, Conformance & Windows Hardening
 
 ## Status
 
-PLANNED after accepted G37.
+REPLANNED after accepted G37.
+
+G38 is now an umbrella Goal decomposed into:
+
+```text
+G38A — Single-Repo Scope & Admission Contract Reset
+G38B — HSIP v1 Conformance Kit
+G38C — HookStat Windows Hardening
+G38D — Acceptance / PR Closeout
+```
+
+The old G38 requirement that HookStat release acceptance depend on a named external cooperative producer is superseded by G38A. Historical receipts remain factual history but no external product repository is a mandatory release dependency.
 
 ## Objective
 
-Prove the v0.3.1 evidence architecture under real Windows Terminal + Codex usage, concurrency, broker recovery, and tail-latency stress. Performance correctness is a release gate.
+Prove HookStat's v0.3.1 evidence substrate under deterministic HSIP conformance, Owner Windows concurrency/recovery/performance testing, diagnostics/self-observability, privacy/security review, and exact-head CI/review.
 
-Production dogfood follows the G36/G37 authority decision exactly:
+Production authority remains:
 
 ```text
 Native where admitted
-else cooperative IPC where an integration is admitted
+else IPC where a named integration is admitted
 else NOT_ADMITTED
 ```
 
-The transparent shim remains implemented and correctness/security-tested, but
-is `QUALIFIED_NOT_ADMITTED_PERFORMANCE`. It is not production-activated, is not
-a v0.3.1 dogfood path, and is not a v0.3.1 release-performance PASS gate.
+The transparent shim remains `QUALIFIED_NOT_ADMITTED_PERFORMANCE` and inactive.
 
-## Required real environment
+## Single-repository boundary
 
-At minimum qualify on an Owner-controlled Windows 11 environment with:
+```text
+EXTERNAL_REPOSITORY_WRITE_REQUIRED=false
+EXTERNAL_INTEGRATION_REQUIRED_FOR_G38=false
+EXTERNAL_INTEGRATION_REQUIRED_FOR_G38R=false
+```
+
+G38 may use HookStat's in-repository reference producer to qualify HSIP. That reference producer is test-only and never production authority.
+
+## DAG
+
+```text
+accepted G37
+    │
+    ▼
+  G38A
+   ├───────────────┐
+   ▼               ▼
+ G38B             G38C
+ conformance      Windows hardening
+   └───────┬───────┘
+           ▼
+          G38D
+           │
+           ▼
+          G38R
+```
+
+## G38A — contract reset
+
+G38A must align roadmap, master goal, this Goal, G38R, and the HSIP admission architecture around a single-repository HookStat release contract.
+
+Acceptance:
+
+```text
+EXTERNAL_INTEGRATION_REQUIRED_FOR_RELEASE=false
+HSIP_PROTOCOL_RELEASE_OWNED_BY_HOOKSTAT=true
+INTEGRATION_ADMISSION_SEPARATE=true
+DOMAIN_WITHOUT_ADMITTED_SOURCE=NOT_ADMITTED
+HISTORICAL_RECEIPTS_PRESERVED=true
+```
+
+## G38B — HSIP conformance
+
+G38B must provide an in-repository reference producer and deterministic conformance/performance harness.
+
+Required matrix includes:
+
+```text
+START/COMPLETE
+start-only / complete-only
+out-of-order
+duplicate/replay
+uncertain ACK / no replay
+broker unavailable/restart
+malformed/oversized frames and identifiers
+concurrent producers
+WAL valid-prefix / partial-tail recovery
+privacy field exclusions
+identity stability
+p50/p95/p99
+```
+
+Frozen substrate performance gate:
+
+```text
+REFERENCE_HSIP_P95_MS<=1
+REFERENCE_HSIP_P99_MS<=2
+REFERENCE_HSIP_OBSERVATION_GAPS=0
+```
+
+## G38C — HookStat Windows hardening
+
+Qualify HookStat itself on an Owner-controlled Windows 11 environment with:
 
 ```text
 PowerShell 7
-Windows Terminal
-accepted/current Codex CLI
+Windows Terminal where relevant
 HookStat v0.3.1 candidate
-accepted TabBeacon baseline/candidate where cooperative IPC is exercised
+HookStat reference HSIP producer/clients
+accepted/current Codex CLI for normal-launch smoke only
 ```
 
-Record exact versions/SHAs in sanitized receipts.
+A named external producer is not required.
 
-## Hook-event coverage
-
-Exercise every practically triggerable admitted Codex event, including where available:
+Required controlled workload families:
 
 ```text
-SessionStart
-UserPromptSubmit
-PreToolUse
-PostToolUse
-PermissionRequest
-PreCompact
-PostCompact
-SubagentStart
-SubagentStop
-Stop
-SessionEnd
+1 client
+5 concurrent clients
+10 concurrent clients
+10,000+ controlled evidence frames
 ```
 
-Unavailable/untested events must remain explicit rather than inferred healthy.
-
-## Workload families
-
-At minimum:
-
-```text
-1 normal Codex session
-5 concurrent Codex sessions
-10 concurrent Codex sessions
-100 representative tool events
-1,000 representative tool events
-10,000 synthetic IPC evidence events
-```
-
-Use higher synthetic volumes only if they add useful boundedness evidence.
-
-## Performance evidence
-
-Record real candidate values for:
-
-```text
-cooperative IPC p50/p95/p99
-broker queue lag
-WAL flush lag
-broker restart recovery time
-observed HookStat-induced timeouts
-observed HookStat-induced failures
-```
-
-Compare cooperative IPC with its frozen G28 budget. Preserve the transparent
-shim's historical 20/25 and 25/30 failures without rerunning or relabeling them
-as v0.3.1 production acceptance.
-
-Any reproducible HookStat-induced timeout/failure in a previously healthy Hook is a release blocker.
-
-## Broker recovery
-
-Test:
+Required recovery/resource tests:
 
 - normal idle expiry and restart;
 - broker killed while clients exist;
-- broker restart after WAL partial-tail fixture;
-- bounded client behavior while broker is unavailable;
-- concurrent client reconnect/startup race;
-- no duplicate production invocation after replay/reconnect;
-- dropped/withheld evidence becomes visible coverage degradation.
+- bounded producer behavior while broker is unavailable;
+- concurrent reconnect/startup race;
+- WAL valid-prefix and partial-tail recovery;
+- duplicate/replay resistance;
+- dropped/withheld evidence becomes visible coverage degradation;
+- no unwanted permanent process/resource leak;
+- concurrent identities remain isolated;
+- diagnostics remain bounded and truthful.
 
-## Upgrade and process behavior
-
-Verify:
-
-- no unwanted permanent broker/process leak;
-- package binary is not unnecessarily pinned by a long-lived helper design;
-- concurrent sessions remain isolated by runtime/invocation identity;
-- normal Codex exit leaves bounded HookStat helper state;
-- abnormal Codex/Hook termination does not fabricate success.
+Normal `codex` smoke proves only that HookStat preserves ordinary launch semantics and does not require a wrapper, trust bypass, or unwanted configuration mutation. If no admitted Native or external IPC integration exists for a domain, the expected result is explicit `NOT_ADMITTED` rather than fabricated event coverage.
 
 ## Diagnostics / self-observability
 
@@ -116,116 +145,118 @@ Expose sufficient read-only diagnostics to answer, without raw private content:
 
 ```text
 runtime
-authoritative evidence source per domain
-Native admission state
-IPC mode: cooperative
-transparent shim admission status (never active in v0.3.1)
+Native capability/admission
+authoritative source per domain
+named IPC integration admission where known
+NOT_ADMITTED domains
 broker state
 queue lag
-dropped evidence/frame count
+dropped/rejected/malformed frame count
 WAL flush lag
-recent IPC latency percentiles
+recent/reference IPC latency percentiles
+transparent shim status: qualified_not_admitted_performance
 ```
 
-A diagnostic may report `QUALIFIED_NOT_ADMITTED_PERFORMANCE` for the retained
-transparent implementation, but must not imply that it is selected or active.
-
-Self-observability instrumentation itself must be bounded and must not reintroduce hot-path synchronous persistence.
+Diagnostics control frames are not evidence and must never enter WAL, ledger, replay, or denominators.
 
 ## Structural regression guards
 
-CI cannot certify absolute Windows p95/p99 on hosted runners, but it should prevent architectural regressions such as:
+Prevent regressions such as:
 
 ```text
-per-record fsync returning to Hook producer path
-JSON receipt creation returning to hot path
-full HookStat CLI returning as shim
-unbounded frame/payload size
-unbounded queue
-extra shell/process layer for simple direct-plan fixtures
+per-record fsync on producer path
+JSON receipt creation on producer hot path
+full HookStat CLI returning as production shim
+unbounded frame/payload
+unbounded queue/connections
 shadow evidence entering denominator
-transparent shim becoming production authority or activation
+NOT_ADMITTED entering denominator
+transparent shim becoming production authority
+network listener/global mandatory daemon
 ```
 
 ## Privacy and security review
 
 Re-audit:
 
-- IPC endpoint scope/permissions;
+- IPC endpoint scope and permissions;
 - broker/state path containment;
-- capsule privacy;
-- WAL record privacy;
+- WAL privacy;
 - diagnostics privacy;
 - malformed/oversized local client behavior;
-- process-tree containment;
-- retained transparent-shim correctness/security regressions without activation;
-- trust/config mutation boundaries.
+- process containment and cleanup;
+- no prompt/tool/stdout/stderr/raw command content;
+- no trust/config bypass;
+- retained transparent shim lockout.
 
-No prompt/tool/stdout/stderr/raw command content may appear in production evidence/WAL/ledger/diagnostics exports.
+## Existing G38 draft implementation
 
-## Required artifacts
+The pre-reset G38 draft PR contains substantial useful diagnostics, boundedness, broker recovery, concurrency, and structural-guard work.
 
-Commit:
+After G38A is accepted:
 
-- sanitized Owner Windows dogfood receipt;
-- exact cooperative IPC candidate comparison to its G28 budget;
-- concurrency/broker-recovery receipt;
-- privacy/security review receipt;
-- any accepted performance exceptions with evidence and explicit Owner-facing rationale.
+1. preserve valid implementation/tests/evidence;
+2. reconcile the branch with accepted `main`;
+3. remove stale wording that names an external product as a mandatory release blocker;
+4. map existing work into G38C and add only the missing G38B/G38D requirements;
+5. do not discard working code merely because the acceptance contract changed.
 
-## Risk vector
+## G38D acceptance
 
-```text
-CODE_CHANGED=true
-ARCHITECTURE_CHANGED=hardening_only
-PERSISTENCE_CHANGED=hardening_only
-CODEX_INTEGRATION_CHANGED=hardening_only
-USER_PERSISTENT_CONFIG_CHANGED=possible
-SECURITY_OR_PRIVACY_CHANGED=true
-RELEASE_BOUNDARY=false
-```
-
-## Acceptance
+G38D can close only when:
 
 ```text
-OWNER_WINDOWS_DOGFOOD=PASS
-ALL_PRACTICALLY_TRIGGERABLE_EVENTS_COVERED=true
-UNTESTED_EVENTS_EXPLICIT=true
+G38A=PASS
+G38B=PASS
+G38C=PASS
 
-CODEX_HOOK_TIMEOUT_REGRESSION=0
-HOOKSTAT_INDUCED_FAILURES=0
-
-IPC_DROPPED_FRAMES=0_OR_EXPLICIT_OVERLOAD_TEST_ONLY
-IPC_CORRUPTION=0
-BROKER_RESTART=PASS
-CONCURRENT_CODEX=PASS
+REFERENCE_HSIP_PERFORMANCE=PASS
+HSIP_CONFORMANCE=PASS
+BROKER_RECOVERY=PASS
 PROCESS_LEAK=0
+DIAGNOSTICS=PASS
+COVERAGE_TRUTHFUL=PASS
 
-PERFORMANCE_BUDGET=PASS
-TAIL_LATENCY_ACCEPTED=true
-
-PRODUCTION_DOGFOOD_AUTHORITY=NATIVE|COOPERATIVE_IPC|NOT_ADMITTED
-TRANSPARENT_SHIM_PRODUCTION_ACTIVATION=false
-TRANSPARENT_SHIM_RELEASE_PERFORMANCE_GATE=false
-
-DIAGNOSTICS_EVIDENCE_AUTHORITY=true
-DIAGNOSTICS_NATIVE_ADMISSION=true
-DIAGNOSTICS_IPC_HEALTH=true
-DIAGNOSTICS_OVERHEAD_METRICS=true
+HOOKSTAT_INDUCED_TIMEOUTS=0
+HOOKSTAT_INDUCED_FAILURES=0
 
 PRIVACY_REVIEW=PASS
 SECURITY_REVIEW=PASS
-CODE_CI=PASS
+WINDOWS_CI=PASS
+UBUNTU_CI=PASS
+FRESH_INDEPENDENT_REVIEW=PASS
+
+TRANSPARENT_SHIM_PRODUCTION_ACTIVATION=false
+NO_THIRD_EVIDENCE_PATH=true
+EXTERNAL_INTEGRATION_REQUIRED=false
 ```
 
-## Stop gate
+An external producer's conformance/admission result is not part of this acceptance block.
 
-Any reproducible HookStat-induced timeout or execution failure in a previously healthy observed Hook blocks entry to G38R.
+## Stop gates
+
+Any of the following blocks G38D/G38R:
+
+- HookStat reference HSIP substrate fails frozen performance budget;
+- reproducible HookStat-induced timeout/failure;
+- persistence/recovery corruption;
+- false healthy coverage or denominator contamination;
+- privacy/security defect;
+- unbounded hot-path/resource behavior.
+
+An external producer failing admission does **not** block HookStat G38.
 
 ## Estimated effort
 
-**7–11 effective engineering hours.**
+```text
+G38A  2–3 h
+G38B  4–7 h
+G38C  3–5 h
+G38D  2–4 h
+```
+
+Existing G38 draft work is expected to reduce effective G38C effort.
 
 ## Next
 
-`HS-G38R — v0.3.1 Hardening & Release`.
+`HS-G38R — v0.3.1 Hardening & Release` after G38D acceptance and merge.
