@@ -23,14 +23,15 @@ use std::time::{Duration, Instant};
 
 pub use crate::ipc_client::{
     BrokerAcknowledgement, BrokerStartup, Completion, ExitClassification, IpcClient, IpcFrame,
-    LifecycleFrame, LocalEndpoint, TerminalOutcome,
+    LifecycleFrame, LocalEndpoint, ObservationDisposition, ProducerPolicy, TerminalOutcome,
 };
 #[cfg(feature = "performance-harness")]
 pub(crate) use crate::ipc_client::{
     CooperativeProducer, QualificationClientStageSample, QualificationSendFailure,
 };
 pub use crate::ipc_client::{
-    IPC_MAGIC, IPC_PROTOCOL_VERSION, IpcError, MAX_IPC_FRAME_BYTES, MAX_IPC_REFERENCE_BYTES,
+    IPC_FRAME_HEADER_BYTES, IPC_MAGIC, IPC_PROTOCOL_VERSION, IpcError, MAX_IPC_FRAME_BYTES,
+    MAX_IPC_REFERENCE_BYTES,
 };
 
 pub const WAL_MAGIC: [u8; 4] = *b"HSWL";

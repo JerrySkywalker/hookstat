@@ -85,6 +85,13 @@ test = false
 bench = false
 
 [[bin]]
+name = "hookstat-hsip-reference-qualify"
+path = "src/bin/hookstat_hsip_reference_qualify.rs"
+required-features = ["performance-harness"]
+test = false
+bench = false
+
+[[bin]]
 name = "hookstat-ipc-collector-ab"
 path = "src/bin/hookstat_ipc_collector_ab.rs"
 required-features = ["performance-harness"]
