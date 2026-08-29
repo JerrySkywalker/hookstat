@@ -86,11 +86,14 @@ only a sanitized measurement receipt. Normal coding-agent launch remains
 
 ## Upgrade and migration
 
-v0.3.1 migration is additive and idempotent. The migration proof starts from a
-v0.3.0 ledger and verifies preservation of legacy receipt history, completed,
-failed, and incomplete evidence, handler aliases, revision epochs, and saved
-interface preferences. New broker, diagnostic, and conformance metadata does
-not rewrite historical evidence semantics.
+v0.3.1 migration is additive and idempotent. Its release proof installs the
+public v0.3.0 binary in an isolated root, reconciles a v0.3.0-format receipt
+spool and journal containing completed and incomplete evidence, then runs the
+candidate against that same state. It verifies retained report semantics and
+unchanged canonical receipt/journal hashes alongside legacy ledger evidence,
+handler aliases, revision epochs, and saved interface preferences. New broker,
+diagnostic, and conformance metadata does not rewrite historical evidence
+semantics.
 
 If no Native or named IPC source is admitted, migration does not create one and
 does not mutate another repository or Codex configuration. The affected domain
