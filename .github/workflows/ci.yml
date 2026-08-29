@@ -115,6 +115,7 @@ jobs:
   # unprovable during the audit (HTTP 401), so CI / rust (windows-latest) and
   # CI / rust (ubuntu-latest) must remain satisfiable for every pull request.
   rust:
+    if: ${{ always() }}
     needs: changes
     strategy:
       matrix:
@@ -134,8 +135,13 @@ jobs:
           $expected = "${{ github.sha }}"
           if ($actual -ne $expected) { throw "checkout SHA mismatch: actual=$actual expected=$expected" }
 
+      - name: Fail closed when classifier is incomplete
+        if: ${{ needs.changes.result != 'success' }}
+        shell: pwsh
+        run: throw 'changes job did not pass; refusing to satisfy this legacy required context'
+
       - name: Lightweight diff validation
-        if: ${{ !((matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true')) }}
+        if: ${{ needs.changes.result == 'success' && !((matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true')) }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -145,7 +151,7 @@ jobs:
           'LIGHTWEIGHT_REQUIRED_CONTEXT=PASS'
 
       - name: Install pinned Rust toolchain
-        if: ${{ (matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true') }}
+        if: ${{ needs.changes.result == 'success' && ((matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true')) }}
         shell: pwsh
         run: |
           rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
@@ -154,17 +160,17 @@ jobs:
           cargo --version
 
       - name: Format
-        if: ${{ (matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true') }}
+        if: ${{ needs.changes.result == 'success' && ((matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true')) }}
         run: cargo fmt --check
 
       - name: Clippy
-        if: ${{ (matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true') }}
+        if: ${{ needs.changes.result == 'success' && ((matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true')) }}
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Test
-        if: ${{ (matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true') }}
+        if: ${{ needs.changes.result == 'success' && ((matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true')) }}
         run: cargo test --all-targets --locked
 
       - name: Locked build
-        if: ${{ (matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true') }}
+        if: ${{ needs.changes.result == 'success' && ((matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true')) }}
         run: cargo build --locked

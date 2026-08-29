@@ -110,6 +110,7 @@ function Assert-GitDiffFixtures {
         New-Item -ItemType Directory -Path (Join-Path $lab 'docs/process'), (Join-Path $lab 'src') -Force | Out-Null
         [System.IO.File]::WriteAllText((Join-Path $lab 'docs/process/guide.md'), "base`n")
         [System.IO.File]::WriteAllText((Join-Path $lab 'src/future_subsystem.rs'), "base`n")
+        [System.IO.File]::WriteAllText((Join-Path $lab 'src/type_change'), "base`n")
         & git -C $lab init --quiet
         if ($LASTEXITCODE -ne 0) { throw 'could not initialize classifier fixture repository' }
         & git -C $lab config user.email 'hookstat-fixture@example.invalid'
@@ -153,6 +154,44 @@ function Assert-GitDiffFixtures {
         Assert-Flag -Result $deletedSource -Name 'RUN_FULL_WINDOWS' -Expected $true
         Assert-Flag -Result $deletedSource -Name 'RUN_FULL_UBUNTU' -Expected $true
         'CLASSIFIER_FIXTURE_BASE_HEAD_DELETED_SOURCE=PASS'
+
+        # Git represents an ordinary file replaced by a gitlink as status T.
+        # Construct that status directly in an isolated index so this test does
+        # not rely on symlink privileges or mutate a product worktree.
+        $nested = Join-Path $lab 'nested-gitlink'
+        New-Item -ItemType Directory -Path $nested | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $nested 'fixture.md'), "nested`n")
+        & git -C $nested init --quiet
+        & git -C $nested config user.email 'hookstat-fixture@example.invalid'
+        & git -C $nested config user.name 'HookStat classifier fixture'
+        & git -C $nested add -- .
+        & git -C $nested commit --quiet -m 'nested fixture'
+        if ($LASTEXITCODE -ne 0) { throw 'could not commit nested type-change fixture' }
+        $nestedSha = (& git -C $nested rev-parse HEAD).Trim()
+
+        & git -C $lab checkout --quiet -b type-change-case $base
+        if ($LASTEXITCODE -ne 0) { throw 'could not create type-change fixture branch' }
+        & git -C $lab rm --quiet -- src/type_change
+        & git -C $lab update-index --add --cacheinfo "160000,$nestedSha,src/type_change"
+        if ($LASTEXITCODE -ne 0) { throw 'could not stage type-change fixture' }
+        & git -C $lab commit --quiet -m 'change source file type'
+        if ($LASTEXITCODE -ne 0) { throw 'could not commit type-change fixture' }
+        $typeChangeHead = (& git -C $lab rev-parse HEAD).Trim()
+        $typeStatus = @(& git -C $lab diff --name-status --diff-filter=T $base $typeChangeHead)
+        if ($LASTEXITCODE -ne 0 -or $typeStatus -notmatch '^T\s+src/type_change$') {
+            throw 'fixture did not produce a Git type change'
+        }
+        Push-Location $lab
+        try {
+            $typeChange = Invoke-Classification -BaseSha $base -HeadSha $typeChangeHead
+        }
+        finally {
+            Pop-Location
+        }
+        Assert-Flag -Result $typeChange -Name 'UNKNOWN_RISK' -Expected $true
+        Assert-Flag -Result $typeChange -Name 'RUN_FULL_WINDOWS' -Expected $true
+        Assert-Flag -Result $typeChange -Name 'RUN_FULL_UBUNTU' -Expected $true
+        'CLASSIFIER_FIXTURE_BASE_HEAD_TYPE_CHANGE=PASS'
     }
     finally {
         if (Test-Path -LiteralPath $lab) {
@@ -169,6 +208,7 @@ Assert-GitDiffFixtures
 
 'UNKNOWN_FAILS_SAFE=true'
 'DELETED_SOURCE_FAILS_SAFE=true'
+'TYPE_CHANGE_FAILS_SAFE=true'
 'DOCS_ONLY_FULL_RUST_MATRIX=false'
 'UNKNOWN_RISK_FULL_MATRIX=true'
 'WINDOWS_SENSITIVE_WINDOWS_GATE=true'

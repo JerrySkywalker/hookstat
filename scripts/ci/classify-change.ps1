@@ -69,10 +69,10 @@ else {
             throw 'could not resolve HEAD for change classification'
         }
     }
-    # A rename is intentionally represented as a delete plus add. Classifying
-    # both paths prevents a source-to-docs rename (or any deletion-only change)
-    # from bypassing the conservative source/build/workflow rules.
-    $files = @(& git diff --name-only --no-renames --diff-filter=ACMRD $BaseSha $HeadSha --)
+    # Renames are represented as a delete plus add. Type changes are included
+    # too. This prevents source-to-docs renames, deletion-only changes, and
+    # file/symlink/submodule transitions from bypassing conservative rules.
+    $files = @(& git diff --name-only --no-renames --diff-filter=ACMRDT $BaseSha $HeadSha --)
     if ($LASTEXITCODE -ne 0) {
         throw "could not list changed files for base=$BaseSha head=$HeadSha"
     }

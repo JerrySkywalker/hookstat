@@ -71,11 +71,14 @@ RUN_FULL_WINDOWS=true
 RUN_FULL_UBUNTU=true
 ```
 
-Deleted paths are classified too. Renames are deliberately evaluated as an old
-path deletion plus a new path addition, so a source-to-docs rename cannot turn
-into a documentation-only fast path. The legacy matrix jobs fetch full history
-because their lightweight validation compares the same base and head commits
-as the classifier.
+Deleted and Git type-change paths are classified too. Renames are deliberately
+evaluated as an old path deletion plus a new path addition, so a source-to-docs
+rename or file/symlink/submodule transition cannot turn into a documentation-
+only fast path. The legacy matrix jobs fetch full history because their
+lightweight validation compares the same base and head commits as the
+classifier. They also always start after a classifier failure and explicitly
+fail, rather than becoming skipped contexts that could leave unknown required
+checks unsafely satisfied or pending.
 
 The `workflow_dispatch` `full_matrix=true` input is also widening-only and is
 the explicit candidate-freeze final CI path. It never makes an unsafe change
