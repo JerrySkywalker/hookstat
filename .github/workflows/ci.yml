@@ -122,6 +122,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Lightweight required contexts run a base-to-head diff, so they need
+          # the same commit availability as the classifier job.
+          fetch-depth: 0
 
       - name: Assert checkout SHA
         shell: pwsh

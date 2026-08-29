@@ -12,9 +12,18 @@ if (-not (Test-Path -LiteralPath $classifier -PathType Leaf)) {
 }
 
 function Invoke-Classification {
-    param([Parameter(Mandatory = $true)][string[]]$Paths)
+    param(
+        [string[]]$Paths,
+        [string]$BaseSha,
+        [string]$HeadSha
+    )
 
-    $json = @(& $classifier -ChangedFile $Paths -OutputFormat Json)
+    $json = if (-not [string]::IsNullOrWhiteSpace($BaseSha)) {
+        @(& $classifier -BaseSha $BaseSha -HeadSha $HeadSha -OutputFormat Json)
+    }
+    else {
+        @(& $classifier -ChangedFile $Paths -OutputFormat Json)
+    }
     if (-not $?) {
         throw "classifier failed for [$($Paths -join ', ')]"
     }
@@ -94,7 +103,72 @@ Assert-Case -Name 'unknown_test' -Paths @('tests/future_subsystem.rs') -Expected
     UNKNOWN_RISK = $true; RUN_FULL_WINDOWS = $true; RUN_FULL_UBUNTU = $true
 }
 
+function Assert-GitDiffFixtures {
+    $tempRoot = [System.IO.Path]::GetTempPath()
+    $lab = Join-Path $tempRoot ('hookstat-classifier-fixtures-' + [guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Path (Join-Path $lab 'docs/process'), (Join-Path $lab 'src') -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $lab 'docs/process/guide.md'), "base`n")
+        [System.IO.File]::WriteAllText((Join-Path $lab 'src/future_subsystem.rs'), "base`n")
+        & git -C $lab init --quiet
+        if ($LASTEXITCODE -ne 0) { throw 'could not initialize classifier fixture repository' }
+        & git -C $lab config user.email 'hookstat-fixture@example.invalid'
+        & git -C $lab config user.name 'HookStat classifier fixture'
+        & git -C $lab add -- .
+        & git -C $lab commit --quiet -m 'fixture base'
+        if ($LASTEXITCODE -ne 0) { throw 'could not commit classifier fixture base' }
+        $base = (& git -C $lab rev-parse HEAD).Trim()
+
+        [System.IO.File]::WriteAllText((Join-Path $lab 'docs/process/guide.md'), "docs only`n")
+        & git -C $lab add -- docs/process/guide.md
+        & git -C $lab commit --quiet -m 'docs only'
+        if ($LASTEXITCODE -ne 0) { throw 'could not commit docs-only fixture' }
+        $docsHead = (& git -C $lab rev-parse HEAD).Trim()
+        Push-Location $lab
+        try {
+            $docsOnly = Invoke-Classification -BaseSha $base -HeadSha $docsHead
+        }
+        finally {
+            Pop-Location
+        }
+        Assert-Flag -Result $docsOnly -Name 'RISK_D' -Expected $true
+        Assert-Flag -Result $docsOnly -Name 'LIGHTWEIGHT_ONLY' -Expected $true
+        Assert-Flag -Result $docsOnly -Name 'RUN_FULL_WINDOWS' -Expected $false
+        'CLASSIFIER_FIXTURE_BASE_HEAD_DOCS_ONLY=PASS'
+
+        & git -C $lab checkout --quiet -b deletion-case $base
+        if ($LASTEXITCODE -ne 0) { throw 'could not create deletion fixture branch' }
+        & git -C $lab rm --quiet -- src/future_subsystem.rs
+        & git -C $lab commit --quiet -m 'delete future source'
+        if ($LASTEXITCODE -ne 0) { throw 'could not commit deletion fixture' }
+        $deletedHead = (& git -C $lab rev-parse HEAD).Trim()
+        Push-Location $lab
+        try {
+            $deletedSource = Invoke-Classification -BaseSha $base -HeadSha $deletedHead
+        }
+        finally {
+            Pop-Location
+        }
+        Assert-Flag -Result $deletedSource -Name 'UNKNOWN_RISK' -Expected $true
+        Assert-Flag -Result $deletedSource -Name 'RUN_FULL_WINDOWS' -Expected $true
+        Assert-Flag -Result $deletedSource -Name 'RUN_FULL_UBUNTU' -Expected $true
+        'CLASSIFIER_FIXTURE_BASE_HEAD_DELETED_SOURCE=PASS'
+    }
+    finally {
+        if (Test-Path -LiteralPath $lab) {
+            $resolvedLab = (Resolve-Path -LiteralPath $lab).Path
+            if (-not $resolvedLab.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw 'refusing to remove a classifier fixture outside the temporary root'
+            }
+            Remove-Item -LiteralPath $resolvedLab -Recurse -Force
+        }
+    }
+}
+
+Assert-GitDiffFixtures
+
 'UNKNOWN_FAILS_SAFE=true'
+'DELETED_SOURCE_FAILS_SAFE=true'
 'DOCS_ONLY_FULL_RUST_MATRIX=false'
 'UNKNOWN_RISK_FULL_MATRIX=true'
 'WINDOWS_SENSITIVE_WINDOWS_GATE=true'
