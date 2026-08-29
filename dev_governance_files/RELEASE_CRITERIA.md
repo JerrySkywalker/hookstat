@@ -1,4 +1,10 @@
-# HookStat v0.1 Release Criteria
+# Historical HookStat v0.1 Release Criteria
+
+> Historical record only. These v0.1 criteria are not the current v0.3.1
+> release gate and must not be interpreted as requiring v0.1 live
+> instrumentation or dogfood work for a future candidate. For v0.3.1 use
+> `ROADMAP_V031.md`, `QUALITY_GATES.md`, and the immutable-candidate process in
+> `docs/process/HOOKSTAT-CI-AUDIT-AND-RELEASE-FASTLANE.md`.
 
 A v0.1.0 release-ready candidate requires:
 
