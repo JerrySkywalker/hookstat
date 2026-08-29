@@ -36,16 +36,11 @@ pub(crate) use crate::ipc_client::{
 pub const WAL_MAGIC: [u8; 4] = *b"HSWL";
 pub const WAL_VERSION: u8 = 1;
 pub const MAX_WAL_BYTES: u64 = 64 * 1024 * 1024;
-// A producer may reuse a connection for at most 25 ms. Keep a bounded
-// broker-side scheduling margin so a Windows producer that is briefly
-// descheduled after its reuse check does not write to a pipe the broker has
-// just retired. The window still bounds an idle server connection and leaves
-// lifecycle delivery failure fail-open and no-replay.
-const CONNECTION_IDLE_READ_WINDOW: Duration = Duration::from_millis(250);
-// Diagnostics are single snapshot queries, not retained producer sessions.
-// Their short post-response window preserves the on-demand broker's bounded
-// idle shutdown even while lifecycle connections receive the wider margin.
-const DIAGNOSTICS_IDLE_READ_WINDOW: Duration = Duration::from_millis(25);
+// A producer may reuse a connection for at most 25 ms. This 50 ms broker-side
+// release remains bounded while allowing the common START -> short Hook ->
+// COMPLETE path to avoid a second connection. It also reclaims a stale Windows
+// slot before a later reconnect can consume the bounded connection cap.
+const CONNECTION_IDLE_READ_WINDOW: Duration = Duration::from_millis(50);
 const WAL_HEADER_BYTES: usize = 12;
 
 #[cfg(feature = "performance-harness")]
@@ -1671,12 +1666,12 @@ fn connection_loop(
                     &IpcFrame::BrokerDiagnosticsResponse(response),
                     Duration::from_millis(5),
                 );
-                idle_read_window = DIAGNOSTICS_IDLE_READ_WINDOW;
+                idle_read_window = CONNECTION_IDLE_READ_WINDOW;
             }
             Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::TimedOut => {
                 // The producer never reuses an acknowledged connection past
                 // 25 ms. A peer that has disappeared can still surface as a
-                // timeout on Windows, so release this bounded 250 ms lifecycle
+                // timeout on Windows, so release this bounded 50 ms lifecycle
                 // slot and let a later lifecycle frame reconnect. No original
                 // Hook lifetime is retained by the broker.
                 break;

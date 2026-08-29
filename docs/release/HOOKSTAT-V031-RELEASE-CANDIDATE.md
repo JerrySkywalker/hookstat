@@ -41,10 +41,11 @@ version. The transparent shim is non-admitted and cannot become a fallback.
 
 ## HSIP conformance and performance
 
-The broker retains an explicitly bounded 250 ms idle-read scheduling margin
-after the 25 ms producer connection-reuse cutoff. This is Windows hardening for
-a producer briefly descheduled between its stale-connection check and its next
-write; it does not replay an ambiguous lifecycle frame.
+The broker retains an explicitly bounded 50 ms idle-read window after the
+25 ms producer connection-reuse cutoff. This preserves the short adjacent
+START/COMPLETE reuse path while promptly reclaiming a stale Windows pipe slot
+before a later COMPLETE reconnects at the bounded connection cap. It does not
+replay an ambiguous lifecycle frame.
 
 The included reference producer exercises the same bounded local broker path as
 a future integration. It is a conformance instrument, never a runtime adapter
