@@ -240,6 +240,41 @@ fn startup_race_elects_one_broker_and_healthy_endpoint_is_reused() {
     host.lock().unwrap().take().unwrap().stop();
 }
 
+#[cfg(windows)]
+#[test]
+fn stale_windows_slots_release_before_reconnecting_completions_reach_the_connection_cap() {
+    let _guard = e2e_serial_guard();
+    let temporary = tempfile::tempdir().unwrap();
+    let mut configuration = config(temporary.path());
+    configuration.max_connections = 2;
+    let host = BrokerHost::start(configuration).unwrap();
+
+    // Windows can surface a producer-side pipe close as a bounded server read
+    // timeout. Fill the small cap with START connections, drop the clients, and
+    // wait past the explicit stale-slot window. The two COMPLETE reconnects
+    // must then be admitted rather than being dropped behind stale slots.
+    for client_id in 0..2 {
+        let mut client = started_client(&host);
+        assert_eq!(
+            client.send(&frame(client_id, 0)).unwrap(),
+            BrokerAcknowledgement::Accepted
+        );
+    }
+    thread::sleep(Duration::from_millis(75));
+    for client_id in 0..2 {
+        let mut client = started_client(&host);
+        assert_eq!(
+            client.send(&completion(client_id, 0)).unwrap(),
+            BrokerAcknowledgement::Accepted
+        );
+    }
+
+    let health = host.health();
+    assert_eq!(health.accepted, 4);
+    assert_eq!(health.dropped, 0);
+    host.stop();
+}
+
 #[cfg(unix)]
 #[test]
 fn unix_stale_socket_is_recovered_only_inside_the_secure_state_root() {

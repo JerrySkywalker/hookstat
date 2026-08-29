@@ -35,8 +35,9 @@ pub const RECENT_DIAGNOSTIC_SAMPLE_CAPACITY: u64 = 128;
 /// protocol constant rather than duplicating a private wire-layout guess.
 pub const IPC_FRAME_HEADER_BYTES: usize = 10;
 // The broker releases an idle server-side connection after a 50 ms bounded
-// read window. Reconnect before half that window so a long-running Hook never
-// sends a lifecycle frame over a connection whose delivery is ambiguous.
+// read window. Reconnect before that window so a long-running Hook never
+// deliberately sends a lifecycle frame over a connection whose delivery is
+// ambiguous; the bounded release also reclaims stale Windows pipe slots.
 const PRODUCER_CONNECTION_REUSE_WINDOW: Duration = Duration::from_millis(25);
 
 /// Bounded, opaque runtime-neutral lifecycle metadata. No command, stream,

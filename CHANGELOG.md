@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.3.1 — HSIP Infrastructure & Windows Hardening (release candidate)
+
+HookStat v0.3.1 is a release candidate, not a public release. It prepares the
+single-package HookStat substrate for publication without bundling, admitting,
+or modifying an external cooperative producer.
+
+### HSIP and recovery hardening
+
+- adds the in-repository HSIP v1 reference producer and conformance kit for
+  real bounded broker transport, START/COMPLETE correlation, duplicate and
+  out-of-order semantics, malformed/oversized ingress, broker absence/restart,
+  uncertain-write/ACK no-replay, privacy, and runtime-neutral authority checks;
+- preserves the frozen HookStat substrate performance gate of P95 <= 1 ms,
+  P99 <= 2 ms, and zero observation gaps; accepted G38 qualification retained
+  a worst accepted series of P50 0.1048 ms, P95 0.3254 ms, P99 0.7124 ms, and
+  diagnostic maximum 2.8944 ms;
+- hardens bounded, read-only broker diagnostics, reconnect/startup-race and WAL
+  valid-prefix/partial-tail recovery, duplicate protection, and process cleanup
+  without adding a third evidence path or activating the transparent shim;
+- retains a bounded 50 ms broker idle-read window after the 25 ms producer
+  reuse cutoff, preserving short START/COMPLETE reuse while reclaiming stale
+  Windows pipe slots before a later COMPLETE reconnects at the connection cap;
+  ambiguous lifecycle delivery remains fail-open and no-replay.
+
+### Availability, migration, and privacy
+
+- ships HSIP infrastructure and conformance only: a named external producer is
+  independently qualified and admitted before it can become authority; domains
+  without an admitted Native source or named IPC integration remain
+  `NOT_ADMITTED`;
+- preserves v0.3 ledgers, receipt history, historical failed/incomplete states,
+  aliases, revision history, and interface preferences through additive,
+  idempotent migration coverage;
+- keeps normal `codex` launch unchanged, keeps instrumentation/trust explicit,
+  and retains local-first privacy: no raw prompts, tool payloads, commands,
+  standard streams, credentials, or network telemetry are persisted.
+
+### Publication boundary
+
+- validates package and publish dry-run behavior only. crates.io publication,
+  a public `v0.3.1` tag, and a GitHub Release require explicit Owner
+  authorization.
+
 ## 0.3.0 — Codex Reliability Workbench
 
 HookStat v0.3.0 is the public release for the Codex Reliability Workbench and

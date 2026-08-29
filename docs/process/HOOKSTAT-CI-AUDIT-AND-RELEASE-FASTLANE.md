@@ -201,9 +201,10 @@ archive, path-dependency, development-proof exclusion, package build, isolated
 fresh install, packaged binaries, and transparent-shim admission checks remain
 the package authority.
 
-The wrapper adds a locked publish dry-run, the existing isolated v0.3.0 ledger
-migration fixture plus interface-preference preservation fixture, and disposable
-report/doctor smoke coverage. It produces a single result:
+The wrapper adds a locked publish dry-run, the isolated public-v0.3.0 binary
+and receipt-spool/journal upgrade proof, the ledger and interface-preference
+preservation fixtures, and disposable report/doctor smoke coverage. It
+produces a single result:
 
 ```text
 RELEASE_GATE_VERSION=1

@@ -89,3 +89,12 @@ converges with G38C only at G38D. A named external producer is not a G38C
 release prerequisite: any domain without an admitted Native or IPC producer
 remains `NOT_ADMITTED`. No live Owner Codex configuration was read for private
 content or mutated by this checkpoint.
+
+## v0.3.1 release contract
+
+G38D converged the controlled conformance and Windows-hardening proofs. In the
+v0.3.1 candidate, these diagnostics remain bounded and read-only: they expose
+authority/admission state, not fabricated runtime activity. `NOT_ADMITTED`,
+broker absence, and policy denial remain explicit states rather than failures
+or healthy zero-rate coverage. No diagnostic response is written to the WAL,
+ledger, or a coverage denominator.

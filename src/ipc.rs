@@ -38,7 +38,8 @@ pub const WAL_VERSION: u8 = 1;
 pub const MAX_WAL_BYTES: u64 = 64 * 1024 * 1024;
 // A producer may reuse a connection for at most 25 ms. This 50 ms broker-side
 // release remains bounded while allowing the common START -> short Hook ->
-// COMPLETE path to avoid a second connection.
+// COMPLETE path to avoid a second connection. It also reclaims a stale Windows
+// slot before a later reconnect can consume the bounded connection cap.
 const CONNECTION_IDLE_READ_WINDOW: Duration = Duration::from_millis(50);
 const WAL_HEADER_BYTES: usize = 12;
 
@@ -1602,10 +1603,11 @@ fn connection_loop(
     }
     #[cfg(feature = "performance-harness")]
     let stage_collector = core.qualification_stage_collector.as_ref().cloned();
+    let mut idle_read_window = CONNECTION_IDLE_READ_WINDOW;
     while !stopping.load(Ordering::Acquire) {
         #[cfg(feature = "performance-harness")]
         let read_started = stage_collector.as_ref().map(|_| Instant::now());
-        match read_frame_bounded(&mut stream, CONNECTION_IDLE_READ_WINDOW) {
+        match read_frame_bounded(&mut stream, idle_read_window) {
             Ok(frame) if frame.is_lifecycle() => {
                 let handling_started = Instant::now();
                 #[cfg(feature = "performance-harness")]
@@ -1651,6 +1653,7 @@ fn connection_loop(
                     );
                     collector.record(timing.sample());
                 }
+                idle_read_window = CONNECTION_IDLE_READ_WINDOW;
             }
             Ok(IpcFrame::BrokerDiagnosticsRequest) => {
                 // A read-only control query must not keep this on-demand
@@ -1663,11 +1666,12 @@ fn connection_loop(
                     &IpcFrame::BrokerDiagnosticsResponse(response),
                     Duration::from_millis(5),
                 );
+                idle_read_window = CONNECTION_IDLE_READ_WINDOW;
             }
             Err(IpcError::Io(error)) if error.kind() == io::ErrorKind::TimedOut => {
                 // The producer never reuses an acknowledged connection past
                 // 25 ms. A peer that has disappeared can still surface as a
-                // timeout on Windows, so release this bounded 50 ms server
+                // timeout on Windows, so release this bounded 50 ms lifecycle
                 // slot and let a later lifecycle frame reconnect. No original
                 // Hook lifetime is retained by the broker.
                 break;

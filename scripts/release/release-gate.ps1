@@ -128,6 +128,24 @@ try {
         if ($upgrade.OVERALL -ne 'PASS' -or $upgrade.UPGRADE_030_TO_031 -ne 'PASS') {
             throw 'upgrade fixture did not produce a passing receipt'
         }
+        foreach ($field in @(
+            'LEGACY_LEDGER_PRESERVED',
+            'LEGACY_RECEIPT_HISTORY_PRESERVED',
+            'COMPLETED_EVIDENCE_PRESERVED',
+            'FAILED_EVIDENCE_PRESERVED',
+            'INCOMPLETE_EVIDENCE_PRESERVED',
+            'ALIASES_PRESERVED',
+            'REVISION_EPOCHS_PRESERVED',
+            'INTERFACE_PREFERENCES_PRESERVED',
+            'V030_PUBLIC_BINARY',
+            'V030_RECEIPT_SPOOL_RECONCILED',
+            'V030_RECEIPT_JOURNAL_PRESERVED',
+            'CANDIDATE_RECEIPT_HISTORY_PRESERVED'
+        )) {
+            if ($upgrade.$field -ne $true) {
+                throw "upgrade fixture did not prove $field"
+            }
+        }
         $result.UPGRADE_030_TO_031 = 'PASS'
         $result.LEGACY_EVIDENCE_PRESERVED = 'PASS'
 
