@@ -4,6 +4,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      full_matrix:
+        description: Run the full final matrix for an immutable candidate SHA.
+        required: false
+        default: true
+        type: boolean
+      base_sha:
+        description: Optional full base SHA for the classifier on a manual candidate run.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -13,21 +24,109 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      base_sha: ${{ steps.classify.outputs.base_sha }}
+      head_sha: ${{ steps.classify.outputs.head_sha }}
+      risk_d: ${{ steps.classify.outputs.risk_d }}
+      risk_c: ${{ steps.classify.outputs.risk_c }}
+      risk_e: ${{ steps.classify.outputs.risk_e }}
+      risk_s: ${{ steps.classify.outputs.risk_s }}
+      risk_t: ${{ steps.classify.outputs.risk_t }}
+      risk_p: ${{ steps.classify.outputs.risk_p }}
+      risk_r: ${{ steps.classify.outputs.risk_r }}
+      windows_sensitive: ${{ steps.classify.outputs.windows_sensitive }}
+      unix_sensitive: ${{ steps.classify.outputs.unix_sensitive }}
+      package_surface_changed: ${{ steps.classify.outputs.package_surface_changed }}
+      performance_surface_changed: ${{ steps.classify.outputs.performance_surface_changed }}
+      workflow_changed: ${{ steps.classify.outputs.workflow_changed }}
+      unknown_risk: ${{ steps.classify.outputs.unknown_risk }}
+      run_full_windows: ${{ steps.classify.outputs.run_full_windows }}
+      run_full_ubuntu: ${{ steps.classify.outputs.run_full_ubuntu }}
+      run_rust_windows: ${{ steps.classify.outputs.run_rust_windows }}
+      run_rust_ubuntu: ${{ steps.classify.outputs.run_rust_ubuntu }}
+      lightweight_only: ${{ steps.classify.outputs.lightweight_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: classify
+        name: Classify changed risk
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -notmatch '^[0-9a-f]{40}$') {
+            throw 'could not resolve the checked-out SHA'
+          }
+
+          $eventName = '${{ github.event_name }}'
+          if ($eventName -eq 'pull_request') {
+            $base = '${{ github.event.pull_request.base.sha }}'
+          }
+          elseif ($eventName -eq 'workflow_dispatch') {
+            $base = '${{ inputs.base_sha }}'
+          }
+          else {
+            $base = '${{ github.event.before }}'
+          }
+          if ($base -notmatch '^[0-9a-f]{40}$') {
+            $base = (git rev-parse "$head^").Trim()
+          }
+          if ($LASTEXITCODE -ne 0 -or $base -notmatch '^[0-9a-f]{40}$') {
+            throw 'could not resolve a safe classifier base SHA'
+          }
+          git cat-file -e "$base^{commit}"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'classifier base SHA is not a commit in this checkout'
+          }
+
+          "base_sha=$base" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "head_sha=$head" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          & ./scripts/ci/classify-change.ps1 -BaseSha $base -HeadSha $head -OutputFormat GitHub
+
+          # A frozen candidate is intentionally dispatched with this input.
+          # It is a monotonic safety override: it can only widen validation.
+          if ($eventName -eq 'workflow_dispatch' -and '${{ inputs.full_matrix }}' -eq 'true') {
+            foreach ($name in 'run_full_windows', 'run_full_ubuntu', 'run_rust_windows', 'run_rust_ubuntu') {
+              "$name=true" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            }
+            'CANDIDATE_FULL_MATRIX_OVERRIDE=true'
+          }
+
+      - name: Validate diff whitespace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git diff --check '${{ steps.classify.outputs.base_sha }}' '${{ steps.classify.outputs.head_sha }}' --
+          if ($LASTEXITCODE -ne 0) { throw 'diff whitespace validation failed' }
+
+      - name: Classifier fixtures
+        shell: pwsh
+        run: pwsh ./scripts/ci/test-classify-change.ps1
+
+      - name: Workflow structure sanity
+        shell: pwsh
+        run: pwsh ./scripts/ci/test-workflow-sanity.ps1
+
+  # Keep this job id and matrix values stable. Branch-protection contexts were
+  # unprovable during the audit (HTTP 401), so CI / rust (windows-latest) and
+  # CI / rust (ubuntu-latest) must remain satisfiable for every pull request.
   rust:
+    if: ${{ always() }}
+    needs: changes
     strategy:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install pinned Rust toolchain
-        shell: pwsh
-        run: |
-          rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
-          rustup override set 1.97.1
-          rustc --version
-          cargo --version
+        with:
+          # Lightweight required contexts run a base-to-head diff, so they need
+          # the same commit availability as the classifier job.
+          fetch-depth: 0
 
       - name: Assert checkout SHA
         shell: pwsh
@@ -36,14 +135,42 @@ jobs:
           $expected = "${{ github.sha }}"
           if ($actual -ne $expected) { throw "checkout SHA mismatch: actual=$actual expected=$expected" }
 
+      - name: Fail closed when classifier is incomplete
+        if: ${{ needs.changes.result != 'success' }}
+        shell: pwsh
+        run: throw 'changes job did not pass; refusing to satisfy this legacy required context'
+
+      - name: Lightweight diff validation
+        if: ${{ needs.changes.result == 'success' && !((matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true')) }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git diff --check '${{ needs.changes.outputs.base_sha }}' '${{ needs.changes.outputs.head_sha }}' --
+          if ($LASTEXITCODE -ne 0) { throw 'lightweight diff validation failed' }
+          'RUST_TOOLCHAIN_NOT_INSTALLED=true'
+          'LIGHTWEIGHT_REQUIRED_CONTEXT=PASS'
+
+      - name: Install pinned Rust toolchain
+        if: ${{ needs.changes.result == 'success' && ((matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true')) }}
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.97.1
+          rustc --version
+          cargo --version
+
       - name: Format
+        if: ${{ needs.changes.result == 'success' && ((matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true')) }}
         run: cargo fmt --check
 
       - name: Clippy
+        if: ${{ needs.changes.result == 'success' && ((matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true')) }}
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Test
+        if: ${{ needs.changes.result == 'success' && ((matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true')) }}
         run: cargo test --all-targets --locked
 
       - name: Locked build
+        if: ${{ needs.changes.result == 'success' && ((matrix.os == 'windows-latest' && needs.changes.outputs.run_rust_windows == 'true') || (matrix.os == 'ubuntu-latest' && needs.changes.outputs.run_rust_ubuntu == 'true')) }}
         run: cargo build --locked
