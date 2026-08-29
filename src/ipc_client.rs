@@ -34,10 +34,10 @@ pub const RECENT_DIAGNOSTIC_SAMPLE_CAPACITY: u64 = 128;
 /// flags, and payload length. Reference conformance fixtures use this public
 /// protocol constant rather than duplicating a private wire-layout guess.
 pub const IPC_FRAME_HEADER_BYTES: usize = 10;
-// The broker releases an idle server-side connection after a 250 ms bounded
-// read window. Reconnect well before that window so a long-running Hook never
+// The broker releases an idle server-side connection after a 50 ms bounded
+// read window. Reconnect before that window so a long-running Hook never
 // deliberately sends a lifecycle frame over a connection whose delivery is
-// ambiguous; the broker retains a bounded scheduling margin after this check.
+// ambiguous; the bounded release also reclaims stale Windows pipe slots.
 const PRODUCER_CONNECTION_REUSE_WINDOW: Duration = Duration::from_millis(25);
 
 /// Bounded, opaque runtime-neutral lifecycle metadata. No command, stream,

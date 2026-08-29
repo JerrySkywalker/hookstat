@@ -19,10 +19,10 @@ or modifying an external cooperative producer.
 - hardens bounded, read-only broker diagnostics, reconnect/startup-race and WAL
   valid-prefix/partial-tail recovery, duplicate protection, and process cleanup
   without adding a third evidence path or activating the transparent shim;
-- retains a bounded 250 ms broker idle-read scheduling margin after the 25 ms
-  producer reuse cutoff, preventing a briefly descheduled Windows producer
-  from writing to a just-retired cached pipe while preserving fail-open,
-  no-replay delivery semantics.
+- retains a bounded 50 ms broker idle-read window after the 25 ms producer
+  reuse cutoff, preserving short START/COMPLETE reuse while reclaiming stale
+  Windows pipe slots before a later COMPLETE reconnects at the connection cap;
+  ambiguous lifecycle delivery remains fail-open and no-replay.
 
 ### Availability, migration, and privacy
 
