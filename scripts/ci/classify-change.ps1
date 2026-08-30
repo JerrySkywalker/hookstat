@@ -94,7 +94,12 @@ foreach ($path in $normalizedFiles) {
 
     # Documentation and governance are deliberately recognized first. Their
     # classification is safe only while they remain outside build/release paths.
+    # AGENTS.md and goals/** are repository execution contracts: they constrain
+    # contributor behavior but are not consumed by Cargo or the executable.
+    # Other unknown paths remain full-matrix risk by default.
     if ($path -match '^(docs/|dev_governance_files/)' -or
+        $path -eq 'AGENTS.md' -or
+        $path -match '^goals/' -or
         $path -match '^(README|CHANGELOG|CONTRIBUTING|CODE_OF_CONDUCT|SECURITY)\.md$') {
         Set-True -State $state -Names @('RISK_D')
         continue
