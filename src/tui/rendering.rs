@@ -1200,9 +1200,12 @@ fn render_runtime_handlers(
         event.handlers.len(),
         rows_per_viewport,
     );
-    let body = event.handlers[start..end]
+    let body = event
+        .handlers
         .iter()
         .enumerate()
+        .skip(start)
+        .take(end - start)
         .map(|(index, handler)| {
             let marker = if app
                 .selected_runtime_handler()
@@ -1222,8 +1225,14 @@ fn render_runtime_handlers(
                 " "
             };
             format!(
-                "{marker}[{state}] {}\n  {} · {} · {}\n  {}: {} · {}: {}",
+                "{marker}[{state}] {}\n  {}: {} · {} · {} · {}\n  {}: {} · {}: {}",
                 runtime_handler_label(locale, index, handler),
+                t(locale, MessageKey::FieldEnabled),
+                if handler.enabled {
+                    t(locale, MessageKey::FieldEnabled)
+                } else {
+                    t(locale, MessageKey::FieldDisabled)
+                },
                 handler.source.as_deref().unwrap_or("—"),
                 runtime_handler_kind(locale, &handler.handler_kind),
                 runtime_handler_mode(locale, handler.mode),
@@ -1551,17 +1560,6 @@ fn runtime_event_health(
     if joins.is_empty() {
         return t(locale, MessageKey::StateReliabilityUnavailable).to_owned();
     }
-    let matched_health = event
-        .handlers
-        .iter()
-        .filter_map(|handler| app.runtime_handler_reliability_row(event, handler))
-        .map(|row| presentation_health(row.coverage, row.failed_runs, row.sample_count))
-        .fold(None, |worst, health| {
-            Some(conservative_health(worst, health))
-        });
-    if let Some(health) = matched_health {
-        return health_name(locale, health).to_owned();
-    }
     if joins
         .iter()
         .any(|(_, join)| matches!(join, ReliabilityJoinState::Unavailable))
@@ -1582,11 +1580,22 @@ fn runtime_event_health(
     }
     if joins
         .iter()
-        .all(|(_, join)| matches!(join, ReliabilityJoinState::NoHistory))
+        .any(|(_, join)| matches!(join, ReliabilityJoinState::NoHistory))
     {
         return t(locale, MessageKey::StateNotObserved).to_owned();
     }
-    t(locale, MessageKey::StateObservedInSelectedPeriod).to_owned()
+    let matched_health = event
+        .handlers
+        .iter()
+        .filter_map(|handler| app.runtime_handler_reliability_row(event, handler))
+        .map(|row| presentation_health(row.coverage, row.failed_runs, row.sample_count))
+        .fold(None, |worst, health| {
+            Some(conservative_health(worst, health))
+        });
+    if let Some(health) = matched_health {
+        return health_name(locale, health).to_owned();
+    }
+    t(locale, MessageKey::StateReliabilityUnavailable).to_owned()
 }
 
 fn conservative_health(current: Option<Health>, next: Health) -> Health {
@@ -3122,6 +3131,24 @@ mod tests {
             );
         }
 
+        let mut mixed = runtime_health_app(EvidenceCoverage::Complete, TerminalStatus::Completed);
+        let mut mixed_catalog = control_center_catalog();
+        let event = mixed_catalog
+            .events
+            .iter_mut()
+            .find(|event| event.runtime_event_name == "PreToolUse")
+            .unwrap();
+        let mut unobserved = event.handlers[0].clone();
+        unobserved.runtime_catalog_id = "fixture:0:unobserved".into();
+        unobserved.reliability_handler_key = Some("hk_unobserved".into());
+        event.handlers.push(unobserved);
+        mixed.apply_runtime_catalog(mixed_catalog);
+        let event = mixed.selected_runtime_event().unwrap().clone();
+        assert_eq!(
+            runtime_event_health(ResolvedLocale::EnUs, &mixed, &event),
+            t(ResolvedLocale::EnUs, MessageKey::StateNotObserved)
+        );
+
         let mut app = runtime_health_app(EvidenceCoverage::Complete, TerminalStatus::Failed);
         app.reject_refresh();
         let events = rendered(app.clone(), ResolvedLocale::EnUs, 120, 36);
@@ -3139,6 +3166,15 @@ mod tests {
         unknown.handle(super::super::keymap::Command::Enter);
         let detail = rendered(unknown, ResolvedLocale::EnUs, 100, 48);
         assert!(detail.contains("Handler type: future_handler"));
+
+        let mut disabled = control_center_app();
+        for _ in 0..4 {
+            disabled.handle(super::super::keymap::Command::Down);
+        }
+        disabled.handle(super::super::keymap::Command::Enter);
+        let handlers = rendered(disabled, ResolvedLocale::EnUs, 100, 36);
+        assert!(handlers.contains("Enabled: Disabled"));
+        assert!(handlers.contains("Untrusted"));
     }
 
     #[test]
@@ -3162,6 +3198,27 @@ mod tests {
         handlers.handle(super::super::keymap::Command::PageDown);
         assert_eq!(handlers.runtime_handler_selection_index(), Some(5));
         assert!(rendered(handlers, ResolvedLocale::EnUs, 44, 24).contains("handler-05"));
+
+        let mut fallback_catalog = many_handlers_catalog();
+        let event = fallback_catalog
+            .events
+            .iter_mut()
+            .find(|event| event.runtime_event_name == "PreToolUse")
+            .unwrap();
+        for handler in &mut event.handlers {
+            handler.handler_kind = crate::runtime_presentation::RuntimeHandlerKind::Prompt;
+        }
+        let mut fallback = App::from_report(synthetic_fixture_report(1_000));
+        fallback.apply_runtime_catalog(fallback_catalog);
+        fallback.handle(super::super::keymap::Command::Down);
+        fallback.handle(super::super::keymap::Command::Enter);
+        for _ in 0..5 {
+            fallback.handle(super::super::keymap::Command::Down);
+        }
+        fallback.handle(super::super::keymap::Command::Enter);
+        fallback.handle(super::super::keymap::Command::PageDown);
+        let fallback_rendered = rendered(fallback, ResolvedLocale::EnUs, 44, 24);
+        assert!(fallback_rendered.contains("hook 6"));
     }
 
     #[test]
