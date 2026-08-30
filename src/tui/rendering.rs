@@ -885,12 +885,14 @@ fn render_change_detail(
         timeline_rows
     };
     let timeline = format!(
-        "{}\n{}: {}\n{}: {}\n\n{timeline_rows}",
+        "{}\n{}: {}\n{}: {}\n{}: {}\n\n{timeline_rows}",
         t(locale, MessageKey::SectionTechnicalMetadata),
         t(locale, MessageKey::FieldInternalIdentity),
         detail.internal_ref.handler_key,
         t(locale, MessageKey::FieldFullRevision),
         current_revision,
+        t(locale, MessageKey::FieldMetricScope),
+        revision_timeline_scope(locale),
     );
     if area.height < 26 || area.width < 72 {
         facts.push(Line::from(""));
@@ -1916,33 +1918,44 @@ fn revision_detail(
     comparison: &crate::analytics::RevisionComparison,
 ) -> String {
     let current = format!(
-        "{} {} · {}",
-        t(locale, MessageKey::FieldRevision),
+        "{}: {} · {}\n  {}: {}",
+        t(locale, MessageKey::FieldCurrentRevision),
         short_revision(&comparison.current.revision),
         failure_rate_with_sample(
             locale,
             comparison.current.failure_rate_percent,
             comparison.current.failure_sample_count,
         ),
+        t(locale, MessageKey::FieldMetricScope),
+        current_revision_scope(locale),
     );
     let previous = comparison.previous.as_ref().map_or_else(
-        || intelligence_availability_name(locale, comparison.availability).to_owned(),
+        || {
+            format!(
+                "{}: {}\n  {}: {}",
+                t(locale, MessageKey::FieldPreviousRevision),
+                intelligence_availability_name(locale, comparison.availability),
+                t(locale, MessageKey::FieldMetricScope),
+                previous_revision_scope(locale),
+            )
+        },
         |previous| {
             format!(
-                "{} {} · {}",
-                t(locale, MessageKey::FieldPreviousPeriod),
+                "{}: {} · {}\n  {}: {}",
+                t(locale, MessageKey::FieldPreviousRevision),
                 short_revision(&previous.revision),
                 failure_rate_with_sample(
                     locale,
                     previous.failure_rate_percent,
                     previous.failure_sample_count,
                 ),
+                t(locale, MessageKey::FieldMetricScope),
+                previous_revision_scope(locale),
             )
         },
     );
     format!(
-        "{}\n{current}\n{previous}\n{}: {}",
-        revision_scope(locale),
+        "{current}\n{previous}\n{}: {}",
         t(locale, MessageKey::FieldClassification),
         trend_summary_from_classification(
             locale,
@@ -2027,8 +2040,16 @@ fn trend_scope(locale: ResolvedLocale, window: TimeWindow) -> String {
     t(locale, MessageKey::ScopePeriodAllRevisions).replace("{period}", window_name(locale, window))
 }
 
-fn revision_scope(locale: ResolvedLocale) -> &'static str {
-    t(locale, MessageKey::ScopeAllObservedRevisionComparison)
+fn current_revision_scope(locale: ResolvedLocale) -> &'static str {
+    t(locale, MessageKey::ScopeAllObservedCurrentRevision)
+}
+
+fn previous_revision_scope(locale: ResolvedLocale) -> &'static str {
+    t(locale, MessageKey::ScopeAllObservedPreviousRevision)
+}
+
+fn revision_timeline_scope(locale: ResolvedLocale) -> &'static str {
+    t(locale, MessageKey::ScopeAllObservedRevisionTimeline)
 }
 
 fn terminal_denominator(locale: ResolvedLocale, samples: u64) -> String {
@@ -2352,12 +2373,29 @@ mod tests {
         assert!(english.contains("Reason:"));
         assert!(english.contains("n="));
 
-        let chinese = rendered(app, ResolvedLocale::ZhCn, 100, 40).replace(' ', "");
+        let detail = app
+            .selected_handler()
+            .and_then(|reference| app.view_model().and_then(|view| view.detail(reference)))
+            .expect("synthetic fixture selects a hook detail");
+        let english_revision = revision_detail(ResolvedLocale::EnUs, &detail.revision_comparison);
+        assert!(english_revision.contains("Current revision:"));
+        assert!(english_revision.contains("All observed time, current revision"));
+        assert!(english_revision.contains("Previous revision:"));
+        assert!(english_revision.contains("All observed time, previous revision"));
+
+        let chinese = rendered(app.clone(), ResolvedLocale::ZhCn, 100, 40).replace(' ', "");
         assert!(chinese.contains("可靠性智能"));
         assert!(chinese.contains("趋势"));
         assert!(chinese.contains("风险"));
         assert!(chinese.contains("原因:"));
         assert!(chinese.contains("样本="));
+
+        let chinese_revision =
+            revision_detail(ResolvedLocale::ZhCn, &detail.revision_comparison).replace(' ', "");
+        assert!(chinese_revision.contains("当前修订版本:"));
+        assert!(chinese_revision.contains("全部观测时间，当前修订版本"));
+        assert!(chinese_revision.contains("上一修订版本:"));
+        assert!(chinese_revision.contains("全部观测时间，上一修订版本"));
     }
 
     #[test]
@@ -2569,8 +2607,16 @@ mod tests {
             "Selected Last 7 days, all revisions"
         );
         assert_eq!(
-            revision_scope(ResolvedLocale::EnUs),
-            "All observed time, current/previous revision"
+            current_revision_scope(ResolvedLocale::EnUs),
+            "All observed time, current revision"
+        );
+        assert_eq!(
+            previous_revision_scope(ResolvedLocale::EnUs),
+            "All observed time, previous revision"
+        );
+        assert_eq!(
+            revision_timeline_scope(ResolvedLocale::EnUs),
+            "All observed time, revision timeline"
         );
         assert!(
             coverage_summary(ResolvedLocale::EnUs, EvidenceCoverage::Partial)

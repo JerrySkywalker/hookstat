@@ -41,6 +41,8 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::FieldEvent => "Event",
         MessageKey::FieldInternalIdentity => "Internal identity",
         MessageKey::FieldRevision => "Revision",
+        MessageKey::FieldCurrentRevision => "Current revision",
+        MessageKey::FieldPreviousRevision => "Previous revision",
         MessageKey::FieldSuccesses => "Successes",
         MessageKey::FieldFailures => "Failures",
         MessageKey::FieldSamples => "Terminal samples",
@@ -274,9 +276,9 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::ScopeSelectedAllRevisions => "Selected {period}, all revisions",
         MessageKey::ScopePeriodAllRevisions => "{period}, all revisions",
         MessageKey::ScopeAllObservedAllRevisions => "All observed time, all revisions",
-        MessageKey::ScopeAllObservedRevisionComparison => {
-            "All observed time, current/previous revision"
-        }
+        MessageKey::ScopeAllObservedCurrentRevision => "All observed time, current revision",
+        MessageKey::ScopeAllObservedPreviousRevision => "All observed time, previous revision",
+        MessageKey::ScopeAllObservedRevisionTimeline => "All observed time, revision timeline",
         MessageKey::ScopeTerminalSamples => "{samples} in selected scope",
         MessageKey::CoverageExplanationComplete => "Terminal evidence is complete in this scope.",
         MessageKey::CoverageExplanationPartial => {
