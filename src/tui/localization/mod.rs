@@ -73,6 +73,7 @@ pub enum MessageKey {
     SectionAlias,
     SectionDiagnostics,
     SectionInterface,
+    SectionTechnicalMetadata,
     FieldRuntime,
     FieldCoverage,
     FieldTotalRuns,
@@ -82,6 +83,8 @@ pub enum MessageKey {
     FieldEvent,
     FieldInternalIdentity,
     FieldRevision,
+    FieldCurrentRevision,
+    FieldPreviousRevision,
     FieldSuccesses,
     FieldFailures,
     FieldSamples,
@@ -111,6 +114,10 @@ pub enum MessageKey {
     FieldDataFreshness,
     FieldRevisionCount,
     FieldObservationStatus,
+    FieldMetricScope,
+    FieldChangeOccurred,
+    FieldReason,
+    FieldFullRevision,
     ColumnName,
     ColumnEvent,
     ColumnRuntime,
@@ -263,6 +270,37 @@ pub enum MessageKey {
     HelpSettings,
     HelpRefresh,
     MinimumTerminal,
+    FailureRateUnavailableZeroSamples,
+    ScopeSelectedAllRevisions,
+    ScopePeriodAllRevisions,
+    ScopeAllObservedAllRevisions,
+    ScopeAllObservedCurrentRevision,
+    ScopeAllObservedPreviousRevision,
+    ScopeAllObservedRevisionTimeline,
+    ScopeTerminalSamples,
+    CoverageExplanationComplete,
+    CoverageExplanationPartial,
+    CoverageExplanationSyncOnly,
+    CoverageExplanationBestEffort,
+    CoverageExplanationUnknown,
+    CoverageExplanationNotAdmitted,
+    CoverageExplanationSyntheticFixture,
+    RiskLow,
+    RiskGuarded,
+    RiskElevated,
+    RiskHigh,
+    RiskReasonFailures,
+    RiskReasonNoTerminalSamples,
+    RiskReasonComplete,
+    RiskReasonIncomplete,
+    TimeUnavailable,
+    TimeJustNow,
+    TimeMinuteAgo,
+    TimeMinutesAgo,
+    TimeHourAgo,
+    TimeHoursAgo,
+    TimeDayAgo,
+    TimeDaysAgo,
 }
 
 #[cfg(test)]
@@ -296,6 +334,7 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::SectionAlias,
     MessageKey::SectionDiagnostics,
     MessageKey::SectionInterface,
+    MessageKey::SectionTechnicalMetadata,
     MessageKey::FieldRuntime,
     MessageKey::FieldCoverage,
     MessageKey::FieldTotalRuns,
@@ -305,6 +344,8 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::FieldEvent,
     MessageKey::FieldInternalIdentity,
     MessageKey::FieldRevision,
+    MessageKey::FieldCurrentRevision,
+    MessageKey::FieldPreviousRevision,
     MessageKey::FieldSuccesses,
     MessageKey::FieldFailures,
     MessageKey::FieldSamples,
@@ -334,6 +375,10 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::FieldDataFreshness,
     MessageKey::FieldRevisionCount,
     MessageKey::FieldObservationStatus,
+    MessageKey::FieldMetricScope,
+    MessageKey::FieldChangeOccurred,
+    MessageKey::FieldReason,
+    MessageKey::FieldFullRevision,
     MessageKey::ColumnName,
     MessageKey::ColumnEvent,
     MessageKey::ColumnRuntime,
@@ -486,6 +531,37 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::HelpSettings,
     MessageKey::HelpRefresh,
     MessageKey::MinimumTerminal,
+    MessageKey::FailureRateUnavailableZeroSamples,
+    MessageKey::ScopeSelectedAllRevisions,
+    MessageKey::ScopePeriodAllRevisions,
+    MessageKey::ScopeAllObservedAllRevisions,
+    MessageKey::ScopeAllObservedCurrentRevision,
+    MessageKey::ScopeAllObservedPreviousRevision,
+    MessageKey::ScopeAllObservedRevisionTimeline,
+    MessageKey::ScopeTerminalSamples,
+    MessageKey::CoverageExplanationComplete,
+    MessageKey::CoverageExplanationPartial,
+    MessageKey::CoverageExplanationSyncOnly,
+    MessageKey::CoverageExplanationBestEffort,
+    MessageKey::CoverageExplanationUnknown,
+    MessageKey::CoverageExplanationNotAdmitted,
+    MessageKey::CoverageExplanationSyntheticFixture,
+    MessageKey::RiskLow,
+    MessageKey::RiskGuarded,
+    MessageKey::RiskElevated,
+    MessageKey::RiskHigh,
+    MessageKey::RiskReasonFailures,
+    MessageKey::RiskReasonNoTerminalSamples,
+    MessageKey::RiskReasonComplete,
+    MessageKey::RiskReasonIncomplete,
+    MessageKey::TimeUnavailable,
+    MessageKey::TimeJustNow,
+    MessageKey::TimeMinuteAgo,
+    MessageKey::TimeMinutesAgo,
+    MessageKey::TimeHourAgo,
+    MessageKey::TimeHoursAgo,
+    MessageKey::TimeDayAgo,
+    MessageKey::TimeDaysAgo,
 ];
 
 impl InterfaceLanguage {
@@ -761,6 +837,9 @@ pub fn sample_count(locale: ResolvedLocale, count: u64) -> String {
 }
 
 pub fn failure_rate_with_sample(locale: ResolvedLocale, rate: f64, samples: u64) -> String {
+    if samples == 0 {
+        return t(locale, MessageKey::FailureRateUnavailableZeroSamples).to_owned();
+    }
     t(locale, MessageKey::RateWithSample)
         .replace("{rate}", &format!("{rate:.2}"))
         .replace("{samples}", &sample_count(locale, samples))
@@ -788,6 +867,18 @@ mod tests {
         let language = LanguageState::resolve(InterfaceLanguage::Auto, Some("fr-FR"), None, None);
         assert_eq!(language.resolved, ResolvedLocale::EnUs);
         assert_eq!(language.source, LocaleSource::Fallback);
+    }
+
+    #[test]
+    fn zero_terminal_samples_are_unavailable_not_healthy() {
+        let english = failure_rate_with_sample(ResolvedLocale::EnUs, 0.0, 0);
+        assert!(english.contains("unavailable"));
+        assert!(english.contains("0 terminal samples"));
+        assert!(!english.contains("0.00%"));
+
+        let chinese = failure_rate_with_sample(ResolvedLocale::ZhCn, 0.0, 0);
+        assert!(chinese.contains("不可用"));
+        assert!(!chinese.contains("0.00%"));
     }
 
     #[test]
