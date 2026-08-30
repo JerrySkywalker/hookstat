@@ -1409,43 +1409,133 @@ fn render_runtime_hook_detail(
     } else {
         runtime_handler_health(locale, app, event, handler)
     };
-    let observation = app.matched_runtime_catalog_history().map_or_else(
+    let observation = app.matched_reliability_detail().map_or_else(
         || t(locale, MessageKey::StateReliabilityUnavailable).to_owned(),
-        |history| {
-            format!(
-                "{}\n{}\n{}\n{}",
-                key_value_text(
-                    locale,
-                    MessageKey::FieldFirstSeen,
-                    &format_human_time(locale, history.first_seen_unix_ms, presentation_now(app))
-                ),
-                key_value_text(
-                    locale,
-                    MessageKey::FieldLastSeen,
-                    &format_human_time(locale, history.last_seen_unix_ms, presentation_now(app))
-                ),
-                key_value_text(
-                    locale,
-                    MessageKey::FieldLatestEvidence,
-                    &format_human_time(
+        |detail| {
+            let mut facts = vec![key_value_text(
+                locale,
+                MessageKey::FieldCurrentRevision,
+                &short_revision(&detail.revision),
+            )];
+            if let Some(history) = app.matched_runtime_catalog_history() {
+                facts.extend([
+                    key_value_text(
                         locale,
-                        history.latest_evidence_unix_ms,
-                        presentation_now(app)
-                    )
-                ),
-                key_value_text(
+                        MessageKey::FieldFirstSeen,
+                        &format_human_time(
+                            locale,
+                            history.first_seen_unix_ms,
+                            presentation_now(app),
+                        ),
+                    ),
+                    key_value_text(
+                        locale,
+                        MessageKey::FieldLastSeen,
+                        &format_human_time(
+                            locale,
+                            history.last_seen_unix_ms,
+                            presentation_now(app),
+                        ),
+                    ),
+                    key_value_text(
+                        locale,
+                        MessageKey::FieldLatestEvidence,
+                        &format_human_time(
+                            locale,
+                            history.latest_evidence_unix_ms,
+                            presentation_now(app),
+                        ),
+                    ),
+                    key_value_text(
+                        locale,
+                        MessageKey::FieldRevisionCount,
+                        &history.revision_count.to_string(),
+                    ),
+                    key_value_text(
+                        locale,
+                        MessageKey::FieldObservationStatus,
+                        catalog_observation_status(locale, history.historical_status),
+                    ),
+                ]);
+            } else {
+                facts.push(key_value_text(
                     locale,
-                    MessageKey::FieldRevisionCount,
-                    &history.revision_count.to_string()
-                ),
-            )
+                    MessageKey::FieldObservationStatus,
+                    t(locale, MessageKey::StateReliabilityUnavailable),
+                ));
+            }
+            facts.join("\n")
         },
     );
     let advanced = app.matched_reliability_detail().map_or_else(
         || t(locale, MessageKey::StateReliabilityUnavailable).to_owned(),
         |detail| {
+            let recent = if detail.recent_failures.is_empty() {
+                t(locale, MessageKey::StateNoRecentFailures).to_owned()
+            } else {
+                detail
+                    .recent_failures
+                    .iter()
+                    .map(|failure| {
+                        format!(
+                            "{} · {} · {}",
+                            format_human_time(
+                                locale,
+                                failure.occurred_at_unix_ms,
+                                presentation_now(app),
+                            ),
+                            terminal_status_name(locale, failure.status),
+                            failure.bounded_fingerprint.as_deref().unwrap_or_default(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            let trends = detail
+                .trends
+                .iter()
+                .map(|trend| trend_detail(locale, trend))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let fingerprints = if detail.failure_fingerprints.is_empty() {
+                t(locale, MessageKey::StateNoRecentFailures).to_owned()
+            } else {
+                detail
+                    .failure_fingerprints
+                    .iter()
+                    .map(|cluster| {
+                        format!(
+                            "{}: {} · {} {} · {} {}",
+                            fingerprint_name(locale, cluster.kind),
+                            cluster.occurrences,
+                            t(locale, MessageKey::FieldFirstSeen),
+                            format_human_time(
+                                locale,
+                                cluster.first_occurred_at_unix_ms,
+                                presentation_now(app),
+                            ),
+                            t(locale, MessageKey::FieldLatestEvidence),
+                            format_human_time(
+                                locale,
+                                cluster.latest_occurred_at_unix_ms,
+                                presentation_now(app),
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
             format!(
-                "{}: {}\n{}: {}\n{}: {}",
+                "{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}: {}\n{}: {}\n{}: {}",
+                t(locale, MessageKey::SectionRecentFailures),
+                recent,
+                t(locale, MessageKey::SectionTrends),
+                trends,
+                t(locale, MessageKey::SectionRevisionComparison),
+                revision_detail(locale, &detail.revision_comparison),
+                t(locale, MessageKey::SectionFailureFingerprints),
+                fingerprints,
+                t(locale, MessageKey::SectionTechnicalMetadata),
                 t(locale, MessageKey::FieldRisk),
                 risk_score(locale, detail.risk.score),
                 t(locale, MessageKey::FieldReason),
@@ -1468,7 +1558,7 @@ fn render_runtime_hook_detail(
         reliability,
         t(locale, MessageKey::SectionObservationHistory),
         observation,
-        t(locale, MessageKey::SectionTechnicalMetadata),
+        t(locale, MessageKey::SectionIntelligence),
         advanced,
     );
     let body = prepend_runtime_resource_notices(body, app, locale);
@@ -2889,7 +2979,8 @@ mod tests {
             duration_ms: None,
             error_fingerprint: None,
         };
-        let mut report = instrumented_report(&[value], 1_000, TimeWindow::All, 0, 0);
+        let mut report =
+            instrumented_report(std::slice::from_ref(&value), 1_000, TimeWindow::All, 0, 0);
         report.qualification.coverage = coverage;
         let mut app = App::from_snapshot(super::super::app::RefreshSnapshot::from_report(report));
         assert_eq!(
@@ -2902,6 +2993,12 @@ mod tests {
                 .unwrap()
         );
         app.apply_runtime_catalog(catalog);
+        app.apply_changes(super::super::app::ChangesSnapshot::from_values(
+            vec![value],
+            1_000,
+            TimeWindow::All,
+            coverage,
+        ));
         app.handle(super::super::keymap::Command::Down);
         app.handle(super::super::keymap::Command::Enter);
         for _ in 0..6 {
@@ -3158,6 +3255,20 @@ mod tests {
         let detail = rendered(app, ResolvedLocale::EnUs, 120, 100);
         assert!(detail.contains("Health: ! Degraded"));
         assert!(detail.contains("Health explanation"));
+
+        let mut intelligence =
+            runtime_health_app(EvidenceCoverage::Complete, TerminalStatus::Failed);
+        intelligence.handle(super::super::keymap::Command::Enter);
+        intelligence.handle(super::super::keymap::Command::Enter);
+        let detail = rendered(intelligence, ResolvedLocale::EnUs, 140, 150);
+        assert!(detail.contains("Current revision"));
+        assert!(detail.contains("Observation status"));
+        assert!(detail.contains("Reliability intelligence"));
+        assert!(detail.contains("Recent failures"));
+        assert!(detail.contains("Trends"));
+        assert!(detail.contains("Revision comparison"));
+        assert!(detail.contains("Failure fingerprints"));
+        assert!(detail.contains("Advanced technical metadata"));
 
         let mut unknown = control_center_app();
         unknown.handle(super::super::keymap::Command::Enter);
