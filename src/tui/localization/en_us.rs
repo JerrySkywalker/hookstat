@@ -36,6 +36,10 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::SectionReliabilitySummary => "Reliability summary",
         MessageKey::SectionObservationHistory => "Observation history",
         MessageKey::SectionRuntimeIssues => "Runtime issues",
+        MessageKey::SectionHookManagement => "Hook management",
+        MessageKey::StateHookManagementUnavailable => {
+            "Read-only: no verified external enable/disable route."
+        }
         MessageKey::FieldRuntime => "Runtime",
         MessageKey::FieldCoverage => "Coverage",
         MessageKey::FieldTotalRuns => "Total runs",

@@ -1560,9 +1560,11 @@ fn render_runtime_hook_detail(
         },
     );
     let body = format!(
-        "{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}",
+        "{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}",
         t(locale, MessageKey::SectionRuntimeConfiguration),
         configuration.join("\n"),
+        t(locale, MessageKey::SectionHookManagement),
+        t(locale, MessageKey::StateHookManagementUnavailable),
         t(locale, MessageKey::SectionReliabilitySummary),
         reliability,
         t(locale, MessageKey::SectionObservationHistory),
@@ -3197,6 +3199,26 @@ mod tests {
         let narrow = rendered(app, ResolvedLocale::ZhCn, 44, 44).replace(' ', "");
         assert!(narrow.contains("运行时配置"));
         assert!(narrow.contains("可靠性摘要"));
+    }
+
+    #[test]
+    fn runtime_detail_truthfully_explains_unavailable_hook_management_in_both_locales() {
+        let mut app = control_center_app();
+        for _ in 0..6 {
+            app.handle(super::super::keymap::Command::Down);
+        }
+        app.handle(super::super::keymap::Command::Enter);
+        app.handle(super::super::keymap::Command::Enter);
+
+        let english = rendered(app.clone(), ResolvedLocale::EnUs, 140, 58);
+        assert!(english.contains("Hook management"));
+        assert!(english.contains("Read-only: no verified external enable/disable route."));
+        assert!(!english.contains("Enable hook"));
+        assert!(!english.contains("Trust hook"));
+
+        let chinese = rendered(app, ResolvedLocale::ZhCn, 140, 58).replace(' ', "");
+        assert!(chinese.contains("钩子管理"));
+        assert!(chinese.contains("只读：没有经验证的外部启用/禁用路径。"));
     }
 
     #[test]
