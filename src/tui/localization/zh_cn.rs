@@ -36,6 +36,8 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::SectionReliabilitySummary => "可靠性摘要",
         MessageKey::SectionObservationHistory => "观测历史",
         MessageKey::SectionRuntimeIssues => "运行时问题",
+        MessageKey::SectionHookManagement => "钩子管理",
+        MessageKey::StateHookManagementUnavailable => "只读：没有经验证的外部启用/禁用路径。",
         MessageKey::FieldRuntime => "运行时",
         MessageKey::FieldCoverage => "覆盖范围",
         MessageKey::FieldTotalRuns => "总运行次数",
