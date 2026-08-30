@@ -1,23 +1,65 @@
 # HookStat Roadmap
 
-## Active execution overlay — v0.3.1
+## Active execution overlay — v0.4
 
-Current v0.3.1 development is governed by [`ROADMAP_V031.md`](ROADMAP_V031.md) and the corresponding `goals/HS-G38A*` through `goals/HS-G38R*` contracts.
+HookStat v0.3.1 is publicly released from accepted main `651620cbc9f204f312fc31efee424c747895927a` with public tag/release `v0.3.1`.
 
-The v0.3.1 release train is deliberately **single-repository**: HookStat must be able to implement, qualify, harden, package, and prepare the release candidate without writing to another product repository. Runtime-specific cooperative producers are independent integration tracks. An external producer may become admitted after satisfying HookStat's HSIP conformance/admission contract, but no external repository, producer package, merge, or release is a prerequisite for HookStat v0.3.1.
+Current product development is governed by [`ROADMAP_V040.md`](ROADMAP_V040.md) and the corresponding `goals/HS-G40*` through `goals/HS-G46R*` contracts.
 
-Where an ordinary runtime domain has neither admitted Native evidence nor an admitted external IPC integration, HookStat reports that domain truthfully as `NOT_ADMITTED`; it does not manufacture coverage and it does not make another repository a release dependency.
+The v0.4 product theme is **Hooks Control Center / Human Usability**.
 
-The historical version sections below remain product-history context. When they conflict with the active v0.3.1 execution overlay, `ROADMAP_V031.md` is authoritative for the current train.
+Normative product principle:
 
-## v0.1 — Codex historical reliability
+> **Runtime Truth First, Reliability Second.**
+
+For Codex hooks, HookStat must expose at least the human-readable current-runtime information provided by the pinned official Codex `/hooks` baseline, then add HookStat reliability/history/diagnosis as an additive layer.
+
+v0.4 remains Codex production-first. DeepSeek Harness, OpenCode, Claude Code, Agy, and other runtime work proceeds through independent `exp/*` tracks and does not block v0.4 unless explicitly promoted.
+
+Branch interaction is governed by [`../docs/process/EXPERIMENTAL_BRANCH_AND_PROMOTION_POLICY.md`](../docs/process/EXPERIMENTAL_BRANCH_AND_PROMOTION_POLICY.md):
+
+```text
+main      = accepted production truth
+agent/*   = planned product work with merge intent
+fix/*     = narrow production repair
+exp/*     = exploration with no direct merge intent
+promote/* = productization from current main
+```
+
+Experiments are promoted, not directly merged into `main`.
+
+## Completed execution overlay — v0.3.1
+
+The v0.3.1 Runtime-Neutral Native & IPC High-Performance Evidence Runtime train is complete and publicly released.
+
+Its historical execution contract remains in [`ROADMAP_V031.md`](ROADMAP_V031.md). Historical receipts and goals remain immutable evidence; the `IN PROGRESS` wording inside that historical execution file is superseded by this top-level public-release record and should be closed during G40 housekeeping rather than rewritten as if the old document had always been final.
+
+v0.3.1 established:
+
+- runtime-neutral canonical evidence and authority routing;
+- Native-first capability/admission framework;
+- bounded local HSIP v1 broker/IPC;
+- WAL/recovery and duplicate protection;
+- reference producer and conformance kit;
+- bounded diagnostics;
+- single-repository HookStat release boundary;
+- truthful `NOT_ADMITTED` domains;
+- risk-aware Fast Lane, immutable candidate freeze, release orchestrator, and performance environment preflight.
+
+An external cooperative producer is not bundled or required by HookStat v0.3.1.
+
+## Historical product milestones
+
+The sections below preserve original project-history context. Their version numbering is historical where later accepted roadmaps changed product sequencing.
+
+### v0.1 — Codex historical reliability — COMPLETE
 
 Critical path:
 
 ```text
 HS-B00 Repository Foundation
   ↓
-HS-G01 Codex Evidence Qualification (passive preferred; opt-in instrumented only by owner decision)
+HS-G01 Codex Evidence Qualification
   ↓
 HS-G02 Codex Vertical Slice
   ↓
@@ -32,61 +74,102 @@ HS-G06 Real Codex Dogfood & Hardening
 HS-G07 Usable v0.1 Release Candidate
 ```
 
-### HS-B00 — Repository Foundation
+The v0.1 line established the first admitted Codex evidence path, stable handler attribution where proven, incremental/idempotent local ledger, reliability analytics, TUI, privacy boundaries, and public release.
 
-Rust skeleton, pinned toolchain, CI, governance, architecture/ADRs, normative TUI spec. No runtime integration claim.
+### v0.2 / v0.2.1 — Reliability depth and startup — COMPLETE
 
-### HS-G01 — Codex Evidence Qualification
+The v0.2 line added Human reliability depth, revision comparison, failure clustering/fingerprints, diagnostics, richer Reliability Center behavior, bilingual Human UI, and later startup/period responsiveness with Today/24h/7d/30d/All semantics.
 
-Empirically determine which local Codex evidence surfaces can durably recover per-handler invocations and terminal outcomes. Candidate sources include rollout/session files, archived sessions, local diagnostic/state stores, App Server live events, and OTel only as evidence warrants. App Server is not presumed to be the primary source.
+### v0.3.0 — Codex Reliability Workbench & Unified Human Interface — COMPLETE
 
-Hard stop: if no passive durable source can identify individual handlers plus
-invocation/result, return `BLOCKED_DATA_SOURCE_DECISION_REQUIRED` unless the
-Owner explicitly admits the separately governed opt-in instrumented receipt
-architecture. Do not widen architecture automatically.
+The accepted post-v0.2 roadmap changed the original historical numbering. v0.3.0 remained Codex-only in production and delivered:
 
-### HS-G02 — Codex Vertical Slice
+- TabBeacon-compatible shared Human interface contract;
+- Changes workbench;
+- Hook Catalog;
+- revision timeline;
+- safe Human aliases;
+- bounded failure exploration;
+- owner Windows Terminal dogfood;
+- public v0.3.0 release.
 
-Implement the smallest real path from admitted Codex evidence to canonical HookInvocation records and deterministic machine-readable aggregate output. No TUI dependency yet.
+Detailed history remains in `HOOKSTAT_POST_V02_TO_V03_ROADMAP.md`.
 
-### HS-G03 — Persistent Reliability Ledger
+### v0.3.1 — Runtime-neutral evidence substrate — COMPLETE
 
-Add incremental/idempotent local SQLite persistence, ingestion cursors, deduplication, malformed-record isolation, and data-minimization/privacy rules.
+See the completed overlay above.
 
-### HS-G04 — Reliability Analytics
+## v0.4 — Hooks Control Center / Human Usability — ACTIVE
 
-Add 24h/7d/30d/All windows, runs, failures, failure rate, terminal-state breakdown, previous-window delta, recent failures, and latency percentiles only when source support is proven.
+Critical path:
 
-### HS-G05 — TUI
+```text
+PUBLIC v0.3.1
+      ↓
+HS-G40 Rebaseline & /hooks Parity Contract
+      ↓
+HS-G41 Live Runtime Hook Catalog
+      ├───────────────┐
+      ↓               ↓
+HS-G42              HS-G43
+Hooks Center        Human Reliability Presentation
+      └───────┬───────┘
+              ↓
+HS-G44 Safe Hook Management
+              ↓
+HS-G45 Human UX / Codex /hooks A/B Dogfood
+              ↓
+HS-G46R v0.4 Hardening & Release
+```
 
-Implement the frozen `docs/design/TUI_SPEC.md` with Ratatui or a justified equivalent. Do not show unsupported runtimes as fake rows.
+Read/information parity with Codex `/hooks` is mandatory. Write parity is admitted only when an official externally usable mutation surface is proven; otherwise it is truthfully `UPSTREAM_UNAVAILABLE` and does not authorize configuration guessing.
 
-### HS-G06 — Real Codex Dogfood & Hardening
+## Experimental runtime tracks — independent
 
-Validate sanitized fixtures plus real ordinary Codex use. When passive durable
-evidence is unavailable and the Owner explicitly authorizes activation, this
-means: live opt-in instrumentation, a scoped official Codex trust review if
-required, normal `codex` sessions, real metadata receipts, report/TUI
-validation, repeated refresh/idempotence, visible unsupported coverage, and a
-proven restore. It must preserve the normal `codex` launch and never bypass
-trust.
+The original early roadmap envisioned DeepSeek Harness as v0.3 and OpenCode as v0.4. That numbering is no longer normative. Runtime production versions are not preassigned before experiments prove viability.
 
-### HS-G07 — Usable v0.1 Release Candidate
+Current conceptual tracks may include:
 
-Polish README/help, version to 0.1.0, validate package metadata and `cargo package`/`cargo publish --dry-run`, create a release-ready candidate. Actual crates.io publication and public GitHub Release require separate explicit Owner authorization for the named release train.
+```text
+exp/deepseek-hook-surface
+exp/opencode-plugin-surface
+exp/claude-hook-surface
+exp/agy-hook-surface
+```
 
-## v0.2 — Reliability depth
+Standard lifecycle:
 
-Handler revisions/config hashes, before/after comparison, error fingerprinting/clustering, runtime-version correlation. Implement the frozen revision-comparison section of the TUI.
+```text
+EXPERIMENT_STARTED
+→ SURFACE_DISCOVERED
+→ CAPABILITY_MAPPED
+→ FIXTURES_PASS
+→ REAL_OWNER_PROOF
+→ CONFORMANT
+→ PROMOTION_READY
+→ promote/* from current main
+→ production gates
+→ main
+```
 
-## v0.3 — DeepSeek Harness
+Valid experiment outcomes also include `UPSTREAM_UNSUITABLE`, `DEFERRED`, and `ABANDONED`.
 
-Add the second RuntimeAdapter and durable hook/invoked + hook/result ingestion. This is the first mandatory proof that the canonical model is not Codex-specific.
+A future runtime release is planned only after an experiment reaches `PROMOTION_READY` and receives an explicit productization decision.
 
-## v0.4 — OpenCode
+## Later product possibilities
 
-Add OpenCode using the best available persistent evidence plus a minimal runtime-native bridge only if needed. Do not distort the Rust core around OpenCode's plugin model.
+Not part of v0.4 unless separately promoted:
 
-## Later
+- production DeepSeek Harness adapter;
+- production OpenCode adapter;
+- Claude Code adapter;
+- Agy adapter;
+- daemon/watch mode where justified;
+- notifications;
+- Web UI;
+- OTel export;
+- additional runtime adapters;
+- cloud/distributed aggregation;
+- AI-generated diagnosis.
 
-Optional Claude Code, daemon/watch mode, notifications, doctor/probe/repair, Web UI, OTel export, and additional runtimes.
+The modular runtime-neutral core should allow those tracks without rewriting ledger, analytics, denominator semantics, or the Reliability Center application shell.
