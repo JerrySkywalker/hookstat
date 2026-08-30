@@ -86,8 +86,23 @@ pub fn render_shortcut_footer(
     app: &App,
     theme: Theme,
 ) {
-    let state = footer_state(app);
-    let footer = format_footer(state, |action| footer_action_text(locale, action));
+    let footer = if app.screen() == Screen::Hooks && app.local_list_active() {
+        // The shared contract's generic LocalList includes search/filter/sort
+        // affordances. Current runtime catalog rows deliberately expose only
+        // actions that are actually available at this local level.
+        format!(
+            "↑↓ {}  Enter {}  Esc {}  ? {}  r {}  q {}",
+            t(locale, MessageKey::FooterNavigate),
+            t(locale, MessageKey::FooterOpen),
+            t(locale, MessageKey::FooterBack),
+            t(locale, MessageKey::FooterHelp),
+            t(locale, MessageKey::FooterRefresh),
+            t(locale, MessageKey::FooterQuit),
+        )
+    } else {
+        let state = footer_state(app);
+        format_footer(state, |action| footer_action_text(locale, action))
+    };
     frame.render_widget(
         Paragraph::new(truncate_to_width(&footer, area.width as usize))
             .style(theme.chrome_style(terminal_ui_contract::chrome::ChromeToken::Footer)),

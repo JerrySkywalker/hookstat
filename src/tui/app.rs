@@ -5,6 +5,11 @@ use crate::diagnostics::DiagnosticsReport;
 use crate::domain::{HookInvocation, Runtime};
 use crate::interface_preferences::InterfaceColor;
 use crate::report::{MachineReport, instrumented_report};
+use crate::runtime_presentation::{
+    HistoricalHandlerIdentity, ReliabilityHistory, ReliabilityJoinState, RuntimeCatalogResource,
+    RuntimeCatalogResourceState, RuntimeEventPresentation, RuntimeHandlerPresentation,
+    RuntimePresentationSnapshot,
+};
 use crate::workbench::{ChangesWorkbench, changes_workbench};
 use terminal_ui_contract::interaction::{
     DiscardDecision, OverlayDismissKey, OverlayState, QuitDisposition, SettingsEditor,
@@ -14,8 +19,6 @@ use super::keymap::Command;
 use super::localization::InterfaceLanguage;
 use super::navigation::{NavigationState, Route};
 use super::state::ResourceState;
-#[cfg(test)]
-use super::view_model::HookSort;
 use super::view_model::{
     CatalogHistoryViewModel, ChangeRef, ChangeRowViewModel, ChangesViewModel, DisplayIdentity,
     FailureClusterRef, FailureClusterViewModel, HandlerRef, HookRowViewModel, HooksQuery,
@@ -38,7 +41,8 @@ pub enum Screen {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LocalMode {
     None,
-    HooksList,
+    HooksEvents,
+    HooksHandlers,
     ChangesList,
     FailureClusters,
 }
@@ -68,6 +72,15 @@ pub enum ChangesRefreshReason {
     Entered(TimeWindow),
     Window(TimeWindow),
     Explicit(TimeWindow),
+}
+
+/// Runtime catalog discovery is deliberately independent from reliability
+/// period loading. The catalog carries local-only raw presentation material and
+/// never enters a ledger, receipt, or diagnostic snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeCatalogRefreshReason {
+    Initial,
+    Explicit,
 }
 
 impl ChangesRefreshReason {
@@ -191,6 +204,7 @@ pub enum AppEffect {
     RequestDiagnostics(DiagnosticsRefreshReason),
     RequestChanges(ChangesRefreshReason),
     RequestRefreshAndChanges(RefreshReason, ChangesRefreshReason),
+    RequestRefreshAndRuntimeCatalog(RefreshReason, RuntimeCatalogRefreshReason),
     ApplyAlias(AliasApplyRequest),
     ApplyInterface {
         language: InterfaceLanguage,
@@ -227,11 +241,17 @@ pub enum AliasSaveState {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AliasEditOrigin {
+    HistoricalDetail,
+    RuntimeDetail,
+}
+
 impl SettingsField {
     const ALL: [Self; 2] = [Self::Language, Self::Color];
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct App {
     navigation: NavigationState,
     screen: Screen,
@@ -241,7 +261,10 @@ pub struct App {
     selected_handler: Option<HandlerRef>,
     selected_change: Option<ChangeRef>,
     selected_failure_cluster: Option<FailureClusterRef>,
+    selected_runtime_event: Option<(String, String)>,
+    selected_runtime_handler: Option<String>,
     view: ResourceState<ReliabilityCenterViewModel>,
+    runtime_catalog: RuntimeCatalogResource,
     diagnostics: ResourceState<DiagnosticsReport>,
     changes: ResourceState<ChangesViewModel>,
     hooks_query: HooksQuery,
@@ -259,7 +282,10 @@ pub struct App {
     settings_save_state: SettingsSaveState,
     alias_annotations: Vec<AliasAnnotation>,
     alias_editor: SettingsEditor<AliasField>,
-    alias_handler: Option<HandlerRef>,
+    /// The exact historical identity captured when alias editing begins.
+    /// It never follows the mutable list or runtime-detail selection.
+    alias_edit_target: Option<HandlerRef>,
+    alias_edit_origin: Option<AliasEditOrigin>,
     alias_expected: Option<String>,
     alias_base_label: String,
     alias_draft: String,
@@ -291,8 +317,15 @@ impl App {
             selected_handler: None,
             selected_change: None,
             selected_failure_cluster: None,
+            selected_runtime_event: None,
+            selected_runtime_handler: None,
             view: ResourceState::Loading {
                 last_accepted: None,
+            },
+            runtime_catalog: {
+                let mut catalog = RuntimeCatalogResource::default();
+                catalog.request_initial_load();
+                catalog
             },
             diagnostics: ResourceState::Loading {
                 last_accepted: None,
@@ -313,7 +346,8 @@ impl App {
             settings_save_state: SettingsSaveState::Clean,
             alias_annotations: Vec::new(),
             alias_editor: SettingsEditor::new(AliasField::Name),
-            alias_handler: None,
+            alias_edit_target: None,
+            alias_edit_origin: None,
             alias_expected: None,
             alias_base_label: String::new(),
             alias_draft: String::new(),
@@ -340,7 +374,14 @@ impl App {
             selected_handler,
             selected_change: None,
             selected_failure_cluster: None,
+            selected_runtime_event: None,
+            selected_runtime_handler: None,
             view: ResourceState::Ready(view_model),
+            runtime_catalog: {
+                let mut catalog = RuntimeCatalogResource::default();
+                catalog.request_initial_load();
+                catalog
+            },
             diagnostics: ResourceState::Ready(diagnostics),
             changes: ResourceState::Empty,
             hooks_query,
@@ -358,7 +399,8 @@ impl App {
             settings_save_state: SettingsSaveState::Clean,
             alias_annotations: Vec::new(),
             alias_editor: SettingsEditor::new(AliasField::Name),
-            alias_handler: None,
+            alias_edit_target: None,
+            alias_edit_origin: None,
             alias_expected: None,
             alias_base_label: String::new(),
             alias_draft: String::new(),
@@ -384,6 +426,122 @@ impl App {
 
     pub const fn requested_window(&self) -> TimeWindow {
         self.requested_window
+    }
+
+    #[cfg(test)]
+    pub const fn runtime_catalog_state(&self) -> RuntimeCatalogResourceState {
+        self.runtime_catalog.state()
+    }
+
+    pub fn runtime_catalog(&self) -> Option<&RuntimePresentationSnapshot> {
+        self.runtime_catalog.accepted_snapshot()
+    }
+
+    pub fn runtime_catalog_loading(&self) -> bool {
+        self.runtime_catalog.state() == RuntimeCatalogResourceState::Loading
+    }
+
+    pub fn runtime_catalog_error(&self) -> bool {
+        self.runtime_catalog.state() == RuntimeCatalogResourceState::Error
+    }
+
+    pub fn selected_runtime_event(&self) -> Option<&RuntimeEventPresentation> {
+        let (context, name) = self.selected_runtime_event.as_ref()?;
+        self.runtime_catalog()?
+            .events
+            .iter()
+            .find(|event| &event.runtime_context == context && &event.runtime_event_name == name)
+    }
+
+    pub fn selected_runtime_handler(&self) -> Option<&RuntimeHandlerPresentation> {
+        let selected = self.selected_runtime_handler.as_deref()?;
+        self.selected_runtime_event()?
+            .handlers
+            .iter()
+            .find(|handler| handler.runtime_catalog_id == selected)
+    }
+
+    /// Runtime selection state may remain cached after moving back to a
+    /// historical detail. Only the runtime handler drill-down owns a runtime
+    /// Hook Detail rendering or runtime-sourced alias admission.
+    pub fn runtime_hook_detail_active(&self) -> bool {
+        self.screen == Screen::HookDetail
+            && self.local_mode == LocalMode::HooksHandlers
+            && self.selected_runtime_handler().is_some()
+    }
+
+    /// The accepted reliability row for this exact live handler identity.
+    /// This is deliberately an optional projection: live handlers with no
+    /// admitted, unambiguous bridge never acquire borrowed history or health.
+    pub fn runtime_handler_reliability_row(
+        &self,
+        event: &RuntimeEventPresentation,
+        handler: &RuntimeHandlerPresentation,
+    ) -> Option<&HookRowViewModel> {
+        let ReliabilityJoinState::Matched { handler_key } = self
+            .runtime_event_reliability(event)
+            .into_iter()
+            .find(|(catalog_id, _)| catalog_id == &handler.runtime_catalog_id)
+            .map(|(_, join)| join)?
+        else {
+            return None;
+        };
+        let canonical_event = event.canonical_event?;
+        self.view_model()?
+            .hooks
+            .rows
+            .iter()
+            .find(|row| row.internal_ref.handler_key == handler_key && row.event == canonical_event)
+    }
+
+    pub fn runtime_event_reliability(
+        &self,
+        event: &RuntimeEventPresentation,
+    ) -> Vec<(String, ReliabilityJoinState)> {
+        let Some(snapshot) = self.runtime_catalog() else {
+            return Vec::new();
+        };
+        let history = self.view_model().map(|view| {
+            view.hooks
+                .rows
+                .iter()
+                .map(|row| HistoricalHandlerIdentity {
+                    handler_key: row.internal_ref.handler_key.clone(),
+                    event: row.event,
+                })
+                .collect::<Vec<_>>()
+        });
+        let history = history
+            .as_deref()
+            .map(ReliabilityHistory::Available)
+            .unwrap_or(ReliabilityHistory::Unavailable);
+        snapshot
+            .join_reliability_with_history(history)
+            .into_iter()
+            .filter(|joined| {
+                event
+                    .handlers
+                    .iter()
+                    .any(|handler| handler.runtime_catalog_id == joined.handler.runtime_catalog_id)
+            })
+            .map(|joined| (joined.handler.runtime_catalog_id.clone(), joined.join))
+            .collect()
+    }
+
+    pub fn matched_reliability_detail(&self) -> Option<&super::view_model::HookDetailViewModel> {
+        let event = self.selected_runtime_event()?;
+        let handler = self.selected_runtime_handler()?;
+        let reference = self
+            .runtime_handler_reliability_row(event, handler)?
+            .internal_ref
+            .clone();
+        self.view_model()?.detail(&reference)
+    }
+
+    pub fn matched_runtime_catalog_history(&self) -> Option<&CatalogHistoryViewModel> {
+        let detail = self.matched_reliability_detail()?;
+        self.changes()
+            .and_then(|changes| changes.catalog_history(&detail.internal_ref))
     }
 
     pub const fn diagnostics_state(&self) -> &ResourceState<DiagnosticsReport> {
@@ -437,10 +595,28 @@ impl App {
         self.changes_detail_scroll_lines
     }
 
+    pub fn runtime_event_selection_index(&self) -> Option<usize> {
+        let selected = self.selected_runtime_event()?;
+        self.runtime_catalog()?.events.iter().position(|event| {
+            event.runtime_context == selected.runtime_context
+                && event.runtime_event_name == selected.runtime_event_name
+        })
+    }
+
+    pub fn runtime_handler_selection_index(&self) -> Option<usize> {
+        let selected = self.selected_runtime_handler()?;
+        self.selected_runtime_event()?
+            .handlers
+            .iter()
+            .position(|handler| handler.runtime_catalog_id == selected.runtime_catalog_id)
+    }
+
+    #[cfg(test)]
     pub const fn hooks_query(&self) -> &HooksQuery {
         &self.hooks_query
     }
 
+    #[cfg(test)]
     pub fn visible_hooks(&self) -> &[HookRowViewModel] {
         &self.visible_hooks
     }
@@ -485,12 +661,19 @@ impl App {
     pub const fn local_list_active(&self) -> bool {
         matches!(
             self.local_mode,
-            LocalMode::HooksList | LocalMode::ChangesList | LocalMode::FailureClusters
+            LocalMode::HooksEvents
+                | LocalMode::HooksHandlers
+                | LocalMode::ChangesList
+                | LocalMode::FailureClusters
         )
     }
 
-    const fn hooks_list_active(&self) -> bool {
-        matches!(self.local_mode, LocalMode::HooksList)
+    pub const fn hooks_events_active(&self) -> bool {
+        matches!(self.local_mode, LocalMode::HooksEvents)
+    }
+
+    pub const fn hooks_handlers_active(&self) -> bool {
+        matches!(self.local_mode, LocalMode::HooksHandlers)
     }
 
     const fn changes_list_active(&self) -> bool {
@@ -506,7 +689,7 @@ impl App {
     }
 
     pub const fn alias_editing(&self) -> bool {
-        self.alias_handler.is_some()
+        self.alias_edit_target.is_some()
     }
 
     pub const fn alias_text_editing(&self) -> bool {
@@ -514,7 +697,7 @@ impl App {
     }
 
     pub fn alias_draft(&self) -> Option<&str> {
-        self.alias_handler
+        self.alias_edit_target
             .as_ref()
             .map(|_| self.alias_draft.as_str())
     }
@@ -524,7 +707,7 @@ impl App {
     }
 
     pub fn alias_dirty(&self) -> bool {
-        self.alias_handler.is_some()
+        self.alias_edit_target.is_some()
             && self.alias_draft
                 != self
                     .alias_expected
@@ -589,10 +772,27 @@ impl App {
                     self.search_editing = false;
                 } else if self.screen == Screen::Settings {
                     self.settings_editor.enter_or_finish();
-                } else if self.screen == Screen::Hooks && !self.hooks_list_active() {
-                    self.local_mode = LocalMode::HooksList;
+                } else if self.screen == Screen::Hooks && self.local_mode == LocalMode::None {
+                    self.local_mode = LocalMode::HooksEvents;
                     self.detail_scroll_lines = 0;
-                    self.repair_handler_selection();
+                    self.repair_runtime_event_selection();
+                } else if self.screen == Screen::Hooks
+                    && self.hooks_events_active()
+                    && self.selected_runtime_event().is_some()
+                {
+                    self.local_mode = LocalMode::HooksHandlers;
+                    self.detail_scroll_lines = 0;
+                    self.repair_runtime_handler_selection();
+                } else if self.screen == Screen::Hooks
+                    && self.hooks_handlers_active()
+                    && self.selected_runtime_handler().is_some()
+                {
+                    self.screen = Screen::HookDetail;
+                    self.detail_scroll_lines = 0;
+                    if matches!(self.changes_state(), ResourceState::Empty) {
+                        return self
+                            .request_changes(ChangesRefreshReason::Entered(self.requested_window));
+                    }
                 } else if self.screen == Screen::Changes && !self.changes_list_active() {
                     self.local_mode = LocalMode::ChangesList;
                     self.repair_change_selection();
@@ -608,12 +808,10 @@ impl App {
                 {
                     self.screen = Screen::FailureClusterDetail;
                     self.detail_scroll_lines = 0;
-                } else if matches!(self.screen, Screen::Overview | Screen::Hooks)
-                    && self.selected_handler.is_some()
-                {
+                } else if self.screen == Screen::Overview && self.selected_handler.is_some() {
                     self.navigation.activate(Route::Hooks);
                     self.screen = Screen::HookDetail;
-                    self.local_mode = LocalMode::HooksList;
+                    self.local_mode = LocalMode::HooksEvents;
                     self.detail_scroll_lines = 0;
                     if matches!(self.changes_state(), ResourceState::Empty) {
                         return self
@@ -630,10 +828,17 @@ impl App {
                 } else if self.screen == Screen::HookDetail {
                     self.navigation.activate(Route::Hooks);
                     self.screen = Screen::Hooks;
-                    self.local_mode = LocalMode::HooksList;
+                    self.local_mode = if self.selected_runtime_handler.is_some() {
+                        LocalMode::HooksHandlers
+                    } else {
+                        LocalMode::HooksEvents
+                    };
                     self.detail_scroll_lines = 0;
-                    self.repair_handler_selection();
-                } else if self.screen == Screen::Hooks && self.hooks_list_active() {
+                    self.repair_runtime_handler_selection();
+                } else if self.screen == Screen::Hooks && self.hooks_handlers_active() {
+                    self.local_mode = LocalMode::HooksEvents;
+                    self.repair_runtime_event_selection();
+                } else if self.screen == Screen::Hooks && self.hooks_events_active() {
                     self.local_mode = LocalMode::None;
                 } else if self.screen == Screen::ChangeDetail {
                     self.navigation.activate(Route::Changes);
@@ -650,7 +855,7 @@ impl App {
                     self.repair_failure_cluster_selection();
                 } else if self.screen == Screen::FailureClusters && self.failure_clusters_active() {
                     self.screen = Screen::HookDetail;
-                    self.local_mode = LocalMode::HooksList;
+                    self.local_mode = LocalMode::HooksEvents;
                 } else if self.screen == Screen::Settings && self.settings_editor.is_editing() {
                     self.settings_editor.enter_or_finish();
                 }
@@ -671,6 +876,13 @@ impl App {
             }
             Command::Refresh if self.screen == Screen::Changes => {
                 self.request_changes(ChangesRefreshReason::Explicit(self.requested_window))
+            }
+            Command::Refresh if matches!(self.screen, Screen::Hooks | Screen::HookDetail) => {
+                self.runtime_catalog.request_explicit_refresh();
+                self.request_refresh_and_runtime_catalog(
+                    RefreshReason::Manual(self.requested_window),
+                    RuntimeCatalogRefreshReason::Explicit,
+                )
             }
             Command::Refresh => self.request_refresh(RefreshReason::Manual(self.requested_window)),
             Command::Window(window) => {
@@ -693,12 +905,7 @@ impl App {
                     self.request_refresh(RefreshReason::Window(window))
                 }
             }
-            Command::Search => {
-                if self.screen == Screen::Hooks && self.hooks_list_active() {
-                    self.search_editing = true;
-                }
-                AppEffect::None
-            }
+            Command::Search => AppEffect::None,
             Command::SearchInput(value) => {
                 if self.alias_text_editing {
                     self.alias_draft.push(value);
@@ -738,25 +945,17 @@ impl App {
                 AppEffect::None
             }
             Command::Filter => {
-                if self.screen == Screen::Hooks && self.hooks_list_active() {
-                    self.hooks_query.failures_only = !self.hooks_query.failures_only;
-                    self.rebuild_visible_hooks();
-                    self.repair_handler_selection();
-                } else if self.screen == Screen::HookDetail {
+                if self.alias_editing() {
+                    self.cancel_alias_edit();
+                }
+                if self.screen == Screen::HookDetail && self.selected_runtime_handler.is_none() {
                     self.screen = Screen::FailureClusters;
                     self.local_mode = LocalMode::FailureClusters;
                     self.repair_failure_cluster_selection();
                 }
                 AppEffect::None
             }
-            Command::Sort => {
-                if self.screen == Screen::Hooks && self.hooks_list_active() {
-                    self.hooks_query.sort = self.hooks_query.sort.next();
-                    self.rebuild_visible_hooks();
-                    self.repair_handler_selection();
-                }
-                AppEffect::None
-            }
+            Command::Sort => AppEffect::None,
             Command::EditAlias => {
                 if self.screen == Screen::HookDetail {
                     self.begin_alias_edit();
@@ -786,11 +985,51 @@ impl App {
             // transport implementation becomes concurrent.
             return;
         }
+        let previous_selection = self.selected_handler.clone();
         self.requested_window = view_model.overview.window;
         self.view = std::mem::replace(&mut self.view, ResourceState::Empty).ready(view_model);
         self.alias_annotations = alias_annotations;
         self.rebuild_visible_hooks();
         self.repair_handler_selection();
+        if self.alias_editing() && previous_selection != self.selected_handler {
+            self.cancel_alias_edit();
+        }
+    }
+
+    /// Accepts a local-only runtime catalog. Selection is retained by the
+    /// runtime's exact context/event and catalog handler identity whenever the
+    /// refreshed catalog still contains them.
+    pub fn apply_runtime_catalog(&mut self, snapshot: RuntimePresentationSnapshot) {
+        let previous_selection = (
+            self.selected_runtime_event.clone(),
+            self.selected_runtime_handler.clone(),
+        );
+        let previous_target = self.alias_edit_target.clone();
+        self.runtime_catalog.accepted(snapshot);
+        self.repair_runtime_event_selection();
+        self.repair_runtime_handler_selection();
+        let selection_changed = previous_selection
+            != (
+                self.selected_runtime_event.clone(),
+                self.selected_runtime_handler.clone(),
+            );
+        let target_changed = self.runtime_alias_edit_target() != previous_target;
+        if self.alias_edit_origin == Some(AliasEditOrigin::RuntimeDetail)
+            && (selection_changed || target_changed)
+        {
+            self.cancel_alias_edit();
+        }
+    }
+
+    /// A catalog refresh error never erases the last accepted runtime truth,
+    /// and never makes the separate reliability resource unavailable.
+    pub fn reject_runtime_catalog(&mut self) {
+        self.runtime_catalog.failed();
+    }
+
+    pub fn runtime_catalog_initial_load_pending(&self) -> bool {
+        self.runtime_catalog.state() == RuntimeCatalogResourceState::Loading
+            && self.runtime_catalog.accepted_snapshot().is_none()
     }
 
     pub fn reject_refresh(&mut self) {
@@ -909,8 +1148,11 @@ impl App {
         } else if self.screen == Screen::Settings && self.settings_editor.is_editing() {
             let _ = self.settings_editor.move_field(&SettingsField::ALL, delta);
             AppEffect::None
-        } else if self.screen == Screen::Hooks && self.hooks_list_active() {
-            self.move_content(delta);
+        } else if self.screen == Screen::Hooks && self.hooks_events_active() {
+            self.move_runtime_event(delta);
+            AppEffect::None
+        } else if self.screen == Screen::Hooks && self.hooks_handlers_active() {
+            self.move_runtime_handler(delta);
             AppEffect::None
         } else if self.screen == Screen::Changes && self.changes_list_active() {
             self.move_change(delta);
@@ -965,6 +1207,15 @@ impl App {
         self.view = std::mem::replace(&mut self.view, ResourceState::Empty).loading();
         self.changes = std::mem::replace(&mut self.changes, ResourceState::Empty).loading();
         AppEffect::RequestRefreshAndChanges(refresh, changes)
+    }
+
+    fn request_refresh_and_runtime_catalog(
+        &mut self,
+        refresh: RefreshReason,
+        catalog: RuntimeCatalogRefreshReason,
+    ) -> AppEffect {
+        self.view = std::mem::replace(&mut self.view, ResourceState::Empty).loading();
+        AppEffect::RequestRefreshAndRuntimeCatalog(refresh, catalog)
     }
 
     fn cycle_current_setting(&mut self, delta: isize) {
@@ -1023,8 +1274,44 @@ impl App {
         }
     }
 
+    fn runtime_alias_edit_target(&self) -> Option<HandlerRef> {
+        if !self.runtime_hook_detail_active() {
+            return None;
+        }
+        let event = self.selected_runtime_event()?;
+        let handler = self.selected_runtime_handler()?;
+        let ReliabilityJoinState::Matched { handler_key } = self
+            .runtime_event_reliability(event)
+            .into_iter()
+            .find(|(catalog_id, _)| catalog_id == &handler.runtime_catalog_id)
+            .map(|(_, join)| join)?
+        else {
+            return None;
+        };
+        let target = HandlerRef {
+            runtime: Runtime::Codex,
+            handler_key,
+        };
+        self.view_model()?.detail(&target)?;
+        Some(target)
+    }
+
+    /// Returns the sole historical identity that the visible detail is allowed
+    /// to edit. A runtime-detail path has no fallback to the unrelated legacy
+    /// selection: it must prove a unique reliability join first.
+    fn alias_edit_target_for_current_detail(&self) -> Option<(AliasEditOrigin, HandlerRef)> {
+        if self.runtime_hook_detail_active() {
+            self.runtime_alias_edit_target()
+                .map(|target| (AliasEditOrigin::RuntimeDetail, target))
+        } else {
+            let target = self.selected_handler.clone()?;
+            self.view_model()?.detail(&target)?;
+            Some((AliasEditOrigin::HistoricalDetail, target))
+        }
+    }
+
     fn begin_alias_edit(&mut self) {
-        let Some(reference) = self.selected_handler.clone() else {
+        let Some((origin, reference)) = self.alias_edit_target_for_current_detail() else {
             return;
         };
         let Some(detail) = self.view_model().and_then(|view| view.detail(&reference)) else {
@@ -1041,7 +1328,8 @@ impl App {
                 alias.runtime == reference.runtime && alias.handler_key == reference.handler_key
             })
             .map(|alias| alias.display_name.clone());
-        self.alias_handler = Some(reference);
+        self.alias_edit_target = Some(reference);
+        self.alias_edit_origin = Some(origin);
         self.alias_expected = expected_alias.clone();
         self.alias_base_label = base_label;
         self.alias_draft = expected_alias.unwrap_or_else(|| self.alias_base_label.clone());
@@ -1066,7 +1354,8 @@ impl App {
     fn cancel_alias_edit(&mut self) {
         self.alias_text_editing = false;
         self.alias_editor = SettingsEditor::new(AliasField::Name);
-        self.alias_handler = None;
+        self.alias_edit_target = None;
+        self.alias_edit_origin = None;
         self.alias_expected = None;
         self.alias_base_label.clear();
         self.alias_draft.clear();
@@ -1074,7 +1363,7 @@ impl App {
     }
 
     fn revert_alias(&mut self) {
-        if self.alias_handler.is_none() {
+        if self.alias_edit_target.is_none() {
             return;
         }
         self.alias_draft = self
@@ -1092,7 +1381,7 @@ impl App {
         if !self.alias_dirty() {
             return AppEffect::None;
         }
-        let Some(reference) = self.alias_handler.as_ref() else {
+        let Some(reference) = self.alias_edit_target.as_ref() else {
             return AppEffect::None;
         };
         AppEffect::ApplyAlias(AliasApplyRequest {
@@ -1106,7 +1395,7 @@ impl App {
     pub fn alias_apply_result(&mut self, outcome: AliasApplyOutcome) {
         match outcome {
             AliasApplyOutcome::Saved => {
-                if let Some(reference) = &self.alias_handler {
+                if let Some(reference) = &self.alias_edit_target {
                     self.alias_annotations.retain(|alias| {
                         alias.runtime != reference.runtime
                             || alias.handler_key != reference.handler_key
@@ -1126,44 +1415,15 @@ impl App {
         }
     }
 
-    fn move_content(&mut self, delta: isize) {
-        if self.screen == Screen::HookDetail {
-            self.move_detail_scroll(delta);
-            return;
-        }
-        if self.screen == Screen::Diagnostics {
-            return;
-        }
-        let candidates = self
-            .selectable_rows()
-            .into_iter()
-            .map(|row| row.internal_ref)
-            .collect::<Vec<_>>();
-        if candidates.is_empty() {
-            self.selected_handler = None;
-            return;
-        }
-        let current = self
-            .selected_handler
-            .as_ref()
-            .and_then(|selected| {
-                candidates
-                    .iter()
-                    .position(|candidate| candidate == selected)
-            })
-            .unwrap_or(0);
-        let next = (current as isize + delta).rem_euclid(candidates.len() as isize) as usize;
-        self.selected_handler = Some(candidates[next].clone());
-        self.detail_scroll_lines = 0;
-    }
-
     fn page_content(&mut self, direction: isize) {
         if self.screen == Screen::HookDetail || self.screen == Screen::FailureClusterDetail {
             self.move_detail_scroll(direction.saturating_mul(6));
         } else if self.screen == Screen::ChangeDetail {
             self.move_changes_detail_scroll(direction.saturating_mul(6));
-        } else if self.screen == Screen::Hooks && self.hooks_list_active() {
-            self.move_detail_scroll(direction.saturating_mul(3));
+        } else if self.screen == Screen::Hooks && self.hooks_events_active() {
+            self.move_runtime_event(direction.saturating_mul(5));
+        } else if self.screen == Screen::Hooks && self.hooks_handlers_active() {
+            self.move_runtime_handler(direction.saturating_mul(5));
         } else if self.screen == Screen::Changes && self.changes_list_active() {
             self.move_change(direction.saturating_mul(5));
         } else if self.screen == Screen::FailureClusters && self.failure_clusters_active() {
@@ -1197,6 +1457,92 @@ impl App {
             .map(|view| view.filtered_hooks(&self.hooks_query))
             .unwrap_or_default();
         self.detail_scroll_lines = 0;
+    }
+
+    fn runtime_event_keys(&self) -> Vec<(String, String)> {
+        self.runtime_catalog()
+            .map(|catalog| {
+                catalog
+                    .events
+                    .iter()
+                    .map(|event| {
+                        (
+                            event.runtime_context.clone(),
+                            event.runtime_event_name.clone(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn move_runtime_event(&mut self, delta: isize) {
+        let events = self.runtime_event_keys();
+        if events.is_empty() {
+            self.selected_runtime_event = None;
+            self.selected_runtime_handler = None;
+            return;
+        }
+        let current = self
+            .selected_runtime_event
+            .as_ref()
+            .and_then(|selected| events.iter().position(|event| event == selected))
+            .unwrap_or(0);
+        let next = (current as isize + delta).rem_euclid(events.len() as isize) as usize;
+        self.selected_runtime_event = Some(events[next].clone());
+        self.selected_runtime_handler = None;
+        self.detail_scroll_lines = 0;
+    }
+
+    fn repair_runtime_event_selection(&mut self) {
+        let events = self.runtime_event_keys();
+        if !self
+            .selected_runtime_event
+            .as_ref()
+            .is_some_and(|selected| events.iter().any(|event| event == selected))
+        {
+            self.selected_runtime_event = events.into_iter().next();
+            self.selected_runtime_handler = None;
+        }
+    }
+
+    fn runtime_handler_ids(&self) -> Vec<String> {
+        self.selected_runtime_event()
+            .map(|event| {
+                event
+                    .handlers
+                    .iter()
+                    .map(|handler| handler.runtime_catalog_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn move_runtime_handler(&mut self, delta: isize) {
+        let handlers = self.runtime_handler_ids();
+        if handlers.is_empty() {
+            self.selected_runtime_handler = None;
+            return;
+        }
+        let current = self
+            .selected_runtime_handler
+            .as_ref()
+            .and_then(|selected| handlers.iter().position(|handler| handler == selected))
+            .unwrap_or(0);
+        let next = (current as isize + delta).rem_euclid(handlers.len() as isize) as usize;
+        self.selected_runtime_handler = Some(handlers[next].clone());
+        self.detail_scroll_lines = 0;
+    }
+
+    fn repair_runtime_handler_selection(&mut self) {
+        let handlers = self.runtime_handler_ids();
+        if !self
+            .selected_runtime_handler
+            .as_ref()
+            .is_some_and(|selected| handlers.iter().any(|handler| handler == selected))
+        {
+            self.selected_runtime_handler = handlers.into_iter().next();
+        }
     }
 
     fn rebuild_visible_changes(&mut self) {
@@ -1303,17 +1649,74 @@ impl App {
             Screen::Settings => Vec::new(),
         }
     }
-
-    #[cfg(test)]
-    pub const fn hook_sort(&self) -> HookSort {
-        self.hooks_query.sort
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::report::synthetic_fixture_report;
+    use serde_json::json;
+
+    fn runtime_catalog() -> RuntimePresentationSnapshot {
+        RuntimePresentationSnapshot::from_codex_hooks_list(
+            &json!({"result":{"data":[{
+                "cwd":"C:/synthetic/workspace",
+                "warnings":["synthetic warning"],
+                "errors":["synthetic error"],
+                "hooks":[
+                    {"key":"fixture:0:0","eventName":"PreToolUse","handlerType":"command","command":"synthetic command --long-safe-argument","matcher":"^SyntheticTool$","source":"user","sourcePath":"C:/synthetic/hooks.json","enabled":true,"isManaged":false,"trustStatus":"trusted","async":false},
+                    {"key":"fixture:0:1","eventName":"Interrupt","handlerType":"agent","source":"managed","enabled":true,"isManaged":true,"trustStatus":"trusted"},
+                    {"key":"fixture:0:2","eventName":"FutureRuntimeEvent","handlerType":"prompt","source":"project","enabled":false,"isManaged":false,"trustStatus":"modified"},
+                    {"key":"fixture:0:3","eventName":"Stop","handlerType":"command","command":"synthetic stop","enabled":true,"isManaged":false,"trustStatus":"trusted"}
+                ]
+            }]}}),
+            1_000,
+        )
+        .unwrap()
+    }
+
+    fn matched_runtime_catalog() -> RuntimePresentationSnapshot {
+        let mut catalog = runtime_catalog();
+        let handler = catalog
+            .events
+            .iter_mut()
+            .find(|event| event.runtime_event_name == "Stop")
+            .expect("synthetic event must exist")
+            .handlers
+            .first_mut()
+            .expect("synthetic handler must exist");
+        handler.reliability_handler_key = Some("alpha".to_owned());
+        catalog
+    }
+
+    fn show_runtime_detail(app: &mut App, event_name: &str, handler_id: &str) {
+        let context = app
+            .runtime_catalog()
+            .and_then(|catalog| {
+                catalog
+                    .events
+                    .iter()
+                    .find(|event| event.runtime_event_name == event_name)
+            })
+            .expect("synthetic event must exist")
+            .runtime_context
+            .clone();
+        app.screen = Screen::HookDetail;
+        app.local_mode = LocalMode::HooksHandlers;
+        app.selected_runtime_event = Some((context, event_name.to_owned()));
+        app.selected_runtime_handler = Some(handler_id.to_owned());
+    }
+
+    fn runtime_detail_app(
+        catalog: RuntimePresentationSnapshot,
+        event_name: &str,
+        handler_id: &str,
+    ) -> App {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.apply_runtime_catalog(catalog);
+        show_runtime_detail(&mut app, event_name, handler_id);
+        app
+    }
 
     #[test]
     fn hooks_selection_uses_stable_identity_across_refresh() {
@@ -1328,21 +1731,90 @@ mod tests {
     }
 
     #[test]
-    fn hooks_search_filter_and_sort_are_ui_state_not_snapshot_mutation() {
+    fn hooks_control_center_navigates_events_handlers_and_detail_without_mutating_history() {
         let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.apply_runtime_catalog(runtime_catalog());
         app.handle(Command::Down);
         app.handle(Command::Enter);
-        app.handle(Command::Search);
-        for value in ['a', 'l', 'p', 'h', 'a'] {
-            app.handle(Command::SearchInput(value));
-        }
-        assert_eq!(app.visible_hooks().len(), 1);
-        app.handle(Command::CloseSearch);
-        app.handle(Command::Filter);
-        assert_eq!(app.visible_hooks().len(), 1);
-        let previous = app.hook_sort();
-        app.handle(Command::Sort);
-        assert_ne!(app.hook_sort(), previous);
+        assert_eq!(app.screen(), Screen::Hooks);
+        assert!(app.hooks_events_active());
+        assert_eq!(
+            app.selected_runtime_event()
+                .map(|event| event.runtime_event_name.as_str()),
+            Some("FutureRuntimeEvent")
+        );
+        app.handle(Command::Down);
+        assert_eq!(
+            app.selected_runtime_event()
+                .map(|event| event.runtime_event_name.as_str()),
+            Some("Interrupt")
+        );
+        app.handle(Command::Enter);
+        assert!(app.hooks_handlers_active());
+        assert!(app.selected_runtime_handler().is_some());
+        app.handle(Command::Enter);
+        assert_eq!(app.screen(), Screen::HookDetail);
+        app.handle(Command::Back);
+        assert_eq!(app.screen(), Screen::Hooks);
+        assert!(app.hooks_handlers_active());
+        app.handle(Command::Back);
+        assert!(app.hooks_events_active());
+        app.handle(Command::Back);
+        assert!(!app.local_list_active());
+        assert_eq!(app.visible_hooks().len(), 2);
+    }
+
+    #[test]
+    fn runtime_catalog_refresh_is_explicit_and_selection_survives_non_destructive_update() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        let catalog = runtime_catalog();
+        app.apply_runtime_catalog(catalog.clone());
+        assert_eq!(
+            app.runtime_catalog_state(),
+            RuntimeCatalogResourceState::Ready
+        );
+        app.handle(Command::Down);
+        app.handle(Command::Enter);
+        app.handle(Command::Enter);
+        app.handle(Command::Down);
+        let selected = app.selected_runtime_event().map(|event| {
+            (
+                event.runtime_context.clone(),
+                event.runtime_event_name.clone(),
+            )
+        });
+        assert!(matches!(
+            app.handle(Command::Refresh),
+            AppEffect::RequestRefreshAndRuntimeCatalog(_, RuntimeCatalogRefreshReason::Explicit)
+        ));
+        app.apply_runtime_catalog(catalog);
+        assert_eq!(
+            app.selected_runtime_event().map(|event| (
+                event.runtime_context.clone(),
+                event.runtime_event_name.clone()
+            )),
+            selected
+        );
+        let period = app.handle(Command::Window(TimeWindow::Last30Days));
+        assert!(matches!(period, AppEffect::RequestRefreshAndChanges(_, _)));
+        assert_eq!(
+            app.runtime_catalog_state(),
+            RuntimeCatalogResourceState::Ready
+        );
+    }
+
+    #[test]
+    fn runtime_and_reliability_failures_do_not_erase_the_other_accepted_resource() {
+        let report = synthetic_fixture_report(1_000);
+        let mut app = App::from_report(report);
+        app.apply_runtime_catalog(runtime_catalog());
+        app.reject_runtime_catalog();
+        assert!(app.runtime_catalog().is_some());
+        assert!(app.view_model().is_some());
+
+        app.reject_refresh();
+        assert!(app.runtime_catalog().is_some());
+        assert!(app.view_model().is_some());
     }
 
     #[test]
@@ -1589,6 +2061,295 @@ mod tests {
         assert_eq!(app.alias_save_state(), AliasSaveState::Conflict);
         app.handle(Command::Back);
         assert!(!app.alias_editing());
+    }
+
+    #[test]
+    fn legacy_alias_edit_uses_the_historical_detail_even_after_runtime_navigation() {
+        let mut app = runtime_detail_app(matched_runtime_catalog(), "Stop", "fixture:0:3");
+        let legacy_target = app
+            .view_model()
+            .expect("history must be loaded")
+            .hooks
+            .rows
+            .iter()
+            .find(|row| row.internal_ref.handler_key == "beta")
+            .expect("fixture must include the historical detail")
+            .internal_ref
+            .clone();
+        app.selected_handler = Some(legacy_target.clone());
+        // Opening a historical detail from Overview keeps its own local mode,
+        // even if a prior runtime navigation left selections in memory.
+        app.local_mode = LocalMode::HooksEvents;
+
+        app.handle(Command::EditAlias);
+        assert_eq!(app.alias_edit_target.as_ref(), Some(&legacy_target));
+        app.handle(Command::SearchInput('!'));
+        app.handle(Command::Enter);
+        let AppEffect::ApplyAlias(request) = app.handle(Command::Window(TimeWindow::All)) else {
+            panic!("legacy detail must retain alias editing");
+        };
+        assert_eq!(request.runtime, legacy_target.runtime);
+        assert_eq!(request.handler_key, legacy_target.handler_key);
+    }
+
+    #[test]
+    fn historical_selection_change_cancels_an_open_alias_draft() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        let historical_target = app
+            .view_model()
+            .expect("history must be loaded")
+            .hooks
+            .rows
+            .iter()
+            .find(|row| row.internal_ref.handler_key == "beta")
+            .expect("fixture must include the historical detail")
+            .internal_ref
+            .clone();
+        app.selected_handler = Some(historical_target);
+        app.screen = Screen::HookDetail;
+        app.handle(Command::EditAlias);
+        app.handle(Command::SearchInput('!'));
+        assert!(app.alias_editing());
+
+        let mut refreshed = synthetic_fixture_report(1_000);
+        refreshed
+            .handlers
+            .retain(|handler| handler.handler.key != "beta");
+        app.apply_refresh(RefreshSnapshot::from_report(refreshed));
+
+        assert!(!app.alias_editing());
+        assert!(!matches!(
+            app.handle(Command::Window(TimeWindow::All)),
+            AppEffect::ApplyAlias(_)
+        ));
+    }
+
+    #[test]
+    fn failure_cluster_navigation_cancels_an_open_historical_alias_draft() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.screen = Screen::HookDetail;
+        app.handle(Command::EditAlias);
+        app.handle(Command::SearchInput('!'));
+        app.handle(Command::Enter);
+        assert!(app.alias_editing());
+        assert!(!app.alias_text_editing());
+
+        app.handle(Command::Filter);
+
+        assert_eq!(app.screen(), Screen::FailureClusters);
+        assert!(!app.alias_editing());
+        assert!(!matches!(
+            app.handle(Command::Window(TimeWindow::All)),
+            AppEffect::ApplyAlias(_)
+        ));
+    }
+
+    #[test]
+    fn runtime_identity_change_cancels_an_open_alias_draft_even_with_the_same_catalog_id() {
+        let mut app = runtime_detail_app(matched_runtime_catalog(), "Stop", "fixture:0:3");
+        app.handle(Command::EditAlias);
+        app.handle(Command::SearchInput('!'));
+        assert!(app.alias_editing());
+
+        let mut refreshed = matched_runtime_catalog();
+        let handler = refreshed
+            .events
+            .iter_mut()
+            .find(|event| event.runtime_event_name == "Stop")
+            .expect("synthetic event must exist")
+            .handlers
+            .first_mut()
+            .expect("synthetic handler must exist");
+        handler.reliability_handler_key = Some("beta".to_owned());
+        app.apply_runtime_catalog(refreshed);
+
+        assert!(!app.alias_editing());
+        assert!(!matches!(
+            app.handle(Command::Window(TimeWindow::All)),
+            AppEffect::ApplyAlias(_)
+        ));
+    }
+
+    #[test]
+    fn runtime_catalog_arrival_preserves_an_open_historical_alias_draft() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.screen = Screen::HookDetail;
+        app.handle(Command::EditAlias);
+        app.handle(Command::SearchInput('!'));
+        let target_before_catalog = app.alias_edit_target.clone();
+        assert!(app.alias_editing());
+
+        app.apply_runtime_catalog(matched_runtime_catalog());
+
+        assert_eq!(app.alias_edit_target, target_before_catalog);
+        assert!(app.alias_editing());
+        app.handle(Command::Enter);
+        assert!(matches!(
+            app.handle(Command::Window(TimeWindow::All)),
+            AppEffect::ApplyAlias(_)
+        ));
+    }
+
+    #[test]
+    fn runtime_matched_alias_edit_captures_the_runtime_target_not_stale_history() {
+        let mut app = runtime_detail_app(matched_runtime_catalog(), "Stop", "fixture:0:3");
+        let runtime_event = app
+            .selected_runtime_event()
+            .expect("runtime event must be selected")
+            .clone();
+        let runtime_handler = app
+            .selected_runtime_handler()
+            .expect("runtime handler must be selected")
+            .clone();
+        let matched_target = app
+            .runtime_handler_reliability_row(&runtime_event, &runtime_handler)
+            .expect("synthetic runtime handler must be exactly matched")
+            .internal_ref
+            .clone();
+        let stale_history = app
+            .view_model()
+            .expect("history must be loaded")
+            .hooks
+            .rows
+            .iter()
+            .find(|row| row.internal_ref != matched_target)
+            .expect("fixture must include an unrelated historical handler")
+            .internal_ref
+            .clone();
+        app.selected_handler = Some(stale_history.clone());
+
+        app.handle(Command::EditAlias);
+        assert!(app.alias_editing());
+        assert_eq!(app.alias_edit_target.as_ref(), Some(&matched_target));
+        app.handle(Command::SearchInput('!'));
+        app.handle(Command::Enter);
+        let AppEffect::ApplyAlias(request) = app.handle(Command::Window(TimeWindow::All)) else {
+            panic!("matched runtime alias must produce an explicit apply request");
+        };
+        assert_eq!(request.runtime, matched_target.runtime);
+        assert_eq!(request.handler_key, matched_target.handler_key);
+        assert_ne!(request.handler_key, stale_history.handler_key);
+
+        app.alias_apply_result(AliasApplyOutcome::Saved);
+        assert!(app.alias_annotations.iter().any(|alias| {
+            alias.runtime == matched_target.runtime
+                && alias.handler_key == matched_target.handler_key
+        }));
+        assert!(!app.alias_annotations.iter().any(|alias| {
+            alias.runtime == stale_history.runtime && alias.handler_key == stale_history.handler_key
+        }));
+    }
+
+    #[test]
+    fn runtime_no_history_alias_edit_is_refused() {
+        let mut app = runtime_detail_app(runtime_catalog(), "PreToolUse", "fixture:0:0");
+        app.handle(Command::EditAlias);
+        assert!(!app.alias_editing());
+    }
+
+    #[test]
+    fn runtime_ambiguous_alias_edit_is_refused() {
+        let mut catalog = matched_runtime_catalog();
+        let event = catalog
+            .events
+            .iter_mut()
+            .find(|event| event.runtime_event_name == "Stop")
+            .expect("synthetic event must exist");
+        let mut duplicate = event.handlers[0].clone();
+        duplicate.runtime_catalog_id = "fixture:0:3:ambiguous".to_owned();
+        event.handlers.push(duplicate);
+
+        let mut app = runtime_detail_app(catalog, "Stop", "fixture:0:3");
+        app.handle(Command::EditAlias);
+        assert!(!app.alias_editing());
+    }
+
+    #[test]
+    fn runtime_unsupported_alias_edit_is_refused() {
+        let mut app = runtime_detail_app(runtime_catalog(), "FutureRuntimeEvent", "fixture:0:2");
+        app.handle(Command::EditAlias);
+        assert!(!app.alias_editing());
+    }
+
+    #[test]
+    fn runtime_unavailable_alias_edit_is_refused() {
+        let mut app = App::loading(TimeWindow::Last7Days);
+        app.apply_runtime_catalog(matched_runtime_catalog());
+        show_runtime_detail(&mut app, "Stop", "fixture:0:3");
+        app.handle(Command::EditAlias);
+        assert!(!app.alias_editing());
+    }
+
+    #[test]
+    fn runtime_catalog_selection_change_cancels_an_open_alias_draft() {
+        let mut app = runtime_detail_app(matched_runtime_catalog(), "Stop", "fixture:0:3");
+        app.handle(Command::EditAlias);
+        app.handle(Command::SearchInput('!'));
+        assert!(app.alias_editing());
+
+        let mut refreshed = matched_runtime_catalog();
+        let event = refreshed
+            .events
+            .iter_mut()
+            .find(|event| event.runtime_event_name == "Stop")
+            .expect("synthetic event must exist");
+        event.handlers[0].runtime_catalog_id = "fixture:0:3:replacement".to_owned();
+        event.handlers[0].reliability_handler_key = None;
+        app.apply_runtime_catalog(refreshed);
+
+        assert_eq!(
+            app.selected_runtime_handler()
+                .map(|handler| handler.runtime_catalog_id.as_str()),
+            Some("fixture:0:3:replacement")
+        );
+        assert!(!app.alias_editing());
+        assert!(!matches!(
+            app.handle(Command::Window(TimeWindow::All)),
+            AppEffect::ApplyAlias(_)
+        ));
+    }
+
+    #[test]
+    fn alias_save_error_keeps_the_exact_runtime_target_and_mutates_no_alias() {
+        let mut app = runtime_detail_app(matched_runtime_catalog(), "Stop", "fixture:0:3");
+        let runtime_event = app
+            .selected_runtime_event()
+            .expect("runtime event must be selected")
+            .clone();
+        let runtime_handler = app
+            .selected_runtime_handler()
+            .expect("runtime handler must be selected")
+            .clone();
+        let matched_target = app
+            .runtime_handler_reliability_row(&runtime_event, &runtime_handler)
+            .expect("synthetic runtime handler must be exactly matched")
+            .internal_ref
+            .clone();
+        let unrelated = app
+            .view_model()
+            .expect("history must be loaded")
+            .hooks
+            .rows
+            .iter()
+            .find(|row| row.internal_ref != matched_target)
+            .expect("fixture must include an unrelated historical handler")
+            .internal_ref
+            .clone();
+        app.selected_handler = Some(unrelated.clone());
+
+        app.handle(Command::EditAlias);
+        app.handle(Command::SearchInput('!'));
+        app.handle(Command::Enter);
+        let AppEffect::ApplyAlias(request) = app.handle(Command::Window(TimeWindow::All)) else {
+            panic!("matched runtime alias must produce an explicit apply request");
+        };
+        assert_eq!(request.handler_key, matched_target.handler_key);
+        app.alias_apply_result(AliasApplyOutcome::Failed);
+
+        assert_eq!(app.alias_edit_target.as_ref(), Some(&matched_target));
+        assert_eq!(app.alias_save_state(), AliasSaveState::Failed);
+        assert!(app.alias_annotations.is_empty());
+        assert_ne!(request.handler_key, unrelated.handler_key);
     }
 
     #[test]

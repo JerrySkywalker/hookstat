@@ -1,6 +1,11 @@
 //! Pure Ratatui rendering over an accepted Reliability Center view model.
 
 use crate::analytics::TimeWindow;
+use crate::runtime_presentation::{
+    ReliabilityJoinState, RuntimeCatalogIssue, RuntimeCatalogIssueSeverity,
+    RuntimeEventPresentation, RuntimeHandlerKind, RuntimeHandlerMode, RuntimeHandlerPresentation,
+    RuntimeTrust,
+};
 use crate::workbench::{ChangeKind, HistoricalStatus};
 use ratatui::{
     Frame,
@@ -16,8 +21,7 @@ use super::localization::{
     LanguageState, MessageKey, ResolvedLocale, coverage_name, diagnostic_explanation,
     diagnostic_status_name, diagnostic_title, event_name, failure_rate_with_sample,
     fingerprint_name, health_name, intelligence_availability_name, interface_color_name,
-    interface_language_name, regression_name, runtime_name, sort_name, t, terminal_status_name,
-    window_name,
+    interface_language_name, regression_name, runtime_name, t, terminal_status_name, window_name,
 };
 use super::state::ResourceState;
 use super::theme::{ColorRole, Theme, TypographyRole};
@@ -131,11 +135,15 @@ fn render_content(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoca
             render_failure_cluster_detail(frame, area, app, locale, theme);
             return;
         }
-        Screen::Overview
-        | Screen::Hooks
-        | Screen::Diagnostics
-        | Screen::Settings
-        | Screen::HookDetail => {}
+        Screen::Hooks => {
+            render_hooks(frame, area, app, locale, theme);
+            return;
+        }
+        Screen::HookDetail if app.runtime_hook_detail_active() => {
+            render_runtime_hook_detail(frame, area, app, locale, theme);
+            return;
+        }
+        Screen::Overview | Screen::Diagnostics | Screen::Settings | Screen::HookDetail => {}
     }
     let Some(view) = app.view_model() else {
         let (message, role) = match app.view_state() {
@@ -970,92 +978,794 @@ fn change_evidence_summary(locale: ResolvedLocale, row: &ChangeRowViewModel) -> 
 }
 
 fn render_hooks(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLocale, theme: Theme) {
-    let query = app.hooks_query();
-    let filter = if query.failures_only {
-        t(locale, MessageKey::FilterFailuresOnly)
-    } else {
-        t(locale, MessageKey::FilterAllHooks)
-    };
-    let window = accepted_window(app);
-    let query_line = if area.width < 54 {
-        let search = if query.search.is_empty() {
-            String::new()
+    let Some(catalog) = app.runtime_catalog() else {
+        let message = if app.runtime_catalog_loading() {
+            MessageKey::StateRuntimeCatalogLoading
+        } else if app.runtime_catalog_error() {
+            MessageKey::StateRuntimeCatalogUnavailable
         } else {
-            format!("\n{}: {}", t(locale, MessageKey::FieldSearch), query.search)
-        };
-        format!(
-            "{}\n{}: {}\n{}: {}\n{}: {}{search}",
-            period_selector_for_window(locale, window, app.view_state().is_loading()),
-            t(locale, MessageKey::FieldMetricScope),
-            selected_scope(locale, window),
-            t(locale, MessageKey::FieldFilter),
-            filter,
-            t(locale, MessageKey::FieldSort),
-            sort_name(locale, query.sort),
-        )
-    } else {
-        format!(
-            "{}\n{}: {}\n{}: {} · {}: {} · {}: {}",
-            period_selector_for_window(locale, window, app.view_state().is_loading()),
-            t(locale, MessageKey::FieldMetricScope),
-            selected_scope(locale, window),
-            t(locale, MessageKey::FieldSearch),
-            query.search,
-            t(locale, MessageKey::FieldFilter),
-            filter,
-            t(locale, MessageKey::FieldSort),
-            sort_name(locale, query.sort),
-        )
-    };
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(if area.width < 54 {
-                if query.search.is_empty() { 9 } else { 11 }
-            } else if area.width < 72 {
-                8
-            } else {
-                5
-            }),
-            Constraint::Min(5),
-        ])
-        .split(area);
-    frame.render_widget(
-        Paragraph::new(query_line)
-            .style(theme.typography_style(TypographyRole::Metadata))
-            .block(themed_block(t(locale, MessageKey::ViewHooks), theme))
-            .wrap(Wrap { trim: true }),
-        sections[0],
-    );
-    if app.visible_hooks().is_empty() {
-        let state = if query.search.is_empty() && !query.failures_only {
-            MessageKey::StateEmpty
-        } else {
-            MessageKey::StateEmptySearch
+            MessageKey::StateRuntimeCatalogLoading
         };
         render_state_panel(
             frame,
-            sections[1],
+            area,
             t(locale, MessageKey::ViewHooks),
-            t(locale, state),
+            t(locale, message),
+            if app.runtime_catalog_error() {
+                ColorRole::Danger
+            } else {
+                ColorRole::Info
+            },
+            theme,
+        );
+        return;
+    };
+
+    if app.hooks_handlers_active()
+        && let Some(event) = app.selected_runtime_event()
+    {
+        render_runtime_handlers(frame, area, app, event, locale, theme);
+        return;
+    }
+    render_runtime_events(
+        frame,
+        area,
+        app,
+        &catalog.events,
+        &catalog.issues,
+        locale,
+        theme,
+    );
+}
+
+fn render_runtime_events(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    events: &[RuntimeEventPresentation],
+    issues: &[RuntimeCatalogIssue],
+    locale: ResolvedLocale,
+    theme: Theme,
+) {
+    let mut notices = runtime_resource_notices(app, locale);
+    let issue_text = issues
+        .iter()
+        .map(|issue| {
+            let severity = match issue.severity {
+                RuntimeCatalogIssueSeverity::Warning => t(locale, MessageKey::RuntimeIssueWarning),
+                RuntimeCatalogIssueSeverity::Error => t(locale, MessageKey::RuntimeIssueError),
+            };
+            format!("{severity}: {}", issue.human_message)
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if !issue_text.is_empty() {
+        notices.push(issue_text);
+    }
+    let notice = notices.join(" · ");
+    if area.width < 88 {
+        let rows_per_viewport = usize::from(area.height.saturating_sub(4) / 5).max(1);
+        let (start, end) = visible_list_window(
+            app.runtime_event_selection_index(),
+            events.len(),
+            rows_per_viewport,
+        );
+        let body = events[start..end]
+            .iter()
+            .map(|event| {
+                let selected = app.selected_runtime_event().is_some_and(|current| {
+                    current.runtime_context == event.runtime_context
+                        && current.runtime_event_name == event.runtime_event_name
+                });
+                let marker = if selected && app.hooks_events_active() {
+                    ">"
+                } else {
+                    " "
+                };
+                format!(
+                    "{marker} {}\n  {}: {} · {}: {} · {}: {}\n  {}: {}\n  {}",
+                    runtime_event_name(locale, event),
+                    t(locale, MessageKey::FieldInstalled),
+                    event.installed_count(),
+                    t(locale, MessageKey::FieldActive),
+                    event.active_count(),
+                    t(locale, MessageKey::FieldReview),
+                    event.needs_review_count(),
+                    t(locale, MessageKey::FieldHealth),
+                    runtime_event_health(locale, app, event),
+                    event.description.as_deref().unwrap_or("—"),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        frame.render_widget(
+            Paragraph::new(format!(
+                "{}\n{}{}",
+                t(locale, MessageKey::ViewHooks),
+                if app.hooks_events_active() {
+                    t(locale, MessageKey::HintOpenHandlers)
+                } else {
+                    t(locale, MessageKey::HintFocusEvents)
+                },
+                if notice.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{}", notice)
+                },
+            ))
+            .block(themed_block(t(locale, MessageKey::ViewHooks), theme))
+            .wrap(Wrap { trim: true }),
+            Rect { height: 4, ..area },
+        );
+        frame.render_widget(
+            Paragraph::new(body)
+                .style(theme.typography_style(TypographyRole::Value))
+                .block(themed_block(t(locale, MessageKey::ViewHooks), theme))
+                .wrap(Wrap { trim: true }),
+            Rect {
+                y: area.y.saturating_add(4),
+                height: area.height.saturating_sub(4),
+                ..area
+            },
+        );
+        return;
+    }
+    let header = Row::new([
+        t(locale, MessageKey::ColumnEvent),
+        t(locale, MessageKey::ColumnInstalled),
+        t(locale, MessageKey::ColumnActive),
+        t(locale, MessageKey::ColumnReview),
+        t(locale, MessageKey::ColumnHealth),
+        t(locale, MessageKey::ColumnDescription),
+    ])
+    .style(theme.typography_style(TypographyRole::SectionTitle));
+    let rows_per_viewport = usize::from(area.height.saturating_sub(3)).max(1);
+    let (start, end) = visible_list_window(
+        app.runtime_event_selection_index(),
+        events.len(),
+        rows_per_viewport,
+    );
+    let rows = events[start..end].iter().map(|event| {
+        let selected = app.selected_runtime_event().is_some_and(|current| {
+            current.runtime_context == event.runtime_context
+                && current.runtime_event_name == event.runtime_event_name
+        });
+        let style = if selected && app.hooks_events_active() {
+            theme.color_style(ColorRole::Selected)
+        } else {
+            theme.typography_style(TypographyRole::Value)
+        };
+        Row::new([
+            Cell::from(runtime_event_name(locale, event)),
+            Cell::from(event.installed_count().to_string()),
+            Cell::from(event.active_count().to_string()),
+            Cell::from(event.needs_review_count().to_string()),
+            Cell::from(runtime_event_health(locale, app, event)),
+            Cell::from(event.description.as_deref().unwrap_or("—")),
+        ])
+        .style(style)
+    });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(22),
+            Constraint::Length(11),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(24),
+            Constraint::Min(24),
+        ],
+    )
+    .header(header)
+    .block(themed_block(t(locale, MessageKey::ViewHooks), theme));
+    frame.render_widget(table, area);
+    if !notice.is_empty() {
+        render_notice(
+            frame,
+            area,
+            &format!("{}: {notice}", t(locale, MessageKey::SectionRuntimeIssues)),
             ColorRole::Warning,
+            theme,
+        );
+    }
+}
+
+fn render_runtime_handlers(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    event: &RuntimeEventPresentation,
+    locale: ResolvedLocale,
+    theme: Theme,
+) {
+    let title = format!(
+        "{} — {}",
+        t(locale, MessageKey::ViewHooks),
+        runtime_event_name(locale, event)
+    );
+    if event.handlers.is_empty() {
+        render_state_panel(
+            frame,
+            area,
+            &title,
+            &format!("{}: 0", t(locale, MessageKey::FieldInstalled)),
+            ColorRole::Info,
             theme,
         );
         return;
     }
-    render_hook_rows(
-        frame,
-        sections[1],
-        app.visible_hooks(),
-        HookRowsContext {
-            selected: app.selected_handler(),
-            content_focused: app.local_list_active(),
+    let rows_per_viewport = usize::from(area.height / 4).max(1);
+    let (start, end) = visible_list_window(
+        app.runtime_handler_selection_index(),
+        event.handlers.len(),
+        rows_per_viewport,
+    );
+    let body = event
+        .handlers
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(end - start)
+        .map(|(index, handler)| {
+            let marker = if app
+                .selected_runtime_handler()
+                .is_some_and(|current| current.runtime_catalog_id == handler.runtime_catalog_id)
+            {
+                ">"
+            } else {
+                " "
+            };
+            let state = if handler.managed {
+                "M"
+            } else if handler.needs_review {
+                "!"
+            } else if handler.enabled {
+                "x"
+            } else {
+                " "
+            };
+            format!(
+                "{marker}[{state}] {}\n  {}: {} · {} · {} · {}\n  {}: {} · {}: {}",
+                runtime_handler_label(locale, index, handler),
+                t(locale, MessageKey::FieldEnabled),
+                if handler.enabled {
+                    t(locale, MessageKey::FieldEnabled)
+                } else {
+                    t(locale, MessageKey::FieldDisabled)
+                },
+                handler.source.as_deref().unwrap_or("—"),
+                runtime_handler_kind(locale, &handler.handler_kind),
+                runtime_handler_mode(locale, handler.mode),
+                t(locale, MessageKey::FieldTrust),
+                runtime_trust(locale, handler.trust),
+                t(locale, MessageKey::FieldHealth),
+                runtime_handler_health(locale, app, event, handler),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body = prepend_runtime_resource_notices(body, app, locale);
+    frame.render_widget(
+        Paragraph::new(body)
+            .style(theme.typography_style(TypographyRole::Value))
+            .block(themed_block(&title, theme))
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_runtime_hook_detail(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    locale: ResolvedLocale,
+    theme: Theme,
+) {
+    let Some(event) = app.selected_runtime_event() else {
+        return;
+    };
+    let Some(handler) = app.selected_runtime_handler() else {
+        return;
+    };
+    let handler_type = runtime_handler_kind(locale, &handler.handler_kind);
+    let mut configuration = vec![
+        key_value_text(
             locale,
-            theme,
-            title: t(locale, MessageKey::ViewHooks),
-            compact_scroll_lines: app.detail_scroll_lines(),
+            MessageKey::FieldEvent,
+            &runtime_event_name(locale, event),
+        ),
+        key_value_text(
+            locale,
+            MessageKey::FieldEnabled,
+            if handler.enabled { "true" } else { "false" },
+        ),
+        key_value_text(
+            locale,
+            MessageKey::FieldManaged,
+            if handler.managed { "true" } else { "false" },
+        ),
+        key_value_text(
+            locale,
+            MessageKey::FieldNeedsReview,
+            if handler.needs_review {
+                "true"
+            } else {
+                "false"
+            },
+        ),
+        key_value_text(
+            locale,
+            MessageKey::FieldTrust,
+            runtime_trust(locale, handler.trust),
+        ),
+        key_value_text(locale, MessageKey::FieldHandlerType, &handler_type),
+    ];
+    if let Some(value) = handler.matcher.as_deref() {
+        configuration.push(key_value_text(locale, MessageKey::FieldMatcher, value));
+    }
+    if handler.source.is_some() || handler.source_path.is_some() {
+        let source = match (handler.source.as_deref(), handler.source_path.as_deref()) {
+            (Some(source), Some(path)) if source != path => format!("{source} · {path}"),
+            (Some(source), _) => source.to_owned(),
+            (None, Some(path)) => path.to_owned(),
+            (None, None) => String::new(),
+        };
+        configuration.push(key_value_text(locale, MessageKey::FieldSource, &source));
+    }
+    match &handler.handler_kind {
+        RuntimeHandlerKind::Command { command } => {
+            configuration.push(key_value_text(locale, MessageKey::FieldCommand, command));
+        }
+        RuntimeHandlerKind::McpTool { server, tool } => {
+            configuration.push(key_value_text(locale, MessageKey::FieldMcpServer, server));
+            configuration.push(key_value_text(locale, MessageKey::FieldMcpTool, tool));
+        }
+        RuntimeHandlerKind::Prompt => configuration.push(key_value_text(
+            locale,
+            MessageKey::FieldPrompt,
+            &handler_type,
+        )),
+        RuntimeHandlerKind::Agent => configuration.push(key_value_text(
+            locale,
+            MessageKey::FieldAgent,
+            &handler_type,
+        )),
+        RuntimeHandlerKind::Unknown { .. } => {}
+    }
+    if handler.mode.is_some() {
+        configuration.push(key_value_text(
+            locale,
+            MessageKey::FieldMode,
+            runtime_handler_mode(locale, handler.mode),
+        ));
+    }
+    if let Some(value) = handler.timeout_seconds {
+        configuration.push(key_value_text(
+            locale,
+            MessageKey::FieldTimeout,
+            &format!("{value}s"),
+        ));
+    }
+    if let Some(value) = handler.additional_context_limit {
+        configuration.push(key_value_text(
+            locale,
+            MessageKey::FieldAdditionalContext,
+            &value.to_string(),
+        ));
+    }
+
+    let reliability = if let Some(detail) = app.matched_reliability_detail() {
+        format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            key_value_text(
+                locale,
+                MessageKey::FieldCoverage,
+                &coverage_summary(locale, detail.coverage)
+            ),
+            key_value_text(
+                locale,
+                MessageKey::FieldWindow,
+                window_name(locale, detail.window)
+            ),
+            key_value_text(
+                locale,
+                MessageKey::FieldMetricScope,
+                &selected_scope(locale, detail.window),
+            ),
+            key_value_text(locale, MessageKey::FieldRunCount, &detail.runs.to_string()),
+            key_value_text(
+                locale,
+                MessageKey::FieldSamples,
+                &terminal_denominator(locale, detail.sample_count)
+            ),
+            key_value_text(
+                locale,
+                MessageKey::FieldFailures,
+                &detail.failed_runs.to_string()
+            ),
+            key_value_text(
+                locale,
+                MessageKey::FieldFailureRate,
+                &failure_rate_with_sample(locale, detail.failure_rate_percent, detail.sample_count)
+            ),
+            key_value_text(
+                locale,
+                MessageKey::FieldHealth,
+                health_name(
+                    locale,
+                    presentation_health(detail.coverage, detail.failed_runs, detail.sample_count),
+                ),
+            ),
+            key_value_text(
+                locale,
+                MessageKey::FieldHealthExplanation,
+                risk_reason(
+                    locale,
+                    detail.failed_runs,
+                    detail.sample_count,
+                    detail.coverage,
+                ),
+            ),
+            key_value_text(
+                locale,
+                MessageKey::FieldRisk,
+                &risk_score(locale, detail.risk.score),
+            ),
+            key_value_text(
+                locale,
+                MessageKey::FieldReason,
+                risk_reason(
+                    locale,
+                    detail.failed_runs,
+                    detail.sample_count,
+                    detail.coverage,
+                ),
+            ),
+        )
+    } else {
+        runtime_handler_health(locale, app, event, handler)
+    };
+    let observation = app.matched_reliability_detail().map_or_else(
+        || t(locale, MessageKey::StateReliabilityUnavailable).to_owned(),
+        |detail| {
+            let mut facts = vec![key_value_text(
+                locale,
+                MessageKey::FieldCurrentRevision,
+                &short_revision(&detail.revision),
+            )];
+            if let Some(history) = app.matched_runtime_catalog_history() {
+                facts.extend([
+                    key_value_text(
+                        locale,
+                        MessageKey::FieldFirstSeen,
+                        &format_human_time(
+                            locale,
+                            history.first_seen_unix_ms,
+                            presentation_now(app),
+                        ),
+                    ),
+                    key_value_text(
+                        locale,
+                        MessageKey::FieldLastSeen,
+                        &format_human_time(
+                            locale,
+                            history.last_seen_unix_ms,
+                            presentation_now(app),
+                        ),
+                    ),
+                    key_value_text(
+                        locale,
+                        MessageKey::FieldLatestEvidence,
+                        &format_human_time(
+                            locale,
+                            history.latest_evidence_unix_ms,
+                            presentation_now(app),
+                        ),
+                    ),
+                    key_value_text(
+                        locale,
+                        MessageKey::FieldRevisionCount,
+                        &history.revision_count.to_string(),
+                    ),
+                    key_value_text(
+                        locale,
+                        MessageKey::FieldObservationStatus,
+                        catalog_observation_status(locale, history.historical_status),
+                    ),
+                ]);
+            } else {
+                facts.push(key_value_text(
+                    locale,
+                    MessageKey::FieldObservationStatus,
+                    t(locale, MessageKey::StateReliabilityUnavailable),
+                ));
+            }
+            facts.join("\n")
         },
     );
+    let advanced = app.matched_reliability_detail().map_or_else(
+        || t(locale, MessageKey::StateReliabilityUnavailable).to_owned(),
+        |detail| {
+            let recent = if detail.recent_failures.is_empty() {
+                t(locale, MessageKey::StateNoRecentFailures).to_owned()
+            } else {
+                detail
+                    .recent_failures
+                    .iter()
+                    .map(|failure| {
+                        format!(
+                            "{} · {} · {}",
+                            format_human_time(
+                                locale,
+                                failure.occurred_at_unix_ms,
+                                presentation_now(app),
+                            ),
+                            terminal_status_name(locale, failure.status),
+                            failure.bounded_fingerprint.as_deref().unwrap_or_default(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            let trends = detail
+                .trends
+                .iter()
+                .map(|trend| trend_detail(locale, trend))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let fingerprints = if detail.failure_fingerprints.is_empty() {
+                t(locale, MessageKey::StateNoRecentFailures).to_owned()
+            } else {
+                detail
+                    .failure_fingerprints
+                    .iter()
+                    .map(|cluster| {
+                        format!(
+                            "{}: {} · {} {} · {} {}",
+                            fingerprint_name(locale, cluster.kind),
+                            cluster.occurrences,
+                            t(locale, MessageKey::FieldFirstSeen),
+                            format_human_time(
+                                locale,
+                                cluster.first_occurred_at_unix_ms,
+                                presentation_now(app),
+                            ),
+                            t(locale, MessageKey::FieldLatestEvidence),
+                            format_human_time(
+                                locale,
+                                cluster.latest_occurred_at_unix_ms,
+                                presentation_now(app),
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            format!(
+                "{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}: {}\n{}: {}",
+                t(locale, MessageKey::SectionRecentFailures),
+                recent,
+                t(locale, MessageKey::SectionTrends),
+                trends,
+                t(locale, MessageKey::SectionRevisionComparison),
+                revision_detail(locale, &detail.revision_comparison),
+                t(locale, MessageKey::SectionFailureFingerprints),
+                fingerprints,
+                t(locale, MessageKey::SectionTechnicalMetadata),
+                t(locale, MessageKey::FieldFullRevision),
+                detail.revision,
+                t(locale, MessageKey::FieldInternalIdentity),
+                detail.internal_ref.handler_key,
+            )
+        },
+    );
+    let body = format!(
+        "{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}",
+        t(locale, MessageKey::SectionRuntimeConfiguration),
+        configuration.join("\n"),
+        t(locale, MessageKey::SectionReliabilitySummary),
+        reliability,
+        t(locale, MessageKey::SectionObservationHistory),
+        observation,
+        t(locale, MessageKey::SectionIntelligence),
+        advanced,
+    );
+    let body = prepend_runtime_resource_notices(body, app, locale);
+    frame.render_widget(
+        Paragraph::new(body)
+            .style(theme.typography_style(TypographyRole::Value))
+            .block(themed_block(t(locale, MessageKey::ViewHookDetail), theme))
+            .wrap(Wrap { trim: true })
+            .scroll((app.detail_scroll_lines(), 0)),
+        area,
+    );
+}
+
+fn runtime_event_name(locale: ResolvedLocale, event: &RuntimeEventPresentation) -> String {
+    event
+        .canonical_event
+        .map(|event| event_name(locale, event).to_owned())
+        .unwrap_or_else(|| event.runtime_event_name.clone())
+}
+
+fn runtime_handler_label(
+    locale: ResolvedLocale,
+    index: usize,
+    handler: &RuntimeHandlerPresentation,
+) -> String {
+    match &handler.handler_kind {
+        RuntimeHandlerKind::Command { command } if !command.is_empty() => {
+            truncate_to_width(command, 42)
+        }
+        RuntimeHandlerKind::McpTool { tool, .. } if !tool.is_empty() => tool.clone(),
+        _ => format!("{} {}", t(locale, MessageKey::IdentityHook), index + 1),
+    }
+}
+
+fn runtime_handler_kind(locale: ResolvedLocale, kind: &RuntimeHandlerKind) -> String {
+    match kind {
+        RuntimeHandlerKind::Command { .. } => t(locale, MessageKey::FieldCommand).to_owned(),
+        RuntimeHandlerKind::McpTool { .. } => t(locale, MessageKey::FieldMcpTool).to_owned(),
+        RuntimeHandlerKind::Prompt => t(locale, MessageKey::FieldPrompt).to_owned(),
+        RuntimeHandlerKind::Agent => t(locale, MessageKey::FieldAgent).to_owned(),
+        RuntimeHandlerKind::Unknown { label } => label.clone(),
+    }
+}
+
+fn runtime_handler_mode(locale: ResolvedLocale, mode: Option<RuntimeHandlerMode>) -> &'static str {
+    match mode {
+        Some(RuntimeHandlerMode::Sync) => t(locale, MessageKey::ValueSync),
+        Some(RuntimeHandlerMode::Async) => t(locale, MessageKey::ValueAsync),
+        None => t(locale, MessageKey::StatusUnavailable),
+    }
+}
+
+fn runtime_trust(locale: ResolvedLocale, trust: RuntimeTrust) -> &'static str {
+    match trust {
+        RuntimeTrust::Managed => t(locale, MessageKey::FieldManaged),
+        RuntimeTrust::Trusted => t(locale, MessageKey::ValueTrusted),
+        RuntimeTrust::Untrusted => t(locale, MessageKey::ValueUntrusted),
+        RuntimeTrust::Modified => t(locale, MessageKey::ValueModified),
+        RuntimeTrust::Unknown => t(locale, MessageKey::StatusUnavailable),
+    }
+}
+
+fn runtime_handler_health(
+    locale: ResolvedLocale,
+    app: &App,
+    event: &RuntimeEventPresentation,
+    handler: &RuntimeHandlerPresentation,
+) -> String {
+    if let Some(row) = app.runtime_handler_reliability_row(event, handler) {
+        return health_name(
+            locale,
+            presentation_health(row.coverage, row.failed_runs, row.sample_count),
+        )
+        .to_owned();
+    }
+    app.runtime_event_reliability(event)
+        .into_iter()
+        .find(|(catalog_id, _)| catalog_id == &handler.runtime_catalog_id)
+        .map(|(_, join)| runtime_join_health(locale, join))
+        .unwrap_or_else(|| t(locale, MessageKey::StateReliabilityUnavailable).to_owned())
+}
+
+fn runtime_event_health(
+    locale: ResolvedLocale,
+    app: &App,
+    event: &RuntimeEventPresentation,
+) -> String {
+    let joins = app.runtime_event_reliability(event);
+    if joins.is_empty() {
+        return t(locale, MessageKey::StateReliabilityUnavailable).to_owned();
+    }
+    if joins
+        .iter()
+        .any(|(_, join)| matches!(join, ReliabilityJoinState::Unavailable))
+    {
+        return t(locale, MessageKey::StateReliabilityUnavailable).to_owned();
+    }
+    if joins
+        .iter()
+        .any(|(_, join)| matches!(join, ReliabilityJoinState::Unsupported))
+    {
+        return coverage_summary(locale, crate::domain::EvidenceCoverage::NotAdmitted);
+    }
+    if joins
+        .iter()
+        .any(|(_, join)| matches!(join, ReliabilityJoinState::Ambiguous))
+    {
+        return t(locale, MessageKey::StateJoinAmbiguous).to_owned();
+    }
+    if joins
+        .iter()
+        .any(|(_, join)| matches!(join, ReliabilityJoinState::NoHistory))
+    {
+        return t(locale, MessageKey::StateNotObserved).to_owned();
+    }
+    let matched_health = event
+        .handlers
+        .iter()
+        .filter_map(|handler| app.runtime_handler_reliability_row(event, handler))
+        .map(|row| presentation_health(row.coverage, row.failed_runs, row.sample_count))
+        .fold(None, |worst, health| {
+            Some(conservative_health(worst, health))
+        });
+    if let Some(health) = matched_health {
+        return health_name(locale, health).to_owned();
+    }
+    t(locale, MessageKey::StateReliabilityUnavailable).to_owned()
+}
+
+fn conservative_health(current: Option<Health>, next: Health) -> Health {
+    let rank = |health| match health {
+        Health::Healthy => 0,
+        Health::CoverageLimited => 1,
+        Health::NoTerminalSamples => 2,
+        Health::Degraded => 3,
+    };
+    current
+        .filter(|health| rank(*health) >= rank(next))
+        .unwrap_or(next)
+}
+
+fn runtime_resource_notices(app: &App, locale: ResolvedLocale) -> Vec<String> {
+    let mut notices = Vec::new();
+    if app.runtime_catalog_error() {
+        notices.push(t(locale, MessageKey::StateRuntimeCatalogStale).to_owned());
+    } else if app.runtime_catalog_loading() {
+        notices.push(t(locale, MessageKey::StateRuntimeCatalogLoading).to_owned());
+    }
+    match app.view_state() {
+        ResourceState::Error { .. } => {
+            notices.push(t(locale, MessageKey::StateRefreshFailed).to_owned())
+        }
+        ResourceState::Loading { .. } if app.view_model().is_none() => {
+            notices.push(t(locale, MessageKey::StateLoading).to_owned());
+        }
+        ResourceState::Empty => {
+            notices.push(t(locale, MessageKey::StateReliabilityUnavailable).to_owned())
+        }
+        ResourceState::Loading { .. } | ResourceState::Ready(_) => {}
+    }
+    notices
+}
+
+fn prepend_runtime_resource_notices(body: String, app: &App, locale: ResolvedLocale) -> String {
+    let notices = runtime_resource_notices(app, locale);
+    if notices.is_empty() {
+        body
+    } else {
+        format!("{}\n\n{body}", notices.join(" · "))
+    }
+}
+
+fn visible_list_window(selected: Option<usize>, total: usize, capacity: usize) -> (usize, usize) {
+    if total == 0 {
+        return (0, 0);
+    }
+    let capacity = capacity.max(1).min(total);
+    let selected = selected.unwrap_or(0).min(total - 1);
+    let start = selected
+        .saturating_sub(capacity / 2)
+        .min(total.saturating_sub(capacity));
+    (start, start + capacity)
+}
+
+fn runtime_join_health(locale: ResolvedLocale, join: ReliabilityJoinState) -> String {
+    match join {
+        ReliabilityJoinState::Matched { .. } => {
+            t(locale, MessageKey::StateObservedInSelectedPeriod).to_owned()
+        }
+        ReliabilityJoinState::NoHistory => t(locale, MessageKey::StateNotObserved).to_owned(),
+        ReliabilityJoinState::Ambiguous => t(locale, MessageKey::StateJoinAmbiguous).to_owned(),
+        ReliabilityJoinState::Unsupported => {
+            coverage_summary(locale, crate::domain::EvidenceCoverage::NotAdmitted)
+        }
+        ReliabilityJoinState::Unavailable => {
+            t(locale, MessageKey::StateReliabilityUnavailable).to_owned()
+        }
+    }
 }
 
 struct HookRowsContext<'a> {
@@ -2218,6 +2928,140 @@ mod tests {
     use crate::report::instrumented_report;
     use crate::report::synthetic_fixture_report;
     use ratatui::{Terminal, backend::TestBackend};
+    use serde_json::json;
+
+    fn control_center_catalog() -> crate::runtime_presentation::RuntimePresentationSnapshot {
+        crate::runtime_presentation::RuntimePresentationSnapshot::from_codex_hooks_list(
+            &json!({"result":{"data":[{
+                "cwd":"C:/synthetic/workspace",
+                "warnings":["synthetic catalog warning"],
+                "errors":["synthetic catalog error"],
+                "hooks":[
+                    {"key":"fixture:0:0","eventName":"PreToolUse","handlerType":"command","command":"synthetic command --very-long-safe-argument=1234567890 --another-safe-argument=abcdefghijklmnopqrstuvwxyz","matcher":"^SyntheticToolWithAnIntentionallyLongSafeName$","source":"C:/synthetic/very/long/source/hooks.json","sourcePath":"C:/synthetic/very/long/source/hooks.json","enabled":true,"isManaged":false,"trustStatus":"trusted","async":false,"timeoutSec":9,"additionalContextLimit":64},
+                    {"key":"fixture:0:1","eventName":"PostToolUse","handlerType":"mcp_tool","mcpServer":"synthetic-server","mcpTool":"synthetic-tool","source":"project","enabled":false,"isManaged":false,"trustStatus":"untrusted"},
+                    {"key":"fixture:0:2","eventName":"UserPromptSubmit","handlerType":"prompt","source":"user","enabled":true,"isManaged":false,"trustStatus":"modified"},
+                    {"key":"fixture:0:3","eventName":"SubagentStart","handlerType":"agent","source":"managed","enabled":true,"isManaged":true,"trustStatus":"trusted"},
+                    {"key":"fixture:0:4","eventName":"Interrupt","handlerType":"command","command":"synthetic interrupt","enabled":true,"isManaged":false,"trustStatus":"trusted"},
+                    {"key":"fixture:0:5","eventName":"FutureRuntimeEvent","handlerType":"future_handler","enabled":true,"isManaged":false,"trustStatus":"trusted"}
+                ]
+            }]}}),
+            1_000,
+        )
+        .unwrap()
+    }
+
+    fn control_center_app() -> App {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.apply_runtime_catalog(control_center_catalog());
+        app.handle(super::super::keymap::Command::Down);
+        app.handle(super::super::keymap::Command::Enter);
+        app
+    }
+
+    fn runtime_health_app(coverage: EvidenceCoverage, status: TerminalStatus) -> App {
+        let catalog = control_center_catalog();
+        let event = catalog
+            .events
+            .iter()
+            .find(|event| event.runtime_event_name == "PreToolUse")
+            .unwrap();
+        let handler_key = event.handlers[0].reliability_handler_key.clone().unwrap();
+        let value = HookInvocation {
+            source_key: "runtime-health".into(),
+            source_record_id: "runtime-health-0".into(),
+            runtime: Runtime::Codex,
+            evidence_kind: EvidenceKind::SyntheticFixture,
+            evidence_generation: crate::domain::EvidenceGeneration::SyntheticFixture,
+            coverage,
+            handler: HandlerIdentity {
+                key: handler_key,
+                revision: "runtime-health-r1".into(),
+                label: "Runtime health fixture".into(),
+                source_kind: "fixture".into(),
+                event: HookEvent::PreToolUse,
+                matcher_identity: "fixture".into(),
+                structural_identity: "fixture".into(),
+                execution_mode: ExecutionMode::Sync,
+            },
+            occurred_at_unix_ms: 999,
+            terminal_status: status,
+            duration_ms: None,
+            error_fingerprint: None,
+        };
+        let mut report =
+            instrumented_report(std::slice::from_ref(&value), 1_000, TimeWindow::All, 0, 0);
+        report.qualification.coverage = coverage;
+        let mut app = App::from_snapshot(super::super::app::RefreshSnapshot::from_report(report));
+        assert_eq!(
+            app.view_model().unwrap().hooks.rows[0]
+                .internal_ref
+                .handler_key,
+            event.handlers[0]
+                .reliability_handler_key
+                .as_deref()
+                .unwrap()
+        );
+        app.apply_runtime_catalog(catalog);
+        app.apply_changes(super::super::app::ChangesSnapshot::from_values(
+            vec![value],
+            1_000,
+            TimeWindow::All,
+            coverage,
+        ));
+        app.handle(super::super::keymap::Command::Down);
+        app.handle(super::super::keymap::Command::Enter);
+        for _ in 0..6 {
+            app.handle(super::super::keymap::Command::Down);
+        }
+        assert_eq!(
+            app.selected_runtime_event()
+                .map(|event| event.runtime_event_name.as_str()),
+            Some("PreToolUse")
+        );
+        app
+    }
+
+    fn many_events_catalog() -> crate::runtime_presentation::RuntimePresentationSnapshot {
+        let hooks = (0..20)
+            .map(|index| {
+                json!({
+                    "key": format!("fixture:0:{index}"),
+                    "eventName": format!("FutureEvent{index:02}"),
+                    "handlerType": "command",
+                    "command": format!("event-handler-{index:02}"),
+                    "enabled": true,
+                    "isManaged": false,
+                    "trustStatus": "trusted"
+                })
+            })
+            .collect::<Vec<_>>();
+        crate::runtime_presentation::RuntimePresentationSnapshot::from_codex_hooks_list(
+            &json!({"result":{"data":[{"cwd":"C:/synthetic/many-events","hooks":hooks}]}}),
+            1_000,
+        )
+        .unwrap()
+    }
+
+    fn many_handlers_catalog() -> crate::runtime_presentation::RuntimePresentationSnapshot {
+        let hooks = (0..20)
+            .map(|index| {
+                json!({
+                    "key": format!("fixture:0:{index}"),
+                    "eventName": "PreToolUse",
+                    "handlerType": "command",
+                    "command": format!("handler-{index:02}"),
+                    "enabled": true,
+                    "isManaged": false,
+                    "trustStatus": "trusted"
+                })
+            })
+            .collect::<Vec<_>>();
+        crate::runtime_presentation::RuntimePresentationSnapshot::from_codex_hooks_list(
+            &json!({"result":{"data":[{"cwd":"C:/synthetic/many-handlers","hooks":hooks}]}}),
+            1_000,
+        )
+        .unwrap()
+    }
 
     fn rendered(app: App, locale: ResolvedLocale, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
@@ -2311,6 +3155,208 @@ mod tests {
     }
 
     #[test]
+    fn hooks_control_center_renders_runtime_truth_before_reliability_in_both_locales() {
+        let mut app = control_center_app();
+        let events = rendered(app.clone(), ResolvedLocale::EnUs, 140, 42);
+        assert!(events.contains("Event"));
+        assert!(events.contains("Installed"));
+        assert!(events.contains("Active"));
+        assert!(events.contains("Review"));
+        assert!(events.contains("Before a tool executes"));
+        assert!(events.contains("Interrupt"));
+        assert!(events.contains("FutureRuntimeEvent"));
+        assert!(events.contains("Session end"));
+        assert!(events.contains("synthetic catalog warning"));
+        assert!(events.contains("synthetic catalog error"));
+
+        let chinese = rendered(app.clone(), ResolvedLocale::ZhCn, 140, 42);
+        let chinese = chinese.replace(' ', "");
+        assert!(chinese.contains("已安装"));
+        assert!(chinese.contains("运行时问题"));
+
+        for _ in 0..6 {
+            app.handle(super::super::keymap::Command::Down);
+        }
+        app.handle(super::super::keymap::Command::Enter);
+        let handlers = rendered(app.clone(), ResolvedLocale::EnUs, 100, 40);
+        assert!(handlers.contains("synthetic command"));
+        assert!(handlers.contains("Trusted"));
+        assert!(handlers.contains("Not observed"));
+
+        app.handle(super::super::keymap::Command::Enter);
+        let detail = rendered(app.clone(), ResolvedLocale::EnUs, 140, 58);
+        assert!(detail.contains("Runtime configuration"));
+        assert!(detail.contains("Reliability summary"));
+        assert!(detail.contains("Observation history"));
+        assert!(detail.contains("SyntheticToolWithAnIntentionallyLongSafeName"));
+        assert!(detail.contains("very-long-safe-argument=1234567890"));
+        assert!(detail.contains("C:/synthetic/very/long/source/hooks.json"));
+        assert!(detail.contains("Timeout: 9s"));
+        assert!(detail.contains("Additional context: 64"));
+
+        let narrow = rendered(app, ResolvedLocale::ZhCn, 44, 44).replace(' ', "");
+        assert!(narrow.contains("运行时配置"));
+        assert!(narrow.contains("可靠性摘要"));
+    }
+
+    #[test]
+    fn hooks_control_center_renders_joined_health_errors_unknown_types_and_selected_rows() {
+        let cases = [
+            (
+                EvidenceCoverage::Complete,
+                TerminalStatus::Completed,
+                Health::Healthy,
+            ),
+            (
+                EvidenceCoverage::Complete,
+                TerminalStatus::Failed,
+                Health::Degraded,
+            ),
+            (
+                EvidenceCoverage::Partial,
+                TerminalStatus::Completed,
+                Health::CoverageLimited,
+            ),
+            (
+                EvidenceCoverage::Complete,
+                TerminalStatus::Incomplete,
+                Health::NoTerminalSamples,
+            ),
+        ];
+        for (coverage, status, expected) in cases {
+            let app = runtime_health_app(coverage, status);
+            let event = app.selected_runtime_event().unwrap().clone();
+            let handler = event.handlers[0].clone();
+            assert_eq!(
+                runtime_handler_health(ResolvedLocale::EnUs, &app, &event, &handler),
+                health_name(ResolvedLocale::EnUs, expected)
+            );
+            assert_eq!(
+                runtime_event_health(ResolvedLocale::EnUs, &app, &event),
+                health_name(ResolvedLocale::EnUs, expected)
+            );
+        }
+
+        let mut mixed = runtime_health_app(EvidenceCoverage::Complete, TerminalStatus::Completed);
+        let mut mixed_catalog = control_center_catalog();
+        let event = mixed_catalog
+            .events
+            .iter_mut()
+            .find(|event| event.runtime_event_name == "PreToolUse")
+            .unwrap();
+        let mut unobserved = event.handlers[0].clone();
+        unobserved.runtime_catalog_id = "fixture:0:unobserved".into();
+        unobserved.reliability_handler_key = Some("hk_unobserved".into());
+        event.handlers.push(unobserved);
+        mixed.apply_runtime_catalog(mixed_catalog);
+        let event = mixed.selected_runtime_event().unwrap().clone();
+        assert_eq!(
+            runtime_event_health(ResolvedLocale::EnUs, &mixed, &event),
+            t(ResolvedLocale::EnUs, MessageKey::StateNotObserved)
+        );
+
+        let mut app = runtime_health_app(EvidenceCoverage::Complete, TerminalStatus::Failed);
+        app.reject_refresh();
+        let events = rendered(app.clone(), ResolvedLocale::EnUs, 120, 36);
+        assert!(events.contains("Refresh failed; accepted history retained."));
+        app.handle(super::super::keymap::Command::Enter);
+        app.handle(super::super::keymap::Command::Enter);
+        let detail = rendered(app, ResolvedLocale::EnUs, 120, 100);
+        assert!(detail.contains("Health: ! Degraded"));
+        assert!(detail.contains("Health explanation"));
+
+        let mut intelligence =
+            runtime_health_app(EvidenceCoverage::Complete, TerminalStatus::Failed);
+        intelligence.handle(super::super::keymap::Command::Enter);
+        intelligence.handle(super::super::keymap::Command::Enter);
+        let detail = rendered(intelligence, ResolvedLocale::EnUs, 140, 150);
+        assert!(detail.contains("Metric scope: All observed time, all revisions"));
+        let reliability_summary = &detail[detail.find("Reliability summary").unwrap()
+            ..detail.find("Observation history").unwrap()];
+        assert!(reliability_summary.contains("Risk:"));
+        assert!(reliability_summary.contains("Reason:"));
+        assert!(detail.contains("Current revision"));
+        assert!(detail.contains("Current revision: runtime-heal…"));
+        assert!(!detail.contains("Current revision: runtime-health-r1"));
+        assert!(detail.contains("Observation status"));
+        assert!(detail.contains("Reliability intelligence"));
+        assert!(detail.contains("Recent failures"));
+        assert!(detail.contains("Trends"));
+        assert!(detail.contains("Revision comparison"));
+        assert!(detail.contains("Failure fingerprints"));
+        assert!(detail.contains("Advanced technical metadata"));
+        assert!(detail.contains("Full revision: runtime-health-r1"));
+        let technical_metadata = &detail[detail.find("Advanced technical metadata").unwrap()..];
+        assert!(!technical_metadata.contains("Risk:"));
+        assert!(!technical_metadata.contains("Reason:"));
+
+        let mut unknown = control_center_app();
+        unknown.handle(super::super::keymap::Command::Enter);
+        let handlers = rendered(unknown.clone(), ResolvedLocale::EnUs, 100, 36);
+        assert!(handlers.contains("future_handler"));
+        unknown.handle(super::super::keymap::Command::Enter);
+        let detail = rendered(unknown, ResolvedLocale::EnUs, 100, 48);
+        assert!(detail.contains("Handler type: future_handler"));
+
+        let mut disabled = control_center_app();
+        for _ in 0..4 {
+            disabled.handle(super::super::keymap::Command::Down);
+        }
+        disabled.handle(super::super::keymap::Command::Enter);
+        let handlers = rendered(disabled.clone(), ResolvedLocale::EnUs, 100, 36);
+        assert!(handlers.contains("Enabled: Disabled"));
+        assert!(handlers.contains("Untrusted"));
+        disabled.handle(super::super::keymap::Command::Enter);
+        let detail = rendered(disabled, ResolvedLocale::EnUs, 100, 48);
+        assert!(detail.contains("Enabled: false"));
+        assert!(!detail.contains("Disabled: false"));
+    }
+
+    #[test]
+    fn hooks_control_center_keeps_large_event_and_handler_selections_visible() {
+        let mut events = App::from_report(synthetic_fixture_report(1_000));
+        events.apply_runtime_catalog(many_events_catalog());
+        events.handle(super::super::keymap::Command::Down);
+        events.handle(super::super::keymap::Command::Enter);
+        events.handle(super::super::keymap::Command::PageDown);
+        assert_eq!(events.runtime_event_selection_index(), Some(5));
+        assert!(rendered(events, ResolvedLocale::EnUs, 44, 24).contains("FutureEvent05"));
+
+        let mut handlers = App::from_report(synthetic_fixture_report(1_000));
+        handlers.apply_runtime_catalog(many_handlers_catalog());
+        handlers.handle(super::super::keymap::Command::Down);
+        handlers.handle(super::super::keymap::Command::Enter);
+        for _ in 0..5 {
+            handlers.handle(super::super::keymap::Command::Down);
+        }
+        handlers.handle(super::super::keymap::Command::Enter);
+        handlers.handle(super::super::keymap::Command::PageDown);
+        assert_eq!(handlers.runtime_handler_selection_index(), Some(5));
+        assert!(rendered(handlers, ResolvedLocale::EnUs, 44, 24).contains("handler-05"));
+
+        let mut fallback_catalog = many_handlers_catalog();
+        let event = fallback_catalog
+            .events
+            .iter_mut()
+            .find(|event| event.runtime_event_name == "PreToolUse")
+            .unwrap();
+        for handler in &mut event.handlers {
+            handler.handler_kind = crate::runtime_presentation::RuntimeHandlerKind::Prompt;
+        }
+        let mut fallback = App::from_report(synthetic_fixture_report(1_000));
+        fallback.apply_runtime_catalog(fallback_catalog);
+        fallback.handle(super::super::keymap::Command::Down);
+        fallback.handle(super::super::keymap::Command::Enter);
+        for _ in 0..5 {
+            fallback.handle(super::super::keymap::Command::Down);
+        }
+        fallback.handle(super::super::keymap::Command::Enter);
+        fallback.handle(super::super::keymap::Command::PageDown);
+        let fallback_rendered = rendered(fallback, ResolvedLocale::EnUs, 44, 24);
+        assert!(fallback_rendered.contains("hook 6"));
+    }
+
+    #[test]
     fn shared_shell_uses_two_row_header_sections_marker_and_contextual_footer() {
         let app = App::from_report(synthetic_fixture_report(1_000));
         let english = rendered(app, ResolvedLocale::EnUs, 100, 30);
@@ -2319,6 +3365,30 @@ mod tests {
         assert!(english.contains("> Overview"));
         assert!(!english.contains("•"));
         assert!(english.contains("↑↓ navigate  Enter open  ? help  r refresh  q quit"));
+    }
+
+    #[test]
+    fn historical_detail_rendering_ignores_stale_runtime_selection() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.apply_runtime_catalog(control_center_catalog());
+        app.handle(super::super::keymap::Command::Down);
+        app.handle(super::super::keymap::Command::Enter);
+        app.handle(super::super::keymap::Command::Enter);
+        app.handle(super::super::keymap::Command::Enter);
+        assert_eq!(app.screen(), Screen::HookDetail);
+        assert!(app.selected_runtime_handler().is_some());
+
+        app.handle(super::super::keymap::Command::Back);
+        app.handle(super::super::keymap::Command::Back);
+        app.handle(super::super::keymap::Command::Back);
+        app.handle(super::super::keymap::Command::Up);
+        assert_eq!(app.screen(), Screen::Overview);
+        app.handle(super::super::keymap::Command::Enter);
+        assert_eq!(app.screen(), Screen::HookDetail);
+
+        let historical = rendered(app, ResolvedLocale::EnUs, 120, 70);
+        assert!(historical.contains("Reliability intelligence"));
+        assert!(!historical.contains("Runtime configuration"));
     }
 
     #[test]
@@ -2430,7 +3500,11 @@ mod tests {
         empty.handle(super::super::keymap::Command::Enter);
         assert_eq!(empty.screen(), Screen::Hooks);
         let empty_buffer = rendered(empty, ResolvedLocale::ZhCn, 100, 30);
-        assert!(empty_buffer.replace(' ', "").contains("尚无已接纳"));
+        assert!(
+            empty_buffer
+                .replace(' ', "")
+                .contains("正在加载当前运行时目录")
+        );
 
         let mut diagnostics = DiagnosticsReport::empty(1_000);
         diagnostics.overall_status = DiagnosticStatus::Fail;
@@ -2534,31 +3608,15 @@ mod tests {
         app.handle(super::super::keymap::Command::Enter);
         assert_eq!(app.screen(), Screen::Hooks);
         let hooks = rendered(app.clone(), ResolvedLocale::EnUs, 120, 40);
-        assert!(hooks.contains("Metric scope: Selected Last 7 days, all revisions"));
-        assert!(hooks.contains("Coverage:"));
-        assert!(hooks.contains("Reason:"));
+        assert!(hooks.contains("Loading current runtime catalog"));
         let compact_hooks = rendered(app.clone(), ResolvedLocale::EnUs, 44, 40);
-        assert!(compact_hooks.contains("Metric scope"));
-        assert!(compact_hooks.contains("Selected"));
-        assert!(compact_hooks.contains("Last 7"));
-        assert!(compact_hooks.contains("days"));
-        assert!(compact_hooks.contains("Coverage"));
-        assert!(compact_hooks.contains("Reason"));
+        assert!(compact_hooks.contains("Loading"));
+        assert!(compact_hooks.contains("catalog"));
         let compact_short = rendered(app.clone(), ResolvedLocale::EnUs, 44, 16);
-        assert!(compact_short.contains("Metric scope"));
-        let mut scrolled_hooks = app.clone();
-        scrolled_hooks.handle(super::super::keymap::Command::PageDown);
-        scrolled_hooks.handle(super::super::keymap::Command::PageDown);
-        let coverage_page = rendered(scrolled_hooks.clone(), ResolvedLocale::EnUs, 44, 16);
-        assert!(coverage_page.contains("Coverage"));
-        scrolled_hooks.handle(super::super::keymap::Command::PageDown);
-        let reason_page = rendered(scrolled_hooks, ResolvedLocale::EnUs, 44, 16);
-        assert!(reason_page.contains("Reason"));
+        assert!(compact_short.contains("Loading"));
         app.handle(super::super::keymap::Command::Window(TimeWindow::Today));
         let pending_hooks = rendered(app, ResolvedLocale::EnUs, 120, 40);
-        assert!(pending_hooks.contains("Loading accepted reliability data"));
-        assert!(pending_hooks.contains("Selected Last 7 days, all revisions"));
-        assert!(!pending_hooks.contains("Metric scope: Selected Today, all revisions"));
+        assert!(pending_hooks.contains("Loading current runtime catalog"));
 
         let mut changes = changes_app();
         let changes_list = rendered(changes.clone(), ResolvedLocale::EnUs, 100, 40);

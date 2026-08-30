@@ -2,7 +2,17 @@
 
 ## Status
 
-PLANNED from public HookStat v0.3.1.
+IN_PROGRESS from public HookStat v0.3.1.
+
+```text
+G40=ACCEPTED
+G41=ACCEPTED
+G42=ACTIVE
+G43=ACCEPTED
+G44=WAITING_G42
+G45=WAITING_G42_G44
+G46R=WAITING
+```
 
 ```text
 PUBLIC_BASELINE=v0.3.1
