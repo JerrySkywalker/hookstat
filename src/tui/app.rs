@@ -591,6 +591,7 @@ impl App {
                     self.settings_editor.enter_or_finish();
                 } else if self.screen == Screen::Hooks && !self.hooks_list_active() {
                     self.local_mode = LocalMode::HooksList;
+                    self.detail_scroll_lines = 0;
                     self.repair_handler_selection();
                 } else if self.screen == Screen::Changes && !self.changes_list_active() {
                     self.local_mode = LocalMode::ChangesList;
@@ -1153,6 +1154,7 @@ impl App {
             .unwrap_or(0);
         let next = (current as isize + delta).rem_euclid(candidates.len() as isize) as usize;
         self.selected_handler = Some(candidates[next].clone());
+        self.detail_scroll_lines = 0;
     }
 
     fn page_content(&mut self, direction: isize) {
@@ -1161,7 +1163,7 @@ impl App {
         } else if self.screen == Screen::ChangeDetail {
             self.move_changes_detail_scroll(direction.saturating_mul(6));
         } else if self.screen == Screen::Hooks && self.hooks_list_active() {
-            self.move_content(direction.saturating_mul(5));
+            self.move_detail_scroll(direction.saturating_mul(3));
         } else if self.screen == Screen::Changes && self.changes_list_active() {
             self.move_change(direction.saturating_mul(5));
         } else if self.screen == Screen::FailureClusters && self.failure_clusters_active() {
@@ -1194,6 +1196,7 @@ impl App {
             .accepted()
             .map(|view| view.filtered_hooks(&self.hooks_query))
             .unwrap_or_default();
+        self.detail_scroll_lines = 0;
     }
 
     fn rebuild_visible_changes(&mut self) {

@@ -524,6 +524,7 @@ fn render_overview(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoc
             locale,
             theme,
             title: t(locale, MessageKey::SectionRiskyHooks),
+            compact_scroll_lines: 0,
         },
     );
 }
@@ -1050,6 +1051,7 @@ fn render_hooks(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLocale
             locale,
             theme,
             title: t(locale, MessageKey::ViewHooks),
+            compact_scroll_lines: app.detail_scroll_lines(),
         },
     );
 }
@@ -1060,6 +1062,7 @@ struct HookRowsContext<'a> {
     locale: ResolvedLocale,
     theme: Theme,
     title: &'a str,
+    compact_scroll_lines: u16,
 }
 
 fn render_hook_rows(
@@ -1126,7 +1129,8 @@ fn render_hook_rows(
             Paragraph::new(content)
                 .style(context.theme.typography_style(TypographyRole::Value))
                 .block(themed_block(context.title, context.theme))
-                .wrap(Wrap { trim: true }),
+                .wrap(Wrap { trim: true })
+                .scroll((context.compact_scroll_lines, 0)),
             area,
         );
         return;
@@ -2502,6 +2506,16 @@ mod tests {
         assert!(compact_hooks.contains("days"));
         assert!(compact_hooks.contains("Coverage"));
         assert!(compact_hooks.contains("Reason"));
+        let compact_short = rendered(app.clone(), ResolvedLocale::EnUs, 44, 16);
+        assert!(compact_short.contains("Metric scope"));
+        let mut scrolled_hooks = app.clone();
+        scrolled_hooks.handle(super::super::keymap::Command::PageDown);
+        scrolled_hooks.handle(super::super::keymap::Command::PageDown);
+        let coverage_page = rendered(scrolled_hooks.clone(), ResolvedLocale::EnUs, 44, 16);
+        assert!(coverage_page.contains("Coverage"));
+        scrolled_hooks.handle(super::super::keymap::Command::PageDown);
+        let reason_page = rendered(scrolled_hooks, ResolvedLocale::EnUs, 44, 16);
+        assert!(reason_page.contains("Reason"));
         app.handle(super::super::keymap::Command::Window(TimeWindow::Today));
         let pending_hooks = rendered(app, ResolvedLocale::EnUs, 120, 40);
         assert!(pending_hooks.contains("Loading accepted reliability data"));
