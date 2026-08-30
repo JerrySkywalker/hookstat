@@ -63,6 +63,15 @@ Assert-Case -Name 'docs_only' -Paths @('docs/process/guide.md') -Expected @{
 Assert-Case -Name 'governance_only' -Paths @('dev_governance_files/FAST_LANE.md') -Expected @{
     RISK_D = $true; LIGHTWEIGHT_ONLY = $true; RUN_FULL_WINDOWS = $false
 }
+Assert-Case -Name 'agent_instructions_only' -Paths @('AGENTS.md') -Expected @{
+    RISK_D = $true; LIGHTWEIGHT_ONLY = $true; RUN_FULL_WINDOWS = $false; RUN_FULL_UBUNTU = $false; UNKNOWN_RISK = $false
+}
+Assert-Case -Name 'goal_contract_only' -Paths @('goals/HS-G41-LIVE-RUNTIME-HOOK-CATALOG.md') -Expected @{
+    RISK_D = $true; LIGHTWEIGHT_ONLY = $true; RUN_FULL_WINDOWS = $false; RUN_FULL_UBUNTU = $false; UNKNOWN_RISK = $false
+}
+Assert-Case -Name 'governance_execution_contract' -Paths @('AGENTS.md', 'goals/HS-G41-LIVE-RUNTIME-HOOK-CATALOG.md') -Expected @{
+    RISK_D = $true; LIGHTWEIGHT_ONLY = $true; RUN_FULL_WINDOWS = $false; RUN_FULL_UBUNTU = $false; UNKNOWN_RISK = $false
+}
 Assert-Case -Name 'readme_only' -Paths @('README.md') -Expected @{
     RISK_D = $true; LIGHTWEIGHT_ONLY = $true; RUN_FULL_UBUNTU = $false
 }
