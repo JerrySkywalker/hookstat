@@ -1276,11 +1276,7 @@ fn render_runtime_hook_detail(
         ),
         key_value_text(
             locale,
-            if handler.enabled {
-                MessageKey::FieldEnabled
-            } else {
-                MessageKey::FieldDisabled
-            },
+            MessageKey::FieldEnabled,
             if handler.enabled { "true" } else { "false" },
         ),
         key_value_text(
@@ -3307,9 +3303,13 @@ mod tests {
             disabled.handle(super::super::keymap::Command::Down);
         }
         disabled.handle(super::super::keymap::Command::Enter);
-        let handlers = rendered(disabled, ResolvedLocale::EnUs, 100, 36);
+        let handlers = rendered(disabled.clone(), ResolvedLocale::EnUs, 100, 36);
         assert!(handlers.contains("Enabled: Disabled"));
         assert!(handlers.contains("Untrusted"));
+        disabled.handle(super::super::keymap::Command::Enter);
+        let detail = rendered(disabled, ResolvedLocale::EnUs, 100, 48);
+        assert!(detail.contains("Enabled: false"));
+        assert!(!detail.contains("Disabled: false"));
     }
 
     #[test]
