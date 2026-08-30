@@ -241,6 +241,12 @@ pub enum AliasSaveState {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AliasEditOrigin {
+    HistoricalDetail,
+    RuntimeDetail,
+}
+
 impl SettingsField {
     const ALL: [Self; 2] = [Self::Language, Self::Color];
 }
@@ -276,7 +282,10 @@ pub struct App {
     settings_save_state: SettingsSaveState,
     alias_annotations: Vec<AliasAnnotation>,
     alias_editor: SettingsEditor<AliasField>,
-    alias_handler: Option<HandlerRef>,
+    /// The exact historical identity captured when alias editing begins.
+    /// It never follows the mutable list or runtime-detail selection.
+    alias_edit_target: Option<HandlerRef>,
+    alias_edit_origin: Option<AliasEditOrigin>,
     alias_expected: Option<String>,
     alias_base_label: String,
     alias_draft: String,
@@ -337,7 +346,8 @@ impl App {
             settings_save_state: SettingsSaveState::Clean,
             alias_annotations: Vec::new(),
             alias_editor: SettingsEditor::new(AliasField::Name),
-            alias_handler: None,
+            alias_edit_target: None,
+            alias_edit_origin: None,
             alias_expected: None,
             alias_base_label: String::new(),
             alias_draft: String::new(),
@@ -389,7 +399,8 @@ impl App {
             settings_save_state: SettingsSaveState::Clean,
             alias_annotations: Vec::new(),
             alias_editor: SettingsEditor::new(AliasField::Name),
-            alias_handler: None,
+            alias_edit_target: None,
+            alias_edit_origin: None,
             alias_expected: None,
             alias_base_label: String::new(),
             alias_draft: String::new(),
@@ -448,6 +459,15 @@ impl App {
             .handlers
             .iter()
             .find(|handler| handler.runtime_catalog_id == selected)
+    }
+
+    /// Runtime selection state may remain cached after moving back to a
+    /// historical detail. Only the runtime handler drill-down owns a runtime
+    /// Hook Detail rendering or runtime-sourced alias admission.
+    pub fn runtime_hook_detail_active(&self) -> bool {
+        self.screen == Screen::HookDetail
+            && self.local_mode == LocalMode::HooksHandlers
+            && self.selected_runtime_handler().is_some()
     }
 
     /// The accepted reliability row for this exact live handler identity.
@@ -669,7 +689,7 @@ impl App {
     }
 
     pub const fn alias_editing(&self) -> bool {
-        self.alias_handler.is_some()
+        self.alias_edit_target.is_some()
     }
 
     pub const fn alias_text_editing(&self) -> bool {
@@ -677,7 +697,7 @@ impl App {
     }
 
     pub fn alias_draft(&self) -> Option<&str> {
-        self.alias_handler
+        self.alias_edit_target
             .as_ref()
             .map(|_| self.alias_draft.as_str())
     }
@@ -687,7 +707,7 @@ impl App {
     }
 
     pub fn alias_dirty(&self) -> bool {
-        self.alias_handler.is_some()
+        self.alias_edit_target.is_some()
             && self.alias_draft
                 != self
                     .alias_expected
@@ -925,6 +945,9 @@ impl App {
                 AppEffect::None
             }
             Command::Filter => {
+                if self.alias_editing() {
+                    self.cancel_alias_edit();
+                }
                 if self.screen == Screen::HookDetail && self.selected_runtime_handler.is_none() {
                     self.screen = Screen::FailureClusters;
                     self.local_mode = LocalMode::FailureClusters;
@@ -962,20 +985,40 @@ impl App {
             // transport implementation becomes concurrent.
             return;
         }
+        let previous_selection = self.selected_handler.clone();
         self.requested_window = view_model.overview.window;
         self.view = std::mem::replace(&mut self.view, ResourceState::Empty).ready(view_model);
         self.alias_annotations = alias_annotations;
         self.rebuild_visible_hooks();
         self.repair_handler_selection();
+        if self.alias_editing() && previous_selection != self.selected_handler {
+            self.cancel_alias_edit();
+        }
     }
 
     /// Accepts a local-only runtime catalog. Selection is retained by the
     /// runtime's exact context/event and catalog handler identity whenever the
     /// refreshed catalog still contains them.
     pub fn apply_runtime_catalog(&mut self, snapshot: RuntimePresentationSnapshot) {
+        let previous_selection = (
+            self.selected_runtime_event.clone(),
+            self.selected_runtime_handler.clone(),
+        );
+        let previous_target = self.alias_edit_target.clone();
         self.runtime_catalog.accepted(snapshot);
         self.repair_runtime_event_selection();
         self.repair_runtime_handler_selection();
+        let selection_changed = previous_selection
+            != (
+                self.selected_runtime_event.clone(),
+                self.selected_runtime_handler.clone(),
+            );
+        let target_changed = self.runtime_alias_edit_target() != previous_target;
+        if self.alias_edit_origin == Some(AliasEditOrigin::RuntimeDetail)
+            && (selection_changed || target_changed)
+        {
+            self.cancel_alias_edit();
+        }
     }
 
     /// A catalog refresh error never erases the last accepted runtime truth,
@@ -1231,8 +1274,44 @@ impl App {
         }
     }
 
+    fn runtime_alias_edit_target(&self) -> Option<HandlerRef> {
+        if !self.runtime_hook_detail_active() {
+            return None;
+        }
+        let event = self.selected_runtime_event()?;
+        let handler = self.selected_runtime_handler()?;
+        let ReliabilityJoinState::Matched { handler_key } = self
+            .runtime_event_reliability(event)
+            .into_iter()
+            .find(|(catalog_id, _)| catalog_id == &handler.runtime_catalog_id)
+            .map(|(_, join)| join)?
+        else {
+            return None;
+        };
+        let target = HandlerRef {
+            runtime: Runtime::Codex,
+            handler_key,
+        };
+        self.view_model()?.detail(&target)?;
+        Some(target)
+    }
+
+    /// Returns the sole historical identity that the visible detail is allowed
+    /// to edit. A runtime-detail path has no fallback to the unrelated legacy
+    /// selection: it must prove a unique reliability join first.
+    fn alias_edit_target_for_current_detail(&self) -> Option<(AliasEditOrigin, HandlerRef)> {
+        if self.runtime_hook_detail_active() {
+            self.runtime_alias_edit_target()
+                .map(|target| (AliasEditOrigin::RuntimeDetail, target))
+        } else {
+            let target = self.selected_handler.clone()?;
+            self.view_model()?.detail(&target)?;
+            Some((AliasEditOrigin::HistoricalDetail, target))
+        }
+    }
+
     fn begin_alias_edit(&mut self) {
-        let Some(reference) = self.selected_handler.clone() else {
+        let Some((origin, reference)) = self.alias_edit_target_for_current_detail() else {
             return;
         };
         let Some(detail) = self.view_model().and_then(|view| view.detail(&reference)) else {
@@ -1249,7 +1328,8 @@ impl App {
                 alias.runtime == reference.runtime && alias.handler_key == reference.handler_key
             })
             .map(|alias| alias.display_name.clone());
-        self.alias_handler = Some(reference);
+        self.alias_edit_target = Some(reference);
+        self.alias_edit_origin = Some(origin);
         self.alias_expected = expected_alias.clone();
         self.alias_base_label = base_label;
         self.alias_draft = expected_alias.unwrap_or_else(|| self.alias_base_label.clone());
@@ -1274,7 +1354,8 @@ impl App {
     fn cancel_alias_edit(&mut self) {
         self.alias_text_editing = false;
         self.alias_editor = SettingsEditor::new(AliasField::Name);
-        self.alias_handler = None;
+        self.alias_edit_target = None;
+        self.alias_edit_origin = None;
         self.alias_expected = None;
         self.alias_base_label.clear();
         self.alias_draft.clear();
@@ -1282,7 +1363,7 @@ impl App {
     }
 
     fn revert_alias(&mut self) {
-        if self.alias_handler.is_none() {
+        if self.alias_edit_target.is_none() {
             return;
         }
         self.alias_draft = self
@@ -1300,7 +1381,7 @@ impl App {
         if !self.alias_dirty() {
             return AppEffect::None;
         }
-        let Some(reference) = self.alias_handler.as_ref() else {
+        let Some(reference) = self.alias_edit_target.as_ref() else {
             return AppEffect::None;
         };
         AppEffect::ApplyAlias(AliasApplyRequest {
@@ -1314,7 +1395,7 @@ impl App {
     pub fn alias_apply_result(&mut self, outcome: AliasApplyOutcome) {
         match outcome {
             AliasApplyOutcome::Saved => {
-                if let Some(reference) = &self.alias_handler {
+                if let Some(reference) = &self.alias_edit_target {
                     self.alias_annotations.retain(|alias| {
                         alias.runtime != reference.runtime
                             || alias.handler_key != reference.handler_key
@@ -1592,6 +1673,49 @@ mod tests {
             1_000,
         )
         .unwrap()
+    }
+
+    fn matched_runtime_catalog() -> RuntimePresentationSnapshot {
+        let mut catalog = runtime_catalog();
+        let handler = catalog
+            .events
+            .iter_mut()
+            .find(|event| event.runtime_event_name == "Stop")
+            .expect("synthetic event must exist")
+            .handlers
+            .first_mut()
+            .expect("synthetic handler must exist");
+        handler.reliability_handler_key = Some("alpha".to_owned());
+        catalog
+    }
+
+    fn show_runtime_detail(app: &mut App, event_name: &str, handler_id: &str) {
+        let context = app
+            .runtime_catalog()
+            .and_then(|catalog| {
+                catalog
+                    .events
+                    .iter()
+                    .find(|event| event.runtime_event_name == event_name)
+            })
+            .expect("synthetic event must exist")
+            .runtime_context
+            .clone();
+        app.screen = Screen::HookDetail;
+        app.local_mode = LocalMode::HooksHandlers;
+        app.selected_runtime_event = Some((context, event_name.to_owned()));
+        app.selected_runtime_handler = Some(handler_id.to_owned());
+    }
+
+    fn runtime_detail_app(
+        catalog: RuntimePresentationSnapshot,
+        event_name: &str,
+        handler_id: &str,
+    ) -> App {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.apply_runtime_catalog(catalog);
+        show_runtime_detail(&mut app, event_name, handler_id);
+        app
     }
 
     #[test]
@@ -1937,6 +2061,295 @@ mod tests {
         assert_eq!(app.alias_save_state(), AliasSaveState::Conflict);
         app.handle(Command::Back);
         assert!(!app.alias_editing());
+    }
+
+    #[test]
+    fn legacy_alias_edit_uses_the_historical_detail_even_after_runtime_navigation() {
+        let mut app = runtime_detail_app(matched_runtime_catalog(), "Stop", "fixture:0:3");
+        let legacy_target = app
+            .view_model()
+            .expect("history must be loaded")
+            .hooks
+            .rows
+            .iter()
+            .find(|row| row.internal_ref.handler_key == "beta")
+            .expect("fixture must include the historical detail")
+            .internal_ref
+            .clone();
+        app.selected_handler = Some(legacy_target.clone());
+        // Opening a historical detail from Overview keeps its own local mode,
+        // even if a prior runtime navigation left selections in memory.
+        app.local_mode = LocalMode::HooksEvents;
+
+        app.handle(Command::EditAlias);
+        assert_eq!(app.alias_edit_target.as_ref(), Some(&legacy_target));
+        app.handle(Command::SearchInput('!'));
+        app.handle(Command::Enter);
+        let AppEffect::ApplyAlias(request) = app.handle(Command::Window(TimeWindow::All)) else {
+            panic!("legacy detail must retain alias editing");
+        };
+        assert_eq!(request.runtime, legacy_target.runtime);
+        assert_eq!(request.handler_key, legacy_target.handler_key);
+    }
+
+    #[test]
+    fn historical_selection_change_cancels_an_open_alias_draft() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        let historical_target = app
+            .view_model()
+            .expect("history must be loaded")
+            .hooks
+            .rows
+            .iter()
+            .find(|row| row.internal_ref.handler_key == "beta")
+            .expect("fixture must include the historical detail")
+            .internal_ref
+            .clone();
+        app.selected_handler = Some(historical_target);
+        app.screen = Screen::HookDetail;
+        app.handle(Command::EditAlias);
+        app.handle(Command::SearchInput('!'));
+        assert!(app.alias_editing());
+
+        let mut refreshed = synthetic_fixture_report(1_000);
+        refreshed
+            .handlers
+            .retain(|handler| handler.handler.key != "beta");
+        app.apply_refresh(RefreshSnapshot::from_report(refreshed));
+
+        assert!(!app.alias_editing());
+        assert!(!matches!(
+            app.handle(Command::Window(TimeWindow::All)),
+            AppEffect::ApplyAlias(_)
+        ));
+    }
+
+    #[test]
+    fn failure_cluster_navigation_cancels_an_open_historical_alias_draft() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.screen = Screen::HookDetail;
+        app.handle(Command::EditAlias);
+        app.handle(Command::SearchInput('!'));
+        app.handle(Command::Enter);
+        assert!(app.alias_editing());
+        assert!(!app.alias_text_editing());
+
+        app.handle(Command::Filter);
+
+        assert_eq!(app.screen(), Screen::FailureClusters);
+        assert!(!app.alias_editing());
+        assert!(!matches!(
+            app.handle(Command::Window(TimeWindow::All)),
+            AppEffect::ApplyAlias(_)
+        ));
+    }
+
+    #[test]
+    fn runtime_identity_change_cancels_an_open_alias_draft_even_with_the_same_catalog_id() {
+        let mut app = runtime_detail_app(matched_runtime_catalog(), "Stop", "fixture:0:3");
+        app.handle(Command::EditAlias);
+        app.handle(Command::SearchInput('!'));
+        assert!(app.alias_editing());
+
+        let mut refreshed = matched_runtime_catalog();
+        let handler = refreshed
+            .events
+            .iter_mut()
+            .find(|event| event.runtime_event_name == "Stop")
+            .expect("synthetic event must exist")
+            .handlers
+            .first_mut()
+            .expect("synthetic handler must exist");
+        handler.reliability_handler_key = Some("beta".to_owned());
+        app.apply_runtime_catalog(refreshed);
+
+        assert!(!app.alias_editing());
+        assert!(!matches!(
+            app.handle(Command::Window(TimeWindow::All)),
+            AppEffect::ApplyAlias(_)
+        ));
+    }
+
+    #[test]
+    fn runtime_catalog_arrival_preserves_an_open_historical_alias_draft() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.screen = Screen::HookDetail;
+        app.handle(Command::EditAlias);
+        app.handle(Command::SearchInput('!'));
+        let target_before_catalog = app.alias_edit_target.clone();
+        assert!(app.alias_editing());
+
+        app.apply_runtime_catalog(matched_runtime_catalog());
+
+        assert_eq!(app.alias_edit_target, target_before_catalog);
+        assert!(app.alias_editing());
+        app.handle(Command::Enter);
+        assert!(matches!(
+            app.handle(Command::Window(TimeWindow::All)),
+            AppEffect::ApplyAlias(_)
+        ));
+    }
+
+    #[test]
+    fn runtime_matched_alias_edit_captures_the_runtime_target_not_stale_history() {
+        let mut app = runtime_detail_app(matched_runtime_catalog(), "Stop", "fixture:0:3");
+        let runtime_event = app
+            .selected_runtime_event()
+            .expect("runtime event must be selected")
+            .clone();
+        let runtime_handler = app
+            .selected_runtime_handler()
+            .expect("runtime handler must be selected")
+            .clone();
+        let matched_target = app
+            .runtime_handler_reliability_row(&runtime_event, &runtime_handler)
+            .expect("synthetic runtime handler must be exactly matched")
+            .internal_ref
+            .clone();
+        let stale_history = app
+            .view_model()
+            .expect("history must be loaded")
+            .hooks
+            .rows
+            .iter()
+            .find(|row| row.internal_ref != matched_target)
+            .expect("fixture must include an unrelated historical handler")
+            .internal_ref
+            .clone();
+        app.selected_handler = Some(stale_history.clone());
+
+        app.handle(Command::EditAlias);
+        assert!(app.alias_editing());
+        assert_eq!(app.alias_edit_target.as_ref(), Some(&matched_target));
+        app.handle(Command::SearchInput('!'));
+        app.handle(Command::Enter);
+        let AppEffect::ApplyAlias(request) = app.handle(Command::Window(TimeWindow::All)) else {
+            panic!("matched runtime alias must produce an explicit apply request");
+        };
+        assert_eq!(request.runtime, matched_target.runtime);
+        assert_eq!(request.handler_key, matched_target.handler_key);
+        assert_ne!(request.handler_key, stale_history.handler_key);
+
+        app.alias_apply_result(AliasApplyOutcome::Saved);
+        assert!(app.alias_annotations.iter().any(|alias| {
+            alias.runtime == matched_target.runtime
+                && alias.handler_key == matched_target.handler_key
+        }));
+        assert!(!app.alias_annotations.iter().any(|alias| {
+            alias.runtime == stale_history.runtime && alias.handler_key == stale_history.handler_key
+        }));
+    }
+
+    #[test]
+    fn runtime_no_history_alias_edit_is_refused() {
+        let mut app = runtime_detail_app(runtime_catalog(), "PreToolUse", "fixture:0:0");
+        app.handle(Command::EditAlias);
+        assert!(!app.alias_editing());
+    }
+
+    #[test]
+    fn runtime_ambiguous_alias_edit_is_refused() {
+        let mut catalog = matched_runtime_catalog();
+        let event = catalog
+            .events
+            .iter_mut()
+            .find(|event| event.runtime_event_name == "Stop")
+            .expect("synthetic event must exist");
+        let mut duplicate = event.handlers[0].clone();
+        duplicate.runtime_catalog_id = "fixture:0:3:ambiguous".to_owned();
+        event.handlers.push(duplicate);
+
+        let mut app = runtime_detail_app(catalog, "Stop", "fixture:0:3");
+        app.handle(Command::EditAlias);
+        assert!(!app.alias_editing());
+    }
+
+    #[test]
+    fn runtime_unsupported_alias_edit_is_refused() {
+        let mut app = runtime_detail_app(runtime_catalog(), "FutureRuntimeEvent", "fixture:0:2");
+        app.handle(Command::EditAlias);
+        assert!(!app.alias_editing());
+    }
+
+    #[test]
+    fn runtime_unavailable_alias_edit_is_refused() {
+        let mut app = App::loading(TimeWindow::Last7Days);
+        app.apply_runtime_catalog(matched_runtime_catalog());
+        show_runtime_detail(&mut app, "Stop", "fixture:0:3");
+        app.handle(Command::EditAlias);
+        assert!(!app.alias_editing());
+    }
+
+    #[test]
+    fn runtime_catalog_selection_change_cancels_an_open_alias_draft() {
+        let mut app = runtime_detail_app(matched_runtime_catalog(), "Stop", "fixture:0:3");
+        app.handle(Command::EditAlias);
+        app.handle(Command::SearchInput('!'));
+        assert!(app.alias_editing());
+
+        let mut refreshed = matched_runtime_catalog();
+        let event = refreshed
+            .events
+            .iter_mut()
+            .find(|event| event.runtime_event_name == "Stop")
+            .expect("synthetic event must exist");
+        event.handlers[0].runtime_catalog_id = "fixture:0:3:replacement".to_owned();
+        event.handlers[0].reliability_handler_key = None;
+        app.apply_runtime_catalog(refreshed);
+
+        assert_eq!(
+            app.selected_runtime_handler()
+                .map(|handler| handler.runtime_catalog_id.as_str()),
+            Some("fixture:0:3:replacement")
+        );
+        assert!(!app.alias_editing());
+        assert!(!matches!(
+            app.handle(Command::Window(TimeWindow::All)),
+            AppEffect::ApplyAlias(_)
+        ));
+    }
+
+    #[test]
+    fn alias_save_error_keeps_the_exact_runtime_target_and_mutates_no_alias() {
+        let mut app = runtime_detail_app(matched_runtime_catalog(), "Stop", "fixture:0:3");
+        let runtime_event = app
+            .selected_runtime_event()
+            .expect("runtime event must be selected")
+            .clone();
+        let runtime_handler = app
+            .selected_runtime_handler()
+            .expect("runtime handler must be selected")
+            .clone();
+        let matched_target = app
+            .runtime_handler_reliability_row(&runtime_event, &runtime_handler)
+            .expect("synthetic runtime handler must be exactly matched")
+            .internal_ref
+            .clone();
+        let unrelated = app
+            .view_model()
+            .expect("history must be loaded")
+            .hooks
+            .rows
+            .iter()
+            .find(|row| row.internal_ref != matched_target)
+            .expect("fixture must include an unrelated historical handler")
+            .internal_ref
+            .clone();
+        app.selected_handler = Some(unrelated.clone());
+
+        app.handle(Command::EditAlias);
+        app.handle(Command::SearchInput('!'));
+        app.handle(Command::Enter);
+        let AppEffect::ApplyAlias(request) = app.handle(Command::Window(TimeWindow::All)) else {
+            panic!("matched runtime alias must produce an explicit apply request");
+        };
+        assert_eq!(request.handler_key, matched_target.handler_key);
+        app.alias_apply_result(AliasApplyOutcome::Failed);
+
+        assert_eq!(app.alias_edit_target.as_ref(), Some(&matched_target));
+        assert_eq!(app.alias_save_state(), AliasSaveState::Failed);
+        assert!(app.alias_annotations.is_empty());
+        assert_ne!(request.handler_key, unrelated.handler_key);
     }
 
     #[test]

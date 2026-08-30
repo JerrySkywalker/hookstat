@@ -139,7 +139,7 @@ fn render_content(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoca
             render_hooks(frame, area, app, locale, theme);
             return;
         }
-        Screen::HookDetail if app.selected_runtime_handler().is_some() => {
+        Screen::HookDetail if app.runtime_hook_detail_active() => {
             render_runtime_hook_detail(frame, area, app, locale, theme);
             return;
         }
@@ -3365,6 +3365,30 @@ mod tests {
         assert!(english.contains("> Overview"));
         assert!(!english.contains("•"));
         assert!(english.contains("↑↓ navigate  Enter open  ? help  r refresh  q quit"));
+    }
+
+    #[test]
+    fn historical_detail_rendering_ignores_stale_runtime_selection() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.apply_runtime_catalog(control_center_catalog());
+        app.handle(super::super::keymap::Command::Down);
+        app.handle(super::super::keymap::Command::Enter);
+        app.handle(super::super::keymap::Command::Enter);
+        app.handle(super::super::keymap::Command::Enter);
+        assert_eq!(app.screen(), Screen::HookDetail);
+        assert!(app.selected_runtime_handler().is_some());
+
+        app.handle(super::super::keymap::Command::Back);
+        app.handle(super::super::keymap::Command::Back);
+        app.handle(super::super::keymap::Command::Back);
+        app.handle(super::super::keymap::Command::Up);
+        assert_eq!(app.screen(), Screen::Overview);
+        app.handle(super::super::keymap::Command::Enter);
+        assert_eq!(app.screen(), Screen::HookDetail);
+
+        let historical = rendered(app, ResolvedLocale::EnUs, 120, 70);
+        assert!(historical.contains("Reliability intelligence"));
+        assert!(!historical.contains("Runtime configuration"));
     }
 
     #[test]
