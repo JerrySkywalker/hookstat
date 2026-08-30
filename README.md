@@ -254,7 +254,8 @@ cargo publish --dry-run --locked
 
 The Owner-authorized v0.3.0 public-release closure binds the historical exact
 release commit to its crates.io package, `v0.3.0` tag, and GitHub Release.
-v0.3.1 remains at package/dry-run candidate status until separately authorized.
+v0.3.1 is the current public release. Running these development checks does
+not authorize a future publication, tag, or GitHub Release.
 
 See the architecture, ADRs, and execution contracts under `docs/`,
 `dev_governance_files/`, and `goals/`.
