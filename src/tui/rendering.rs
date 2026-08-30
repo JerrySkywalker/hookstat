@@ -1360,7 +1360,7 @@ fn render_runtime_hook_detail(
 
     let reliability = if let Some(detail) = app.matched_reliability_detail() {
         format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
             key_value_text(
                 locale,
                 MessageKey::FieldCoverage,
@@ -1370,6 +1370,11 @@ fn render_runtime_hook_detail(
                 locale,
                 MessageKey::FieldWindow,
                 window_name(locale, detail.window)
+            ),
+            key_value_text(
+                locale,
+                MessageKey::FieldMetricScope,
+                &selected_scope(locale, detail.window),
             ),
             key_value_text(locale, MessageKey::FieldRunCount, &detail.runs.to_string()),
             key_value_text(
@@ -1526,7 +1531,7 @@ fn render_runtime_hook_detail(
                     .join("\n")
             };
             format!(
-                "{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}: {}\n{}: {}\n{}: {}",
+                "{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}: {}\n{}: {}\n{}: {}\n{}: {}",
                 t(locale, MessageKey::SectionRecentFailures),
                 recent,
                 t(locale, MessageKey::SectionTrends),
@@ -1545,6 +1550,8 @@ fn render_runtime_hook_detail(
                     detail.sample_count,
                     detail.coverage
                 ),
+                t(locale, MessageKey::FieldFullRevision),
+                detail.revision,
                 t(locale, MessageKey::FieldInternalIdentity),
                 detail.internal_ref.handler_key,
             )
@@ -3261,7 +3268,10 @@ mod tests {
         intelligence.handle(super::super::keymap::Command::Enter);
         intelligence.handle(super::super::keymap::Command::Enter);
         let detail = rendered(intelligence, ResolvedLocale::EnUs, 140, 150);
+        assert!(detail.contains("Metric scope: All observed time, all revisions"));
         assert!(detail.contains("Current revision"));
+        assert!(detail.contains("Current revision: runtime-heal…"));
+        assert!(!detail.contains("Current revision: runtime-health-r1"));
         assert!(detail.contains("Observation status"));
         assert!(detail.contains("Reliability intelligence"));
         assert!(detail.contains("Recent failures"));
@@ -3269,6 +3279,7 @@ mod tests {
         assert!(detail.contains("Revision comparison"));
         assert!(detail.contains("Failure fingerprints"));
         assert!(detail.contains("Advanced technical metadata"));
+        assert!(detail.contains("Full revision: runtime-health-r1"));
 
         let mut unknown = control_center_app();
         unknown.handle(super::super::keymap::Command::Enter);
