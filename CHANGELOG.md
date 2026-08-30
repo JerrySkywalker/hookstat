@@ -1,10 +1,10 @@
 # Changelog
 
-## 0.3.1 — HSIP Infrastructure & Windows Hardening (release candidate)
+## 0.3.1 – HSIP Infrastructure & Windows Hardening
 
-HookStat v0.3.1 is a release candidate, not a public release. It prepares the
-single-package HookStat substrate for publication without bundling, admitting,
-or modifying an external cooperative producer.
+HookStat v0.3.1 is the current public release. This entry records the
+single-package HookStat substrate released without bundling, admitting, or
+modifying an external cooperative producer.
 
 ### HSIP and recovery hardening
 
@@ -39,9 +39,9 @@ or modifying an external cooperative producer.
 
 ### Publication boundary
 
-- validates package and publish dry-run behavior only. crates.io publication,
-  a public `v0.3.1` tag, and a GitHub Release require explicit Owner
-  authorization.
+- records the package and publish-dry-run validation that preceded the
+  Owner-authorized v0.3.1 publication, public tag, and GitHub Release; future
+  publication, tag, and release actions remain explicit Owner gates.
 
 ## 0.3.0 — Codex Reliability Workbench
 
