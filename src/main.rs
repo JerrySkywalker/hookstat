@@ -2,8 +2,8 @@ use hookstat::analytics::TimeWindow;
 #[cfg(windows)]
 use hookstat::codex::require_windows_path_identity;
 use hookstat::codex::{
-    apply, default_data_root, default_dry_run, discover_paths, is_safe_handler_key,
-    manifest_path_from_token, restore, trust,
+    apply, default_data_root, default_dry_run, discover_paths, discover_runtime_presentation,
+    is_safe_handler_key, manifest_path_from_token, restore, trust,
 };
 use hookstat::ledger::Ledger;
 use hookstat::observability::{StartupObservatory, StartupPhase, WorkCounters};
@@ -254,6 +254,13 @@ fn tui_command(arguments: &[String]) -> ExitCode {
     let diagnostics_observatory = observatory.clone();
     let changes_root = root.clone();
     let changes_observatory = observatory.clone();
+    let runtime_catalog_cwd = match std::env::current_dir() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("hookstat: {error}");
+            return ExitCode::from(1);
+        }
+    };
     let alias_root = root;
     match tui::run_loading_with_refreshes_language(
         TimeWindow::Last7Days,
@@ -289,6 +296,10 @@ fn tui_command(arguments: &[String]) -> ExitCode {
                     .record_latency("changes_workbench_snapshot", started.elapsed().as_millis());
             }
             result
+        },
+        move |_| {
+            discover_runtime_presentation(&runtime_catalog_cwd, now_unix_ms())
+                .map_err(|error| error.to_string())
         },
         move |request| {
             let mut ledger = match Ledger::open_path(alias_root.join("ledger.sqlite3")) {

@@ -32,12 +32,17 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::SectionDiagnostics => "Operational checks",
         MessageKey::SectionInterface => "Human interface",
         MessageKey::SectionTechnicalMetadata => "Advanced technical metadata",
+        MessageKey::SectionRuntimeConfiguration => "Runtime configuration",
+        MessageKey::SectionReliabilitySummary => "Reliability summary",
+        MessageKey::SectionObservationHistory => "Observation history",
+        MessageKey::SectionRuntimeIssues => "Runtime issues",
         MessageKey::FieldRuntime => "Runtime",
         MessageKey::FieldCoverage => "Coverage",
         MessageKey::FieldTotalRuns => "Total runs",
         MessageKey::FieldRunCount => "Run count",
         MessageKey::FieldFailureRate => "Failure rate",
         MessageKey::FieldHealth => "Health",
+        MessageKey::FieldHealthExplanation => "Health explanation",
         MessageKey::FieldEvent => "Event",
         MessageKey::FieldInternalIdentity => "Internal identity",
         MessageKey::FieldRevision => "Revision",
@@ -76,16 +81,60 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::FieldChangeOccurred => "Change occurred",
         MessageKey::FieldReason => "Reason",
         MessageKey::FieldFullRevision => "Full revision",
+        MessageKey::FieldInstalled => "Installed",
+        MessageKey::FieldActive => "Active",
+        MessageKey::FieldReview => "Review",
+        MessageKey::FieldDescription => "Description",
+        MessageKey::FieldEnabled => "Enabled",
+        MessageKey::FieldDisabled => "Disabled",
+        MessageKey::FieldManaged => "Managed",
+        MessageKey::FieldMatcher => "Matcher",
+        MessageKey::FieldSource => "Source",
+        MessageKey::FieldHandlerType => "Handler type",
+        MessageKey::FieldCommand => "Command",
+        MessageKey::FieldMcpServer => "MCP server",
+        MessageKey::FieldMcpTool => "MCP tool",
+        MessageKey::FieldPrompt => "Prompt",
+        MessageKey::FieldAgent => "Agent",
+        MessageKey::FieldMode => "Mode",
+        MessageKey::FieldTimeout => "Timeout",
+        MessageKey::FieldAdditionalContext => "Additional context",
+        MessageKey::FieldTrust => "Trust",
+        MessageKey::FieldNeedsReview => "Needs review",
+        MessageKey::ValueSync => "Sync",
+        MessageKey::ValueAsync => "Async",
+        MessageKey::ValueTrusted => "Trusted",
+        MessageKey::ValueUntrusted => "Untrusted",
+        MessageKey::ValueModified => "Modified",
+        MessageKey::RuntimeIssueWarning => "Warning",
+        MessageKey::RuntimeIssueError => "Error",
+        MessageKey::HintFocusEvents => "Enter focuses events",
+        MessageKey::HintOpenHandlers => "Enter opens handlers",
         MessageKey::ColumnName => "Name",
         MessageKey::ColumnEvent => "Event",
         MessageKey::ColumnRuntime => "Runtime",
         MessageKey::ColumnFailureRate => "Failure rate",
         MessageKey::ColumnTrend => "Trend",
         MessageKey::ColumnRisk => "Risk",
+        MessageKey::ColumnInstalled => "Installed",
+        MessageKey::ColumnActive => "Active",
+        MessageKey::ColumnReview => "Review",
+        MessageKey::ColumnHealth => "Health",
+        MessageKey::ColumnDescription => "Description",
         MessageKey::StateLoading => "Loading accepted reliability data…",
         MessageKey::StateEmpty => "No admitted receipt rows yet. This is not 0.00% healthy.",
         MessageKey::StateEmptySearch => "No hooks match the active search or filter.",
         MessageKey::StateRefreshFailed => "Refresh failed; accepted history retained.",
+        MessageKey::StateRuntimeCatalogLoading => "Loading current runtime catalog…",
+        MessageKey::StateRuntimeCatalogStale => {
+            "Runtime refresh failed; showing last accepted catalog."
+        }
+        MessageKey::StateRuntimeCatalogUnavailable => {
+            "Current runtime catalog is unavailable; reliability history remains separate."
+        }
+        MessageKey::StateReliabilityUnavailable => "Reliability unavailable",
+        MessageKey::StateNotObserved => "Not observed",
+        MessageKey::StateJoinAmbiguous => "Historical join ambiguous",
         MessageKey::StateTimelineUnavailable => {
             "Timeline is unavailable until reliability intelligence is admitted."
         }
@@ -255,7 +304,7 @@ pub const fn text(key: MessageKey) -> &'static str {
         }
         MessageKey::HelpPeriods => "Periods: t Today, 1 24h, 7 7d, 3 30d, a All.",
         MessageKey::HelpHooks => {
-            "Hook Catalog: Enter selects rows; / search, f filter, s sort; e edits a Human alias in detail."
+            "Hooks: Enter focuses Events, then opens Handlers and Detail; Esc returns one local level; r refreshes runtime catalog and reliability."
         }
         MessageKey::HelpChanges => {
             "Changes: Enter selects events, then opens evidence and the ordered revision timeline. Historical rows never prove a hook was removed."
@@ -267,7 +316,7 @@ pub const fn text(key: MessageKey) -> &'static str {
             "Settings: Enter edit/done, ↑↓ field, ←→ draft, a Apply, r Revert; q confirms dirty discard."
         }
         MessageKey::HelpRefresh => {
-            "r refreshes reliability pages. All displayed failure rates include sample counts."
+            "r refreshes the current Hooks catalog and reliability separately. All displayed failure rates include sample counts."
         }
         MessageKey::MinimumTerminal => "Resize to at least 24x10",
         MessageKey::FailureRateUnavailableZeroSamples => {

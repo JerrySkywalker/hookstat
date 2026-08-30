@@ -11,6 +11,48 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::Path;
 
+/// The exact Codex v0.151.0 event surface qualified by G40. `hooks/list`
+/// reports handlers, so a known event with zero current handlers needs an
+/// explicit empty descriptor to remain visible in the event catalog. Unknown
+/// names returned by the runtime are still added verbatim below.
+const PINNED_CODEX_EVENT_NAMES: &[&str] = &[
+    "PreToolUse",
+    "PermissionRequest",
+    "PostToolUse",
+    "PreCompact",
+    "PostCompact",
+    "SessionStart",
+    "SessionEnd",
+    "UserPromptSubmit",
+    "SubagentStart",
+    "SubagentStop",
+    "Stop",
+    "Interrupt",
+];
+
+/// Codex v0.151.0 derives these labels in its own `/hooks` browser instead of
+/// transporting them in `HookMetadata`. Keep the qualified copy local so the
+/// response remains the source of current installation state, while every
+/// pinned event retains its normal Human description even with zero handlers.
+/// Unknown events intentionally have no guessed description.
+fn pinned_codex_event_description(event_name: &str) -> Option<&'static str> {
+    match event_name {
+        "PreToolUse" => Some("Before a tool executes"),
+        "PermissionRequest" => Some("When permission is requested"),
+        "PostToolUse" => Some("After a tool executes"),
+        "PreCompact" => Some("Before context compaction"),
+        "PostCompact" => Some("After context compaction"),
+        "SessionStart" => Some("When a new session starts"),
+        "SessionEnd" => Some("Right before a session ends"),
+        "UserPromptSubmit" => Some("When the user submits a prompt"),
+        "SubagentStart" => Some("When a subagent is created"),
+        "SubagentStop" => Some("Right before a subagent ends its turn"),
+        "Stop" => Some("Right before Codex ends its turn"),
+        "Interrupt" => Some("Right before an interrupted turn is aborted"),
+        _ => None,
+    }
+}
+
 /// A local, in-memory representation of the current runtime hook catalog.
 ///
 /// It intentionally does not implement `Serialize` or `Debug`: callers must
@@ -190,6 +232,7 @@ pub enum RuntimeCatalogResourceState {
 
 /// Owns catalog refresh intent independently of period analytics. The TUI can
 /// ask this controller for work, but period switching never changes its state.
+#[derive(Clone)]
 pub struct RuntimeCatalogResource {
     state: RuntimeCatalogResourceState,
     explicit_refreshes: u64,
@@ -274,6 +317,17 @@ impl RuntimePresentationSnapshot {
         let mut issues = Vec::new();
         for context in contexts {
             let context_name = text(context, "cwd").ok_or(RuntimeCatalogParseError)?;
+            for event_name in PINNED_CODEX_EVENT_NAMES {
+                events
+                    .entry((context_name.to_owned(), (*event_name).to_owned()))
+                    .or_insert_with(|| RuntimeEventPresentation {
+                        runtime_context: context_name.to_owned(),
+                        runtime_event_name: (*event_name).to_owned(),
+                        canonical_event: canonical_event(event_name),
+                        description: pinned_codex_event_description(event_name).map(str::to_owned),
+                        handlers: Vec::new(),
+                    });
+            }
             collect_issues(
                 context,
                 "warnings",
@@ -302,12 +356,14 @@ impl RuntimePresentationSnapshot {
                         canonical_event: canonical_event(event_name),
                         description: text(item, "eventDescription")
                             .or_else(|| text(item, "description"))
+                            .or_else(|| pinned_codex_event_description(event_name))
                             .map(str::to_owned),
                         handlers: Vec::new(),
                     });
                 if event.description.is_none() {
                     event.description = text(item, "eventDescription")
                         .or_else(|| text(item, "description"))
+                        .or_else(|| pinned_codex_event_description(event_name))
                         .map(str::to_owned);
                 }
                 event
@@ -617,7 +673,7 @@ mod tests {
                 "warnings": ["synthetic warning"],
                 "errors": ["synthetic error"],
                 "hooks": [
-                    {"key":"fixture:0:0","eventName":"PreToolUse","eventDescription":"Synthetic pre-tool","handlerType":"command","command":"synthetic command --with-a-very-long-safe-argument","matcher":"^SyntheticTool$","source":"user","sourcePath":"C:/synthetic/hooks.json","enabled":true,"isManaged":false,"trustStatus":"trusted","async":false,"timeoutSec":9,"additionalContextLimit":64},
+                    {"key":"fixture:0:0","eventName":"PreToolUse","handlerType":"command","command":"synthetic command --with-a-very-long-safe-argument","matcher":"^SyntheticTool$","source":"user","sourcePath":"C:/synthetic/hooks.json","enabled":true,"isManaged":false,"trustStatus":"trusted","async":false,"timeoutSec":9,"additionalContextLimit":64},
                     {"key":"fixture:0:1","eventName":"PostToolUse","handlerType":"mcp_tool","mcpServer":"synthetic-server","mcpTool":"synthetic-tool","source":"project","sourcePath":"C:/synthetic/hooks.json","enabled":false,"isManaged":false,"trustStatus":"untrusted"},
                     {"key":"fixture:0:2","eventName":"UserPromptSubmit","handlerType":"prompt","enabled":true,"isManaged":false,"trustStatus":"modified"},
                     {"key":"fixture:0:3","eventName":"SubagentStart","handlerType":"agent","enabled":true,"isManaged":true,"trustStatus":"trusted"},
@@ -685,7 +741,7 @@ mod tests {
     #[test]
     fn preserves_codex_human_fields_only_in_memory() {
         let snapshot = RuntimePresentationSnapshot::from_codex_hooks_list(&catalog(), 42).unwrap();
-        assert_eq!(snapshot.events.len(), 6);
+        assert_eq!(snapshot.events.len(), PINNED_CODEX_EVENT_NAMES.len() + 1);
         assert_eq!(snapshot.issues.len(), 2);
         let command = &event(&snapshot, "PreToolUse").handlers[0];
         assert_eq!(
@@ -734,9 +790,21 @@ mod tests {
         assert!(event(&snapshot, "SubagentStart").handlers[0].managed);
         assert!(!event(&snapshot, "PostToolUse").handlers[0].enabled);
         assert_eq!(event(&snapshot, "PreToolUse").installed_count(), 1);
+        assert_eq!(
+            event(&snapshot, "PreToolUse").description.as_deref(),
+            Some("Before a tool executes")
+        );
         assert_eq!(event(&snapshot, "PreToolUse").active_count(), 1);
         assert_eq!(event(&snapshot, "PostToolUse").active_count(), 0);
         assert_eq!(event(&snapshot, "PostToolUse").needs_review_count(), 1);
+        let zero_handler = event(&snapshot, "SessionEnd");
+        assert_eq!(zero_handler.installed_count(), 0);
+        assert_eq!(zero_handler.active_count(), 0);
+        assert_eq!(zero_handler.needs_review_count(), 0);
+        assert_eq!(
+            event(&snapshot, "Interrupt").description.as_deref(),
+            Some("Right before an interrupted turn is aborted")
+        );
     }
 
     #[test]
@@ -780,7 +848,10 @@ mod tests {
             }));
 
         let snapshot = RuntimePresentationSnapshot::from_codex_hooks_list(&response, 42).unwrap();
-        assert_eq!(snapshot.events.len(), 7);
+        assert_eq!(
+            snapshot.events.len(),
+            PINNED_CODEX_EVENT_NAMES.len() * 2 + 1
+        );
         assert_eq!(
             event_in_context(&snapshot, "C:/synthetic/second-workspace", "PreToolUse").handlers[0]
                 .runtime_catalog_id,

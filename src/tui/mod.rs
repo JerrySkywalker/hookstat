@@ -21,7 +21,7 @@ mod widgets;
 
 pub use app::{
     AliasAnnotation, AliasApplyOutcome, AliasApplyRequest, ChangesRefreshReason, ChangesSnapshot,
-    DiagnosticsRefreshReason, RefreshReason, RefreshSnapshot,
+    DiagnosticsRefreshReason, RefreshReason, RefreshSnapshot, RuntimeCatalogRefreshReason,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -30,6 +30,7 @@ use crate::interface_preferences::{
     InterfacePreferenceSnapshot, InterfacePreferencesStore, PreferenceSaveOutcome,
 };
 use crate::observability::{StartupObservatory, StartupPhase};
+use crate::runtime_presentation::RuntimePresentationSnapshot;
 use app::{App, AppEffect};
 use crossterm::event::{self, Event};
 use ratatui::{Terminal, backend::CrosstermBackend};
@@ -44,6 +45,12 @@ type DiagnosticsRefresh = Box<
 >;
 type ChangesRefresh =
     Box<dyn FnMut(RefreshRequest<ChangesRefreshReason>) -> Result<ChangesSnapshot, String> + Send>;
+type RuntimeCatalogRefresh = Box<
+    dyn FnMut(
+            RefreshRequest<RuntimeCatalogRefreshReason>,
+        ) -> Result<RuntimePresentationSnapshot, String>
+        + Send,
+>;
 type AliasApply = Box<dyn FnMut(AliasApplyRequest) -> AliasApplyOutcome + Send>;
 
 struct RunLoopOptions {
@@ -139,6 +146,7 @@ pub fn run_with_refresh_snapshot_language(
         None,
         None,
         None,
+        None,
         RunLoopOptions {
             explicit_language,
             store,
@@ -153,6 +161,10 @@ pub fn run_with_refresh_snapshot_language(
 /// Starts from an empty/loading application model. The first terminal frame is
 /// independent of receipt reconciliation, SQLite queries, analytics, and
 /// diagnostics discovery; both worker paths publish immutable snapshots later.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the public TUI entry point accepts the independent, typed refresh paths"
+)]
 pub fn run_loading_with_refreshes_language(
     initial_window: crate::analytics::TimeWindow,
     explicit_language: Option<localization::InterfaceLanguage>,
@@ -165,6 +177,11 @@ pub fn run_loading_with_refreshes_language(
     + Send
     + 'static,
     changes_refresh: impl FnMut(RefreshRequest<ChangesRefreshReason>) -> Result<ChangesSnapshot, String>
+    + Send
+    + 'static,
+    runtime_catalog_refresh: impl FnMut(
+        RefreshRequest<RuntimeCatalogRefreshReason>,
+    ) -> Result<RuntimePresentationSnapshot, String>
     + Send
     + 'static,
     alias_apply: impl FnMut(AliasApplyRequest) -> AliasApplyOutcome + Send + 'static,
@@ -187,11 +204,13 @@ pub fn run_loading_with_refreshes_language(
     let refresh: Refresh = Box::new(reliability_refresh);
     let diagnostics: DiagnosticsRefresh = Box::new(diagnostics_refresh);
     let changes: ChangesRefresh = Box::new(changes_refresh);
+    let runtime_catalog: RuntimeCatalogRefresh = Box::new(runtime_catalog_refresh);
     let alias_apply: AliasApply = Box::new(alias_apply);
     let result = run_loop(
         &mut terminal,
         app,
         RefreshController::spawn(refresh),
+        Some(RefreshController::spawn(runtime_catalog)),
         Some(RefreshController::spawn(diagnostics)),
         Some(RefreshController::spawn(changes)),
         Some(alias_apply),
@@ -206,10 +225,17 @@ pub fn run_loading_with_refreshes_language(
     result.and(guard.restore())
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the loop owns independent resources whose failure states must remain isolated"
+)]
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     mut app: App,
     mut refresh: RefreshController<RefreshReason, RefreshSnapshot>,
+    mut runtime_catalog: Option<
+        RefreshController<RuntimeCatalogRefreshReason, RuntimePresentationSnapshot>,
+    >,
     mut diagnostics: Option<RefreshController<DiagnosticsRefreshReason, DiagnosticsReport>>,
     mut changes: Option<RefreshController<ChangesRefreshReason, ChangesSnapshot>>,
     mut alias_apply: Option<AliasApply>,
@@ -224,6 +250,10 @@ fn run_loop(
     let initial_diagnostics_request = diagnostics
         .as_ref()
         .map(|_| DiagnosticsRefreshReason::Initial);
+    let initial_runtime_catalog_request = runtime_catalog.as_ref().and_then(|_| {
+        app.runtime_catalog_initial_load_pending()
+            .then_some(RuntimeCatalogRefreshReason::Initial)
+    });
     let mut first_frame_drawn = false;
     loop {
         match refresh.poll() {
@@ -237,6 +267,15 @@ fn run_loop(
             RefreshPoll::Failed => app.reject_refresh(),
             RefreshPoll::WorkerUnavailable => app.worker_unavailable(),
             RefreshPoll::Pending | RefreshPoll::Stale => {}
+        }
+        if let Some(runtime_catalog) = &mut runtime_catalog {
+            match runtime_catalog.poll() {
+                RefreshPoll::Ready { value, .. } => app.apply_runtime_catalog(value),
+                RefreshPoll::Failed | RefreshPoll::WorkerUnavailable => {
+                    app.reject_runtime_catalog()
+                }
+                RefreshPoll::Pending | RefreshPoll::Stale => {}
+            }
         }
         if let Some(diagnostics) = &mut diagnostics {
             match diagnostics.poll() {
@@ -284,6 +323,11 @@ fn run_loop(
                     observatory.record_requested_generation(generation);
                 }
             }
+            if let Some(reason) = initial_runtime_catalog_request
+                && let Some(runtime_catalog) = &mut runtime_catalog
+            {
+                runtime_catalog.request(reason);
+            }
             if let Some(reason) = initial_diagnostics_request
                 && let Some(diagnostics) = &mut diagnostics
             {
@@ -308,6 +352,17 @@ fn run_loop(
                         let generation = refresh.request(reason);
                         if let Some(observatory) = options.observatory.as_ref() {
                             observatory.record_requested_generation(generation);
+                        }
+                    }
+                    AppEffect::RequestRefreshAndRuntimeCatalog(refresh_reason, catalog_reason) => {
+                        let generation = refresh.request(refresh_reason);
+                        if let Some(observatory) = options.observatory.as_ref() {
+                            observatory.record_requested_generation(generation);
+                        }
+                        if let Some(runtime_catalog) = &mut runtime_catalog {
+                            runtime_catalog.request(catalog_reason);
+                        } else {
+                            app.reject_runtime_catalog();
                         }
                     }
                     AppEffect::RequestDiagnostics(reason) => {
