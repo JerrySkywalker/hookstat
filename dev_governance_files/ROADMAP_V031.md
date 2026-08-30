@@ -2,7 +2,21 @@
 
 ## Status
 
-IN PROGRESS from public v0.3.0 baseline `a33a3be56982c6ca00699019883a047a1aca748b`.
+CLOSED / PUBLICLY RELEASED. This document is the immutable historical
+execution record for v0.3.1; the current product authority is
+[`ROADMAP_V040.md`](ROADMAP_V040.md).
+
+```text
+PUBLIC_VERSION=0.3.1
+PUBLIC_MAIN=651620cbc9f204f312fc31efee424c747895927a
+PUBLIC_TAG=v0.3.1
+PUBLIC_RELEASE=true
+```
+
+The v0.3.1 train began from public v0.3.0 baseline
+`a33a3be56982c6ca00699019883a047a1aca748b`. The original checkpoints and
+receipts below remain historical evidence and are not rewritten by this
+closeout.
 
 Accepted `main` has completed G28, G29, G34, G35, G36, and G37. The current accepted main fingerprint at this scope reset is:
 

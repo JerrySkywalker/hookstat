@@ -2,7 +2,7 @@
 
 **Local-first reliability analytics for hooks across coding-agent runtimes.**
 
-HookStat v0.3.1 is the release candidate for the Codex Reliability Workbench:
+HookStat v0.3.1 is the current public release of the Codex Reliability Workbench:
 a local-first terminal UI that turns admitted local hook receipts into a
 bilingual, human-readable operational view. It retains the Changes workbench,
 Hook Catalog, revision timeline, safe Human aliases, and bounded failure
@@ -23,26 +23,26 @@ daemon.
 
 ## Install and update
 
-Install the current public v0.3.0 release from crates.io with Cargo:
+Install the current public v0.3.1 release from crates.io with Cargo:
 
 ```powershell
-cargo install hookstat --version 0.3.0 --locked
-cargo install hookstat --version 0.3.0 --locked --force
+cargo install hookstat --version 0.3.1 --locked
+cargo install hookstat --version 0.3.1 --locked --force
 ```
 
-v0.3.1 is a local release candidate until an Owner authorizes publication. To
-test that candidate from an owned checkout without replacing a user-wide
-installation, use an isolated Cargo root:
+v0.3.1 is publicly released. To test an owned source checkout without replacing
+a user-wide installation, use an isolated Cargo root:
 
 ```powershell
-$candidateRoot = Join-Path $env:TEMP 'hookstat-v031-candidate'
-cargo install --path . --locked --root $candidateRoot
-& "$candidateRoot\\bin\\hookstat.exe" --version
+$sourceRoot = Join-Path $env:TEMP 'hookstat-source-checkout'
+cargo install --path . --locked --root $sourceRoot
+& "$sourceRoot\\bin\\hookstat.exe" --version
 ```
 
-See [the v0.3.1 candidate notes](docs/release/HOOKSTAT-V031-RELEASE-CANDIDATE.md)
-and [CHANGELOG.md](CHANGELOG.md) for the release boundary. No `cargo publish`,
-public tag, or GitHub Release is implied by a local candidate install.
+See [the historical v0.3.1 candidate notes](docs/release/HOOKSTAT-V031-RELEASE-CANDIDATE.md)
+and [CHANGELOG.md](CHANGELOG.md) for the release boundary. A local source
+install does not authorize a future `cargo publish`, public tag, or GitHub
+Release.
 
 ## v0.3.1 HSIP and runtime availability
 
