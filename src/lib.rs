@@ -33,6 +33,7 @@ pub mod receipt;
 pub mod render;
 pub mod report;
 pub mod runtime;
+pub mod runtime_presentation;
 pub mod tui;
 pub mod workbench;
 
