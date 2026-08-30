@@ -584,7 +584,17 @@ fn render_changes(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoca
             frame,
             area,
             t(locale, MessageKey::ViewChanges),
-            &format!("{}\n{}", period_selector(app, locale), t(locale, message)),
+            &format!(
+                "{}\n{}: {}\n{}",
+                period_selector_for_window(
+                    locale,
+                    app.requested_window(),
+                    app.changes_state().is_loading(),
+                ),
+                t(locale, MessageKey::FieldMetricScope),
+                selected_scope(locale, app.requested_window()),
+                t(locale, message),
+            ),
             role,
             theme,
         );
@@ -592,11 +602,16 @@ fn render_changes(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoca
     };
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(4), Constraint::Min(5)])
+        .constraints([
+            Constraint::Length(if area.width < 72 { 9 } else { 6 }),
+            Constraint::Min(5),
+        ])
         .split(area);
     let heading = format!(
-        "{}\n{}: {}",
+        "{}\n{}: {}\n{}: {}",
         period_selector_for_window(locale, changes.window, app.changes_state().is_loading()),
+        t(locale, MessageKey::FieldMetricScope),
+        selected_scope(locale, changes.window),
         t(locale, MessageKey::FieldCoverage),
         coverage_summary(locale, changes.coverage),
     );
@@ -959,29 +974,54 @@ fn render_hooks(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLocale
         t(locale, MessageKey::FilterAllHooks)
     };
     let window = accepted_window(app);
-    let query_line = format!(
-        "{}\n{}: {}\n{}: {} · {}: {} · {}: {}",
-        period_selector_for_window(locale, window, app.view_state().is_loading()),
-        t(locale, MessageKey::FieldMetricScope),
-        selected_scope(locale, window),
-        t(locale, MessageKey::FieldSearch),
-        query.search,
-        t(locale, MessageKey::FieldFilter),
-        filter,
-        t(locale, MessageKey::FieldSort),
-        sort_name(locale, query.sort),
-    );
+    let query_line = if area.width < 54 {
+        let search = if query.search.is_empty() {
+            String::new()
+        } else {
+            format!("\n{}: {}", t(locale, MessageKey::FieldSearch), query.search)
+        };
+        format!(
+            "{}\n{}: {}\n{}: {}\n{}: {}{search}",
+            period_selector_for_window(locale, window, app.view_state().is_loading()),
+            t(locale, MessageKey::FieldMetricScope),
+            selected_scope(locale, window),
+            t(locale, MessageKey::FieldFilter),
+            filter,
+            t(locale, MessageKey::FieldSort),
+            sort_name(locale, query.sort),
+        )
+    } else {
+        format!(
+            "{}\n{}: {}\n{}: {} · {}: {} · {}: {}",
+            period_selector_for_window(locale, window, app.view_state().is_loading()),
+            t(locale, MessageKey::FieldMetricScope),
+            selected_scope(locale, window),
+            t(locale, MessageKey::FieldSearch),
+            query.search,
+            t(locale, MessageKey::FieldFilter),
+            filter,
+            t(locale, MessageKey::FieldSort),
+            sort_name(locale, query.sort),
+        )
+    };
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(if area.width < 72 { 7 } else { 5 }),
+            Constraint::Length(if area.width < 54 {
+                if query.search.is_empty() { 9 } else { 11 }
+            } else if area.width < 72 {
+                8
+            } else {
+                5
+            }),
             Constraint::Min(5),
         ])
         .split(area);
     frame.render_widget(
         Paragraph::new(query_line)
             .style(theme.typography_style(TypographyRole::Metadata))
-            .block(themed_block(t(locale, MessageKey::ViewHooks), theme)),
+            .block(themed_block(t(locale, MessageKey::ViewHooks), theme))
+            .wrap(Wrap { trim: true }),
         sections[0],
     );
     if app.visible_hooks().is_empty() {
@@ -1033,11 +1073,15 @@ fn render_hook_rows(
             .position(|row| &row.internal_ref == selected)
             .unwrap_or(0)
     });
-    if area.width < 142 {
+    if area.width < 228 {
         let rows = visible_rows(
             rows,
             selected_index,
-            area.height.saturating_sub(2) as usize / 4,
+            if area.width < 54 {
+                1
+            } else {
+                area.height.saturating_sub(2) as usize / 6
+            },
         );
         let content = rows
             .iter()
@@ -1053,7 +1097,7 @@ fn render_hook_rows(
                     row.display_disambiguator,
                 );
                 format!(
-                    "{marker} {}\n  {} · {} · {} · {} · {}\n  {}: {}",
+                    "{marker} {}\n  {} · {} · {} · {}\n  {}: {}\n  {}: {}\n  {}: {}",
                     truncate_to_width(&identity, area.width.saturating_sub(6) as usize),
                     event_name(context.locale, row.event),
                     runtime_name(context.locale, row.internal_ref.runtime),
@@ -1063,7 +1107,10 @@ fn render_hook_rows(
                         row.sample_count,
                     ),
                     trend_summary(context.locale, row),
+                    t(context.locale, MessageKey::FieldRisk),
                     compact_risk(context.locale, row),
+                    t(context.locale, MessageKey::FieldCoverage),
+                    coverage_summary(context.locale, row.coverage),
                     t(context.locale, MessageKey::FieldReason),
                     risk_reason(
                         context.locale,
@@ -1093,6 +1140,7 @@ fn render_hook_rows(
         t(context.locale, MessageKey::ColumnName),
         t(context.locale, MessageKey::ColumnEvent),
         t(context.locale, MessageKey::ColumnRuntime),
+        t(context.locale, MessageKey::FieldCoverage),
         t(context.locale, MessageKey::ColumnFailureRate),
         t(context.locale, MessageKey::ColumnTrend),
         t(context.locale, MessageKey::ColumnRisk),
@@ -1115,6 +1163,7 @@ fn render_hook_rows(
             )),
             Cell::from(event_name(context.locale, row.event)),
             Cell::from(runtime_name(context.locale, row.internal_ref.runtime)),
+            Cell::from(coverage_summary(context.locale, row.coverage)),
             Cell::from(failure_rate_with_sample(
                 context.locale,
                 row.failure_rate_percent,
@@ -1141,6 +1190,7 @@ fn render_hook_rows(
             Constraint::Min(16),
             Constraint::Length(14),
             Constraint::Length(10),
+            Constraint::Length(78),
             Constraint::Length(18),
             Constraint::Length(18),
             Constraint::Length(56),
@@ -2443,12 +2493,34 @@ mod tests {
         assert_eq!(app.screen(), Screen::Hooks);
         let hooks = rendered(app.clone(), ResolvedLocale::EnUs, 120, 40);
         assert!(hooks.contains("Metric scope: Selected Last 7 days, all revisions"));
+        assert!(hooks.contains("Coverage:"));
         assert!(hooks.contains("Reason:"));
+        let compact_hooks = rendered(app.clone(), ResolvedLocale::EnUs, 44, 40);
+        assert!(compact_hooks.contains("Metric scope"));
+        assert!(compact_hooks.contains("Selected"));
+        assert!(compact_hooks.contains("Last 7"));
+        assert!(compact_hooks.contains("days"));
+        assert!(compact_hooks.contains("Coverage"));
+        assert!(compact_hooks.contains("Reason"));
         app.handle(super::super::keymap::Command::Window(TimeWindow::Today));
         let pending_hooks = rendered(app, ResolvedLocale::EnUs, 120, 40);
         assert!(pending_hooks.contains("Loading accepted reliability data"));
         assert!(pending_hooks.contains("Selected Last 7 days, all revisions"));
         assert!(!pending_hooks.contains("Metric scope: Selected Today, all revisions"));
+
+        let mut changes = changes_app();
+        let changes_list = rendered(changes.clone(), ResolvedLocale::EnUs, 100, 40);
+        assert!(changes_list.contains("Metric scope: Selected Last 7 days, all revisions"));
+        let compact_changes = rendered(changes.clone(), ResolvedLocale::EnUs, 44, 40);
+        assert!(compact_changes.contains("Metric scope"));
+        assert!(compact_changes.contains("Selected"));
+        assert!(compact_changes.contains("Last 7"));
+        assert!(compact_changes.contains("days"));
+        changes.handle(super::super::keymap::Command::Window(TimeWindow::Today));
+        let pending_changes = rendered(changes, ResolvedLocale::EnUs, 100, 40);
+        assert!(pending_changes.contains("Loading accepted reliability data"));
+        assert!(pending_changes.contains("Selected Last 7 days, all revisions"));
+        assert!(!pending_changes.contains("Metric scope: Selected Today, all revisions"));
 
         let mut clusters = App::from_report(synthetic_fixture_report(1_000));
         clusters.handle(super::super::keymap::Command::Enter);
@@ -2457,6 +2529,11 @@ mod tests {
         assert_eq!(clusters.screen(), Screen::FailureClusters);
         let list = rendered(clusters.clone(), ResolvedLocale::EnUs, 120, 40);
         assert!(list.contains("Metric scope: Selected Last 7 days, all revisions"));
+        let compact_clusters = rendered(clusters.clone(), ResolvedLocale::EnUs, 44, 40);
+        assert!(compact_clusters.contains("Metric scope"));
+        assert!(compact_clusters.contains("Selected"));
+        assert!(compact_clusters.contains("Last 7"));
+        assert!(compact_clusters.contains("days"));
         clusters.handle(super::super::keymap::Command::Window(TimeWindow::Today));
         let pending_clusters = rendered(clusters.clone(), ResolvedLocale::EnUs, 120, 40);
         assert!(pending_clusters.contains("Loading accepted reliability data"));
