@@ -6,9 +6,38 @@
 
 use crate::domain::HookEvent;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fmt;
+use std::path::Path;
 
 const MAX_DISPLAY_NAME_LEN: usize = 96;
+
+/// Produces the privacy-safe location fingerprint used by both static Codex
+/// discovery and an ephemeral runtime catalog. The source path is consumed
+/// only to derive the hash; callers must not persist the input value.
+pub(crate) fn runtime_location_fingerprint(
+    path: &Path,
+    event: HookEvent,
+    group_index: usize,
+    handler_index: usize,
+) -> String {
+    let path = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned();
+    short_hash(
+        format!(
+            "{path}:{}:{group_index}:{handler_index}",
+            event.as_storage()
+        )
+        .as_bytes(),
+    )
+}
+
+fn short_hash(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))[..16].to_owned()
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DisplayIdentitySource {

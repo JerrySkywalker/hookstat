@@ -7,7 +7,7 @@
 //! limitations but never modified optimistically.
 
 use crate::domain::{ExecutionMode, HandlerIdentity, HookEvent};
-use crate::identity::display_name_from_command;
+use crate::identity::{display_name_from_command, runtime_location_fingerprint};
 use crate::runtime_presentation::RuntimePresentationSnapshot;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -430,7 +430,7 @@ pub fn discover_reconciled_default() -> Result<ReconciledDiscovery, CodexError> 
         .handlers
         .iter()
         .map(|item| {
-            runtime_location_key(
+            runtime_location_fingerprint(
                 &item.path,
                 item.discovered.handler.event,
                 item.group_index,
@@ -942,7 +942,7 @@ fn effective_location_key(item: &Value, raw_key: &str, event: HookEvent) -> Stri
         handler_index,
     ) {
         (Some(path), Some(group_index), Some(handler_index)) => {
-            runtime_location_key(Path::new(path), event, group_index, handler_index)
+            runtime_location_fingerprint(Path::new(path), event, group_index, handler_index)
         }
         _ => short_hash(raw_key.as_bytes()),
     }
@@ -1103,7 +1103,7 @@ fn discover_one(path: &Path) -> Result<Vec<LocatedHandler>, CodexError> {
                 // source paths or command text.
                 let handler_key = format!(
                     "hk_{}",
-                    runtime_location_key(path, event, group_index, handler_index)
+                    runtime_location_fingerprint(path, event, group_index, handler_index)
                 );
                 let revision = format!("hr_{}", short_hash(canonical_json(handler).as_bytes()));
                 let display_command = command_windows.as_deref().unwrap_or(command);
@@ -1385,7 +1385,7 @@ pub fn require_windows_path_identity(current_exe: &Path) -> Result<PathBuf, Code
     }
 }
 
-fn parse_event(value: &str) -> Option<HookEvent> {
+pub(crate) fn parse_event(value: &str) -> Option<HookEvent> {
     match value {
         "SessionStart" | "session_start" | "sessionStart" => Some(HookEvent::SessionStart),
         "SessionEnd" | "session_end" | "sessionEnd" => Some(HookEvent::SessionEnd),
@@ -1413,25 +1413,6 @@ fn sha256(bytes: &[u8]) -> String {
 }
 fn short_hash(bytes: &[u8]) -> String {
     sha256(bytes)[..16].to_owned()
-}
-fn runtime_location_key(
-    path: &Path,
-    event: HookEvent,
-    group_index: usize,
-    handler_index: usize,
-) -> String {
-    let path = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf())
-        .to_string_lossy()
-        .into_owned();
-    short_hash(
-        format!(
-            "{path}:{}:{group_index}:{handler_index}",
-            event.as_storage()
-        )
-        .as_bytes(),
-    )
 }
 fn proxy_command(exe: &Path, manifest: &Path, handler: &str) -> String {
     format!(
@@ -1667,7 +1648,12 @@ mod tests {
         assert_eq!(parsed.summary.execution_mode_unknown_count, 1);
         assert_eq!(
             parsed.reconciliation_keys[0],
-            runtime_location_key(Path::new("C:/private/source/path"), HookEvent::Stop, 0, 0)
+            runtime_location_fingerprint(
+                Path::new("C:/private/source/path"),
+                HookEvent::Stop,
+                0,
+                0
+            )
         );
         let json = serde_json::to_string(&parsed.summary).unwrap();
         assert!(!json.contains("private command"));
@@ -2048,7 +2034,7 @@ mod tests {
         for index in 0..12 {
             let key = format!(
                 "hk_{}",
-                runtime_location_key(config, HookEvent::Stop, 0, index)
+                runtime_location_fingerprint(config, HookEvent::Stop, 0, index)
             );
             handlers.insert(
                 key.clone(),

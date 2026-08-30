@@ -4,10 +4,12 @@
 //! Runtime-owned strings such as commands, matchers, and source paths are
 //! useful to render locally, but are neither evidence nor durable metadata.
 
-use crate::domain::{HookEvent, Runtime};
+use crate::domain::{HandlerIdentity, HookEvent, HookInvocation, Runtime};
+use crate::identity::runtime_location_fingerprint;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::path::Path;
 
 /// A local, in-memory representation of the current runtime hook catalog.
 ///
@@ -58,7 +60,10 @@ impl RuntimeEventPresentation {
 #[derive(Clone, Eq, PartialEq)]
 pub struct RuntimeHandlerPresentation {
     pub runtime_catalog_id: String,
-    pub reliability_key_hint: Option<String>,
+    /// A privacy-safe HandlerIdentity key derived from the runtime's exact
+    /// local location fields. It is present only when the runtime gives the
+    /// source path and positional key material needed to prove the bridge.
+    pub reliability_handler_key: Option<String>,
     pub enabled: bool,
     pub managed: bool,
     pub needs_review: bool,
@@ -123,19 +128,52 @@ pub enum ReliabilityJoinState {
     NoHistory,
     Ambiguous,
     Unsupported,
+    Unavailable,
 }
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct HistoricalHandlerIdentity {
     pub handler_key: String,
     pub event: HookEvent,
-    pub reliability_key_hint: Option<String>,
+}
+
+impl HistoricalHandlerIdentity {
+    /// Bridges admitted, persistence-safe handler identities into the
+    /// presentation-time join. No raw runtime presentation material crosses
+    /// this boundary.
+    pub fn from_handler(handler: &HandlerIdentity) -> Self {
+        Self {
+            handler_key: handler.key.clone(),
+            event: handler.event,
+        }
+    }
+
+    /// Builds a unique identity set from admitted historical invocations.
+    /// Repeated observations of one handler do not make its current-runtime
+    /// join ambiguous; conflicting handler/event records remain distinct and
+    /// therefore fail closed at join time when necessary.
+    pub fn from_invocations(values: &[HookInvocation]) -> Vec<Self> {
+        let mut identities = BTreeMap::new();
+        for value in values {
+            let identity = Self::from_handler(&value.handler);
+            identities.insert((identity.handler_key.clone(), identity.event), identity);
+        }
+        identities.into_values().collect()
+    }
 }
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct JoinedRuntimeHandler<'a> {
     pub handler: &'a RuntimeHandlerPresentation,
     pub join: ReliabilityJoinState,
+}
+
+/// The reliability resource is separate from catalog discovery. A failed
+/// reliability load cannot be represented as "no history" for a live hook.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum ReliabilityHistory<'a> {
+    Available(&'a [HistoricalHandlerIdentity]),
+    Unavailable,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -148,10 +186,10 @@ pub enum RuntimeCatalogResourceState {
 
 /// Owns catalog refresh intent independently of period analytics. The TUI can
 /// ask this controller for work, but period switching never changes its state.
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeCatalogResource {
     state: RuntimeCatalogResourceState,
     explicit_refreshes: u64,
+    accepted_snapshot: Option<RuntimePresentationSnapshot>,
 }
 
 impl Default for RuntimeCatalogResource {
@@ -159,6 +197,7 @@ impl Default for RuntimeCatalogResource {
         Self {
             state: RuntimeCatalogResourceState::Empty,
             explicit_refreshes: 0,
+            accepted_snapshot: None,
         }
     }
 }
@@ -170,6 +209,12 @@ impl RuntimeCatalogResource {
 
     pub const fn explicit_refreshes(&self) -> u64 {
         self.explicit_refreshes
+    }
+
+    /// The last accepted catalog survives a failed refresh as explicitly stale
+    /// state. It is never replaced with ledger-derived installation guesses.
+    pub fn accepted_snapshot(&self) -> Option<&RuntimePresentationSnapshot> {
+        self.accepted_snapshot.as_ref()
     }
 
     pub fn request_initial_load(&mut self) {
@@ -187,7 +232,8 @@ impl RuntimeCatalogResource {
     /// the runtime catalog.
     pub const fn period_switched(&mut self) {}
 
-    pub fn accepted(&mut self) {
+    pub fn accepted(&mut self, snapshot: RuntimePresentationSnapshot) {
+        self.accepted_snapshot = Some(snapshot);
         self.state = RuntimeCatalogResourceState::Ready;
     }
 
@@ -238,12 +284,11 @@ impl RuntimePresentationSnapshot {
                 context_name.as_deref(),
                 &mut issues,
             );
-            for item in context
+            let hooks = context
                 .get("hooks")
                 .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
+                .ok_or(RuntimeCatalogParseError)?;
+            for item in hooks {
                 let event_name = text(item, "eventName").ok_or(RuntimeCatalogParseError)?;
                 let event = events.entry(event_name.to_owned()).or_insert_with(|| {
                     RuntimeEventPresentation {
@@ -260,7 +305,9 @@ impl RuntimePresentationSnapshot {
                         .or_else(|| text(item, "description"))
                         .map(str::to_owned);
                 }
-                event.handlers.push(parse_handler(item)?);
+                event
+                    .handlers
+                    .push(parse_handler(item, event.canonical_event)?);
             }
         }
         Ok(Self {
@@ -277,20 +324,69 @@ impl RuntimePresentationSnapshot {
         &'a self,
         history: &[HistoricalHandlerIdentity],
     ) -> Vec<JoinedRuntimeHandler<'a>> {
-        self.events
+        self.join_available_reliability(history)
+    }
+
+    /// Joins an independently loaded reliability resource without conflating a
+    /// load failure with an unobserved handler.
+    pub fn join_reliability_with_history<'a>(
+        &'a self,
+        history: ReliabilityHistory<'_>,
+    ) -> Vec<JoinedRuntimeHandler<'a>> {
+        match history {
+            ReliabilityHistory::Available(history) => self.join_available_reliability(history),
+            ReliabilityHistory::Unavailable => self
+                .events
+                .iter()
+                .flat_map(|event| {
+                    event
+                        .handlers
+                        .iter()
+                        .map(move |handler| JoinedRuntimeHandler {
+                            handler,
+                            join: if event.canonical_event.is_some() {
+                                ReliabilityJoinState::Unavailable
+                            } else {
+                                ReliabilityJoinState::Unsupported
+                            },
+                        })
+                })
+                .collect(),
+        }
+    }
+
+    fn join_available_reliability<'a>(
+        &'a self,
+        history: &[HistoricalHandlerIdentity],
+    ) -> Vec<JoinedRuntimeHandler<'a>> {
+        let candidates = self
+            .events
             .iter()
             .flat_map(|event| {
-                event
-                    .handlers
-                    .iter()
-                    .map(move |handler| JoinedRuntimeHandler {
-                        handler,
-                        join: resolve_join(
-                            event.canonical_event,
-                            handler.reliability_key_hint.as_deref(),
-                            history,
-                        ),
-                    })
+                event.handlers.iter().map(move |handler| {
+                    history_candidates(
+                        event.canonical_event,
+                        handler.reliability_handler_key.as_deref(),
+                        history,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut claimants = BTreeMap::<String, usize>::new();
+        for candidate in candidates.iter().flatten() {
+            if candidate.len() == 1 {
+                *claimants
+                    .entry(candidate.iter().next().unwrap().clone())
+                    .or_default() += 1;
+            }
+        }
+        self.events
+            .iter()
+            .flat_map(|event| event.handlers.iter().map(move |handler| (event, handler)))
+            .zip(candidates)
+            .map(|((event, handler), candidate)| JoinedRuntimeHandler {
+                handler,
+                join: resolve_join(event.canonical_event, candidate, &claimants),
             })
             .collect()
     }
@@ -302,14 +398,18 @@ impl RuntimePresentationSnapshot {
         history: &'a [HistoricalHandlerIdentity],
     ) -> Vec<&'a HistoricalHandlerIdentity> {
         let joined = self
-            .join_reliability(history)
-            .into_iter()
-            .filter_map(|joined| match joined.join {
-                ReliabilityJoinState::Matched { handler_key } => Some(handler_key),
-                ReliabilityJoinState::NoHistory
-                | ReliabilityJoinState::Ambiguous
-                | ReliabilityJoinState::Unsupported => None,
+            .events
+            .iter()
+            .flat_map(|event| {
+                event.handlers.iter().filter_map(move |handler| {
+                    history_candidates(
+                        event.canonical_event,
+                        handler.reliability_handler_key.as_deref(),
+                        history,
+                    )
+                })
             })
+            .flatten()
             .collect::<BTreeSet<_>>();
         history
             .iter()
@@ -318,7 +418,10 @@ impl RuntimePresentationSnapshot {
     }
 }
 
-fn parse_handler(item: &Value) -> Result<RuntimeHandlerPresentation, RuntimeCatalogParseError> {
+fn parse_handler(
+    item: &Value,
+    canonical_event: Option<HookEvent>,
+) -> Result<RuntimeHandlerPresentation, RuntimeCatalogParseError> {
     let runtime_catalog_id = text(item, "key")
         .ok_or(RuntimeCatalogParseError)?
         .to_owned();
@@ -333,9 +436,7 @@ fn parse_handler(item: &Value) -> Result<RuntimeHandlerPresentation, RuntimeCata
         }
     });
     Ok(RuntimeHandlerPresentation {
-        reliability_key_hint: text(item, "reliabilityKeyHint")
-            .or_else(|| text(item, "reliability_key_hint"))
-            .map(str::to_owned),
+        reliability_handler_key: runtime_reliability_handler_key(item, canonical_event),
         runtime_catalog_id,
         enabled: boolean(item, "enabled").unwrap_or(true),
         managed,
@@ -381,49 +482,69 @@ fn parse_handler_kind(item: &Value) -> Result<RuntimeHandlerKind, RuntimeCatalog
     })
 }
 
+fn runtime_reliability_handler_key(
+    item: &Value,
+    canonical_event: Option<HookEvent>,
+) -> Option<String> {
+    let event = canonical_event?;
+    let source_path = text(item, "sourcePath")?;
+    let raw_key = text(item, "key")?;
+    let parts = raw_key.split(':').collect::<Vec<_>>();
+    let group_index = parts
+        .get(parts.len().checked_sub(2)?)
+        .and_then(|value| value.parse::<usize>().ok())?;
+    let handler_index = parts.last().and_then(|value| value.parse::<usize>().ok())?;
+    Some(format!(
+        "hk_{}",
+        runtime_location_fingerprint(Path::new(source_path), event, group_index, handler_index)
+    ))
+}
+
+fn history_candidates(
+    canonical_event: Option<HookEvent>,
+    reliability_handler_key: Option<&str>,
+    history: &[HistoricalHandlerIdentity],
+) -> Option<BTreeSet<String>> {
+    let event = canonical_event?;
+    let handler_key = reliability_handler_key.filter(|value| !value.is_empty())?;
+    Some(
+        history
+            .iter()
+            .filter(|historical| historical.event == event && historical.handler_key == handler_key)
+            .map(|historical| historical.handler_key.clone())
+            .collect(),
+    )
+}
+
 fn resolve_join(
     canonical_event: Option<HookEvent>,
-    reliability_key_hint: Option<&str>,
-    history: &[HistoricalHandlerIdentity],
+    candidates: Option<BTreeSet<String>>,
+    claimants: &BTreeMap<String, usize>,
 ) -> ReliabilityJoinState {
-    let Some(event) = canonical_event else {
+    if canonical_event.is_none() {
         return ReliabilityJoinState::Unsupported;
-    };
-    let Some(hint) = reliability_key_hint.filter(|value| !value.is_empty()) else {
+    }
+    let Some(candidates) = candidates else {
         return ReliabilityJoinState::NoHistory;
     };
-    let matches = history
-        .iter()
-        .filter(|historical| {
-            historical.event == event && historical.reliability_key_hint.as_deref() == Some(hint)
-        })
-        .collect::<Vec<_>>();
-    match matches.as_slice() {
-        [] => ReliabilityJoinState::NoHistory,
-        [only] => ReliabilityJoinState::Matched {
-            handler_key: only.handler_key.clone(),
-        },
-        _ => ReliabilityJoinState::Ambiguous,
+    if candidates.is_empty() {
+        return ReliabilityJoinState::NoHistory;
+    }
+    if candidates.len() != 1 {
+        return ReliabilityJoinState::Ambiguous;
+    }
+    let Some(handler_key) = candidates.into_iter().next() else {
+        return ReliabilityJoinState::Ambiguous;
+    };
+    if claimants.get(&handler_key) == Some(&1) {
+        ReliabilityJoinState::Matched { handler_key }
+    } else {
+        ReliabilityJoinState::Ambiguous
     }
 }
 
 fn canonical_event(value: &str) -> Option<HookEvent> {
-    match value {
-        "SessionStart" => Some(HookEvent::SessionStart),
-        "SessionEnd" => Some(HookEvent::SessionEnd),
-        "UserPromptSubmit" => Some(HookEvent::UserPromptSubmit),
-        "PreToolUse" => Some(HookEvent::PreToolUse),
-        "PostToolUse" => Some(HookEvent::PostToolUse),
-        "PermissionRequest" => Some(HookEvent::PermissionRequest),
-        "PreCompact" => Some(HookEvent::PreCompact),
-        "PostCompact" => Some(HookEvent::PostCompact),
-        "Stop" => Some(HookEvent::Stop),
-        "SubagentStart" => Some(HookEvent::SubagentStart),
-        "SubagentStop" => Some(HookEvent::SubagentStop),
-        // Interrupt has no admitted invocation/terminal mapping yet.
-        "Interrupt" => None,
-        _ => None,
-    }
+    crate::codex::parse_event(value)
 }
 
 fn parse_trust(value: Option<&str>, managed: bool) -> RuntimeTrust {
@@ -475,6 +596,7 @@ fn unsigned(value: &Value, field: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::ExecutionMode;
     use serde_json::json;
 
     fn catalog() -> Value {
@@ -484,8 +606,8 @@ mod tests {
                 "warnings": ["synthetic warning"],
                 "errors": ["synthetic error"],
                 "hooks": [
-                    {"key":"fixture:0:0","eventName":"PreToolUse","eventDescription":"Synthetic pre-tool","handlerType":"command","command":"synthetic command --with-a-very-long-safe-argument","matcher":"^SyntheticTool$","source":"user","sourcePath":"C:/synthetic/hooks.json","enabled":true,"isManaged":false,"trustStatus":"trusted","async":false,"timeoutSec":9,"additionalContextLimit":64,"reliabilityKeyHint":"safe-a"},
-                    {"key":"fixture:0:1","eventName":"PostToolUse","handlerType":"mcp_tool","mcpServer":"synthetic-server","mcpTool":"synthetic-tool","source":"project","enabled":false,"isManaged":false,"trustStatus":"untrusted","reliabilityKeyHint":"safe-b"},
+                    {"key":"fixture:0:0","eventName":"PreToolUse","eventDescription":"Synthetic pre-tool","handlerType":"command","command":"synthetic command --with-a-very-long-safe-argument","matcher":"^SyntheticTool$","source":"user","sourcePath":"C:/synthetic/hooks.json","enabled":true,"isManaged":false,"trustStatus":"trusted","async":false,"timeoutSec":9,"additionalContextLimit":64},
+                    {"key":"fixture:0:1","eventName":"PostToolUse","handlerType":"mcp_tool","mcpServer":"synthetic-server","mcpTool":"synthetic-tool","source":"project","sourcePath":"C:/synthetic/hooks.json","enabled":false,"isManaged":false,"trustStatus":"untrusted"},
                     {"key":"fixture:0:2","eventName":"UserPromptSubmit","handlerType":"prompt","enabled":true,"isManaged":false,"trustStatus":"modified"},
                     {"key":"fixture:0:3","eventName":"SubagentStart","handlerType":"agent","enabled":true,"isManaged":true,"trustStatus":"trusted"},
                     {"key":"fixture:0:4","eventName":"Interrupt","handlerType":"command","command":"synthetic interrupt","enabled":true,"isManaged":false,"trustStatus":"trusted"},
@@ -506,6 +628,37 @@ mod tests {
             .unwrap()
     }
 
+    fn observed_identity(
+        snapshot: &RuntimePresentationSnapshot,
+        event_name: &str,
+    ) -> HistoricalHandlerIdentity {
+        let event = event(snapshot, event_name);
+        let key = event.handlers[0]
+            .reliability_handler_key
+            .clone()
+            .expect("synthetic local handler has a safe join key");
+        HistoricalHandlerIdentity::from_handler(&HandlerIdentity {
+            key,
+            revision: "hr_synthetic".into(),
+            label: "Synthetic observed handler".into(),
+            source_kind: "synthetic".into(),
+            event: event.canonical_event.expect("canonical synthetic event"),
+            matcher_identity: "m_synthetic".into(),
+            structural_identity: "synthetic:0".into(),
+            execution_mode: ExecutionMode::Sync,
+        })
+    }
+
+    fn catalog_with_duplicate_pre_tool_handler() -> Value {
+        let mut value = catalog();
+        let duplicate = value["result"]["data"][0]["hooks"][0].clone();
+        value["result"]["data"][0]["hooks"]
+            .as_array_mut()
+            .expect("synthetic hooks array")
+            .push(duplicate);
+        value
+    }
+
     #[test]
     fn preserves_codex_human_fields_only_in_memory() {
         let snapshot = RuntimePresentationSnapshot::from_codex_hooks_list(&catalog(), 42).unwrap();
@@ -521,6 +674,18 @@ mod tests {
         assert_eq!(command.mode, Some(RuntimeHandlerMode::Sync));
         assert_eq!(command.timeout_seconds, Some(9));
         assert_eq!(command.additional_context_limit, Some(64));
+        assert_eq!(
+            command.reliability_handler_key,
+            Some(format!(
+                "hk_{}",
+                runtime_location_fingerprint(
+                    Path::new("C:/synthetic/hooks.json"),
+                    HookEvent::PreToolUse,
+                    0,
+                    0,
+                )
+            ))
+        );
         assert!(matches!(
             command.handler_kind,
             RuntimeHandlerKind::Command { .. }
@@ -566,38 +731,35 @@ mod tests {
     }
 
     #[test]
-    fn joins_from_current_catalog_without_false_attribution() {
+    fn normalizes_existing_codex_wire_event_forms() {
+        let mut response = catalog();
+        response["result"]["data"][0]["hooks"][0]["eventName"] = json!("sessionStart");
+        response["result"]["data"][0]["hooks"][1]["eventName"] = json!("stop");
+        let snapshot = RuntimePresentationSnapshot::from_codex_hooks_list(&response, 42).unwrap();
+        assert_eq!(
+            event(&snapshot, "sessionStart").canonical_event,
+            Some(HookEvent::SessionStart)
+        );
+        assert_eq!(
+            event(&snapshot, "stop").canonical_event,
+            Some(HookEvent::Stop)
+        );
+    }
+
+    #[test]
+    fn joins_from_current_catalog_through_admitted_handler_identity() {
         let snapshot = RuntimePresentationSnapshot::from_codex_hooks_list(&catalog(), 42).unwrap();
         let history = vec![
-            HistoricalHandlerIdentity {
-                handler_key: "historical-a".into(),
-                event: HookEvent::PreToolUse,
-                reliability_key_hint: Some("safe-a".into()),
-            },
-            HistoricalHandlerIdentity {
-                handler_key: "historical-b".into(),
-                event: HookEvent::PostToolUse,
-                reliability_key_hint: Some("safe-b".into()),
-            },
-            HistoricalHandlerIdentity {
-                handler_key: "historical-b-duplicate".into(),
-                event: HookEvent::PostToolUse,
-                reliability_key_hint: Some("safe-b".into()),
-            },
+            observed_identity(&snapshot, "PreToolUse"),
             HistoricalHandlerIdentity {
                 handler_key: "historical-only".into(),
                 event: HookEvent::Stop,
-                reliability_key_hint: Some("safe-z".into()),
             },
         ];
         let joined = snapshot.join_reliability(&history);
         assert!(joined.iter().any(|joined| {
             joined.handler.runtime_catalog_id == "fixture:0:0"
-                && matches!(&joined.join, ReliabilityJoinState::Matched { handler_key } if handler_key == "historical-a")
-        }));
-        assert!(joined.iter().any(|joined| {
-            joined.handler.runtime_catalog_id == "fixture:0:1"
-                && matches!(joined.join, ReliabilityJoinState::Ambiguous)
+                && matches!(&joined.join, ReliabilityJoinState::Matched { handler_key } if handler_key == &history[0].handler_key)
         }));
         assert!(joined.iter().any(|joined| {
             joined.handler.runtime_catalog_id == "fixture:0:2"
@@ -607,7 +769,40 @@ mod tests {
             joined.handler.runtime_catalog_id == "fixture:0:4"
                 && matches!(joined.join, ReliabilityJoinState::Unsupported)
         }));
-        assert_eq!(snapshot.historical_not_installed(&history).len(), 3);
+        assert_eq!(snapshot.historical_not_installed(&history).len(), 1);
+    }
+
+    #[test]
+    fn duplicate_current_candidates_are_ambiguous_and_not_reported_as_removed() {
+        let snapshot = RuntimePresentationSnapshot::from_codex_hooks_list(
+            &catalog_with_duplicate_pre_tool_handler(),
+            42,
+        )
+        .unwrap();
+        let history = vec![
+            observed_identity(&snapshot, "PreToolUse"),
+            HistoricalHandlerIdentity {
+                handler_key: "historical-only".into(),
+                event: HookEvent::Stop,
+            },
+        ];
+        let joined = snapshot.join_reliability(&history);
+        assert_eq!(
+            joined
+                .iter()
+                .filter(|joined| joined.handler.runtime_catalog_id == "fixture:0:0")
+                .count(),
+            2
+        );
+        assert!(
+            joined
+                .iter()
+                .filter(|joined| joined.handler.runtime_catalog_id == "fixture:0:0")
+                .all(|joined| matches!(joined.join, ReliabilityJoinState::Ambiguous))
+        );
+        let historical_only = snapshot.historical_not_installed(&history);
+        assert_eq!(historical_only.len(), 1);
+        assert_eq!(historical_only[0].handler_key, "historical-only");
     }
 
     #[test]
@@ -617,19 +812,45 @@ mod tests {
         resource.period_switched();
         assert_eq!(resource.explicit_refreshes(), 0);
         assert_eq!(resource.state(), RuntimeCatalogResourceState::Loading);
-        resource.accepted();
+        let snapshot = RuntimePresentationSnapshot::from_codex_hooks_list(&catalog(), 42).unwrap();
+        let observed = observed_identity(&snapshot, "PreToolUse");
+        resource.accepted(snapshot);
         resource.period_switched();
         assert_eq!(resource.state(), RuntimeCatalogResourceState::Ready);
         resource.request_explicit_refresh();
         assert_eq!(resource.explicit_refreshes(), 1);
         resource.failed();
         assert_eq!(resource.state(), RuntimeCatalogResourceState::Error);
+        assert!(resource.accepted_snapshot().is_some());
+        let catalog_after_failure = resource.accepted_snapshot().unwrap();
+        assert!(
+            catalog_after_failure
+                .join_reliability(&[observed])
+                .iter()
+                .any(|joined| matches!(joined.join, ReliabilityJoinState::Matched { .. }))
+        );
+        assert!(
+            catalog_after_failure
+                .join_reliability_with_history(ReliabilityHistory::Unavailable)
+                .iter()
+                .any(|joined| {
+                    joined.handler.runtime_catalog_id == "fixture:0:0"
+                        && matches!(joined.join, ReliabilityJoinState::Unavailable)
+                })
+        );
     }
 
     #[test]
     fn invalid_catalog_is_rejected_without_fabricating_handlers() {
         assert!(
             RuntimePresentationSnapshot::from_codex_hooks_list(&json!({"result": {}}), 42).is_err()
+        );
+        assert!(
+            RuntimePresentationSnapshot::from_codex_hooks_list(
+                &json!({"result": {"data": [{"cwd": "C:/synthetic/workspace"}]}}),
+                42,
+            )
+            .is_err()
         );
     }
 }
