@@ -111,6 +111,9 @@ pub enum MessageKey {
     FieldDataFreshness,
     FieldRevisionCount,
     FieldObservationStatus,
+    FieldMetricScope,
+    FieldChangeOccurred,
+    FieldReason,
     ColumnName,
     ColumnEvent,
     ColumnRuntime,
@@ -263,6 +266,35 @@ pub enum MessageKey {
     HelpSettings,
     HelpRefresh,
     MinimumTerminal,
+    FailureRateUnavailableZeroSamples,
+    ScopeSelectedAllRevisions,
+    ScopePeriodAllRevisions,
+    ScopeAllObservedAllRevisions,
+    ScopeAllObservedRevisionComparison,
+    ScopeTerminalSamples,
+    CoverageExplanationComplete,
+    CoverageExplanationPartial,
+    CoverageExplanationSyncOnly,
+    CoverageExplanationBestEffort,
+    CoverageExplanationUnknown,
+    CoverageExplanationNotAdmitted,
+    CoverageExplanationSyntheticFixture,
+    RiskLow,
+    RiskGuarded,
+    RiskElevated,
+    RiskHigh,
+    RiskReasonFailures,
+    RiskReasonNoTerminalSamples,
+    RiskReasonComplete,
+    RiskReasonIncomplete,
+    TimeUnavailable,
+    TimeJustNow,
+    TimeMinuteAgo,
+    TimeMinutesAgo,
+    TimeHourAgo,
+    TimeHoursAgo,
+    TimeDayAgo,
+    TimeDaysAgo,
 }
 
 #[cfg(test)]
@@ -334,6 +366,9 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::FieldDataFreshness,
     MessageKey::FieldRevisionCount,
     MessageKey::FieldObservationStatus,
+    MessageKey::FieldMetricScope,
+    MessageKey::FieldChangeOccurred,
+    MessageKey::FieldReason,
     MessageKey::ColumnName,
     MessageKey::ColumnEvent,
     MessageKey::ColumnRuntime,
@@ -486,6 +521,35 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::HelpSettings,
     MessageKey::HelpRefresh,
     MessageKey::MinimumTerminal,
+    MessageKey::FailureRateUnavailableZeroSamples,
+    MessageKey::ScopeSelectedAllRevisions,
+    MessageKey::ScopePeriodAllRevisions,
+    MessageKey::ScopeAllObservedAllRevisions,
+    MessageKey::ScopeAllObservedRevisionComparison,
+    MessageKey::ScopeTerminalSamples,
+    MessageKey::CoverageExplanationComplete,
+    MessageKey::CoverageExplanationPartial,
+    MessageKey::CoverageExplanationSyncOnly,
+    MessageKey::CoverageExplanationBestEffort,
+    MessageKey::CoverageExplanationUnknown,
+    MessageKey::CoverageExplanationNotAdmitted,
+    MessageKey::CoverageExplanationSyntheticFixture,
+    MessageKey::RiskLow,
+    MessageKey::RiskGuarded,
+    MessageKey::RiskElevated,
+    MessageKey::RiskHigh,
+    MessageKey::RiskReasonFailures,
+    MessageKey::RiskReasonNoTerminalSamples,
+    MessageKey::RiskReasonComplete,
+    MessageKey::RiskReasonIncomplete,
+    MessageKey::TimeUnavailable,
+    MessageKey::TimeJustNow,
+    MessageKey::TimeMinuteAgo,
+    MessageKey::TimeMinutesAgo,
+    MessageKey::TimeHourAgo,
+    MessageKey::TimeHoursAgo,
+    MessageKey::TimeDayAgo,
+    MessageKey::TimeDaysAgo,
 ];
 
 impl InterfaceLanguage {
@@ -762,10 +826,7 @@ pub fn sample_count(locale: ResolvedLocale, count: u64) -> String {
 
 pub fn failure_rate_with_sample(locale: ResolvedLocale, rate: f64, samples: u64) -> String {
     if samples == 0 {
-        return match locale {
-            ResolvedLocale::EnUs => "unavailable (0 terminal samples; no terminal samples)".into(),
-            ResolvedLocale::ZhCn => "不可用（终态样本 0；无终态样本）".into(),
-        };
+        return t(locale, MessageKey::FailureRateUnavailableZeroSamples).to_owned();
     }
     t(locale, MessageKey::RateWithSample)
         .replace("{rate}", &format!("{rate:.2}"))

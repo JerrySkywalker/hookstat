@@ -415,7 +415,7 @@ fn diagnostic_facts(locale: ResolvedLocale, check: &DiagnosticCheckViewModel) ->
             DiagnosticFact::Coverage { coverage } => format!(
                 "{}: {}",
                 t(locale, MessageKey::FieldCoverage),
-                coverage_name(locale, *coverage),
+                coverage_summary(locale, *coverage),
             ),
             DiagnosticFact::EvidenceAgeMinutes { age_minutes } => {
                 t(locale, MessageKey::DiagnosticEvidenceAgeMinutes)
@@ -437,7 +437,7 @@ fn render_overview(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoc
     let summary = view.overview.runtime_summaries.first();
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(8), Constraint::Min(5)])
+        .constraints([Constraint::Length(10), Constraint::Min(5)])
         .split(area);
     let Some(summary) = summary else {
         render_state_panel(
@@ -452,7 +452,7 @@ fn render_overview(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoc
     };
     let overview_lines = vec![
         Line::from(Span::styled(
-            period_selector(app, locale),
+            period_selector_for_window(locale, view.overview.window, app.view_state().is_loading()),
             theme.typography_style(TypographyRole::Metadata),
         )),
         key_value_line(
@@ -464,7 +464,7 @@ fn render_overview(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoc
         key_value_line(
             locale,
             MessageKey::FieldCoverage,
-            coverage_name(locale, summary.coverage),
+            &coverage_summary(locale, summary.coverage),
             theme,
         ),
         key_value_line(
@@ -521,6 +521,18 @@ fn render_overview(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoc
 }
 
 fn period_selector(app: &App, locale: ResolvedLocale) -> String {
+    period_selector_for_window(
+        locale,
+        app.requested_window(),
+        app.view_state().is_loading(),
+    )
+}
+
+fn period_selector_for_window(
+    locale: ResolvedLocale,
+    selected: TimeWindow,
+    is_loading: bool,
+) -> String {
     let periods = [
         (TimeWindow::Today, window_name(locale, TimeWindow::Today)),
         (TimeWindow::Last24Hours, "24h"),
@@ -528,7 +540,6 @@ fn period_selector(app: &App, locale: ResolvedLocale) -> String {
         (TimeWindow::Last30Days, "30d"),
         (TimeWindow::All, t(locale, MessageKey::PeriodAll)),
     ];
-    let selected = app.requested_window();
     let mut text = periods
         .iter()
         .map(|(period, label)| {
@@ -540,7 +551,7 @@ fn period_selector(app: &App, locale: ResolvedLocale) -> String {
         })
         .collect::<Vec<_>>()
         .join(" | ");
-    if app.view_state().is_loading() {
+    if is_loading {
         text.push_str(&format!(" ({})", t(locale, MessageKey::StateLoading)));
     }
     text
@@ -567,18 +578,19 @@ fn render_changes(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLoca
     };
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .constraints([Constraint::Length(4), Constraint::Min(5)])
         .split(area);
     let heading = format!(
-        "{} · {}: {}",
-        period_selector(app, locale),
+        "{}\n{}: {}",
+        period_selector_for_window(locale, changes.window, app.changes_state().is_loading()),
         t(locale, MessageKey::FieldCoverage),
-        coverage_name(locale, changes.coverage),
+        coverage_summary(locale, changes.coverage),
     );
     frame.render_widget(
-        Paragraph::new(truncate_to_width(&heading, sections[0].width as usize))
+        Paragraph::new(heading)
             .style(theme.typography_style(TypographyRole::Metadata))
-            .block(themed_block(t(locale, MessageKey::SectionChanges), theme)),
+            .block(themed_block(t(locale, MessageKey::SectionChanges), theme))
+            .wrap(Wrap { trim: true }),
         sections[0],
     );
     if changes.rows.is_empty() {
@@ -740,10 +752,6 @@ fn render_change_detail(
         );
         return;
     };
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(14), Constraint::Min(7)])
-        .split(area);
     let identity = display_identity(locale, &detail.row.display_identity, None);
     let current_revision = detail
         .revision_timeline
@@ -752,12 +760,12 @@ fn render_change_detail(
         .unwrap_or_else(|| t(locale, MessageKey::StateTimelineUnavailable));
     let facts = vec![
         Line::from(Span::styled(
-            period_selector(app, locale),
+            period_selector_for_window(locale, detail.window, app.changes_state().is_loading()),
             theme.typography_style(TypographyRole::Metadata),
         )),
         label_value_line(
-            metric_scope_label(locale),
-            &selected_scope(locale, app.requested_window()),
+            t(locale, MessageKey::FieldMetricScope),
+            &selected_scope(locale, detail.window),
             theme,
         ),
         key_value_line(
@@ -769,13 +777,32 @@ fn render_change_detail(
         key_value_line(
             locale,
             MessageKey::FieldCoverage,
-            coverage_name(locale, detail.coverage),
+            &coverage_summary(locale, detail.coverage),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldInternalIdentity,
+            &format!(
+                "{} · revision={current_revision}",
+                detail.internal_ref.handler_key
+            ),
             theme,
         ),
         key_value_line(
             locale,
             MessageKey::FieldRevision,
             &short_revision(current_revision),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldChangeOccurred,
+            &format_human_time(
+                locale,
+                detail.row.reference.occurred_at_unix_ms,
+                changes_now(app),
+            ),
             theme,
         ),
         key_value_line(
@@ -813,6 +840,20 @@ fn render_change_detail(
             theme,
         ),
     ];
+    if area.height < 26 {
+        frame.render_widget(
+            Paragraph::new(facts)
+                .block(themed_block(&identity, theme))
+                .wrap(Wrap { trim: true })
+                .scroll((app.changes_detail_scroll_lines(), 0)),
+            area,
+        );
+        return;
+    }
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(20), Constraint::Min(6)])
+        .split(area);
     frame.render_widget(
         Paragraph::new(facts)
             .block(themed_block(&identity, theme))
@@ -903,7 +944,13 @@ fn render_hooks(frame: &mut Frame, area: Rect, app: &App, locale: ResolvedLocale
     };
     let query_line = format!(
         "{}\n{}: {} · {}: {} · {}: {}",
-        period_selector(app, locale),
+        period_selector_for_window(
+            locale,
+            app.view_model()
+                .map(|view| view.overview.window)
+                .unwrap_or_else(|| app.requested_window()),
+            app.view_state().is_loading(),
+        ),
         t(locale, MessageKey::FieldSearch),
         query.search,
         t(locale, MessageKey::FieldFilter),
@@ -1078,7 +1125,7 @@ fn render_hook_detail(
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(if app.alias_editing() { 18 } else { 15 }),
+            Constraint::Length(if app.alias_editing() { 24 } else { 21 }),
             Constraint::Min(9),
         ])
         .split(area);
@@ -1089,7 +1136,7 @@ fn render_hook_detail(
     );
     let mut facts = vec![
         Line::from(Span::styled(
-            period_selector(app, locale),
+            period_selector_for_window(locale, detail.window, app.view_state().is_loading()),
             theme.typography_style(TypographyRole::Metadata),
         )),
         key_value_line(
@@ -1138,7 +1185,7 @@ fn render_hook_detail(
             theme,
         ),
         label_value_line(
-            metric_scope_label(locale),
+            t(locale, MessageKey::FieldMetricScope),
             &selected_scope(locale, detail.window),
             theme,
         ),
@@ -1309,7 +1356,7 @@ fn render_hook_detail(
     );
     if area.height < 18 {
         let compact = format!(
-            "{identity}\n{}\n{}\n{}\n{body}",
+            "{identity}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{body}",
             key_value_text(
                 locale,
                 MessageKey::FieldRuntime,
@@ -1317,13 +1364,46 @@ fn render_hook_detail(
             ),
             key_value_text(
                 locale,
+                MessageKey::FieldEvent,
+                event_name(locale, detail.event),
+            ),
+            key_value_text(
+                locale,
                 MessageKey::FieldCoverage,
-                coverage_name(locale, detail.coverage),
+                &coverage_summary(locale, detail.coverage),
+            ),
+            label_value_text(
+                t(locale, MessageKey::FieldMetricScope),
+                &selected_scope(locale, detail.window),
+            ),
+            key_value_text(
+                locale,
+                MessageKey::FieldSamples,
+                &terminal_denominator(locale, detail.sample_count),
             ),
             key_value_text(
                 locale,
                 MessageKey::FieldFailureRate,
                 &failure_rate_with_sample(locale, detail.failure_rate_percent, detail.sample_count),
+            ),
+            key_value_text(
+                locale,
+                MessageKey::FieldRisk,
+                &risk_detail(
+                    locale,
+                    &detail.risk,
+                    detail.failed_runs,
+                    detail.sample_count,
+                    detail.coverage,
+                ),
+            ),
+            key_value_text(
+                locale,
+                MessageKey::FieldHealth,
+                health_name(
+                    locale,
+                    presentation_health(detail.coverage, detail.failed_runs, detail.sample_count),
+                ),
             ),
         );
         frame.render_widget(
@@ -1531,7 +1611,7 @@ fn render_failure_cluster_detail(
         key_value_line(
             locale,
             MessageKey::FieldCoverage,
-            coverage_name(locale, cluster.coverage),
+            &coverage_summary(locale, cluster.coverage),
             theme,
         ),
         key_value_line(
@@ -1646,10 +1726,7 @@ fn risk_detail(
         "{} ({}/100)\n{}: {}",
         risk_category(locale, risk.score),
         risk.score,
-        match locale {
-            ResolvedLocale::EnUs => "Reason",
-            ResolvedLocale::ZhCn => "原因",
-        },
+        t(locale, MessageKey::FieldReason),
         risk_reason(locale, failed_runs, terminal_samples, coverage),
     )
 }
@@ -1776,6 +1853,10 @@ fn label_value_line(label: &str, value: &str, theme: Theme) -> Line<'static> {
     ])
 }
 
+fn label_value_text(label: &str, value: &str) -> String {
+    format!("{label}: {value}")
+}
+
 fn presentation_now(app: &App) -> i64 {
     app.view_model()
         .map(|view| view.overview.generated_at_unix_ms)
@@ -1788,47 +1869,27 @@ fn changes_now(app: &App) -> i64 {
         .unwrap_or_else(|| presentation_now(app))
 }
 
-fn metric_scope_label(locale: ResolvedLocale) -> &'static str {
-    match locale {
-        ResolvedLocale::EnUs => "Metric scope",
-        ResolvedLocale::ZhCn => "指标范围",
-    }
-}
-
 fn selected_scope(locale: ResolvedLocale, window: TimeWindow) -> String {
-    match (locale, window) {
-        (ResolvedLocale::EnUs, TimeWindow::All) => "All observed time, all revisions".into(),
-        (ResolvedLocale::ZhCn, TimeWindow::All) => "全部观测时间，全部修订版本".into(),
-        (ResolvedLocale::EnUs, _) => {
-            format!("Selected {}, all revisions", window_name(locale, window))
-        }
-        (ResolvedLocale::ZhCn, _) => {
-            format!("已选 {}，全部修订版本", window_name(locale, window))
-        }
+    if window == TimeWindow::All {
+        return t(locale, MessageKey::ScopeAllObservedAllRevisions).to_owned();
     }
+    t(locale, MessageKey::ScopeSelectedAllRevisions)
+        .replace("{period}", window_name(locale, window))
 }
 
 fn trend_scope(locale: ResolvedLocale, window: TimeWindow) -> String {
-    match (locale, window) {
-        (ResolvedLocale::EnUs, TimeWindow::All) => "All observed time, all revisions".into(),
-        (ResolvedLocale::ZhCn, TimeWindow::All) => "全部观测时间，全部修订版本".into(),
-        (ResolvedLocale::EnUs, _) => format!("{}, all revisions", window_name(locale, window)),
-        (ResolvedLocale::ZhCn, _) => format!("{}，全部修订版本", window_name(locale, window)),
+    if window == TimeWindow::All {
+        return t(locale, MessageKey::ScopeAllObservedAllRevisions).to_owned();
     }
+    t(locale, MessageKey::ScopePeriodAllRevisions).replace("{period}", window_name(locale, window))
 }
 
 fn revision_scope(locale: ResolvedLocale) -> &'static str {
-    match locale {
-        ResolvedLocale::EnUs => "All observed time, current/previous revision",
-        ResolvedLocale::ZhCn => "全部观测时间，当前/上一修订版本",
-    }
+    t(locale, MessageKey::ScopeAllObservedRevisionComparison)
 }
 
 fn terminal_denominator(locale: ResolvedLocale, samples: u64) -> String {
-    match locale {
-        ResolvedLocale::EnUs => format!("{samples} in selected scope"),
-        ResolvedLocale::ZhCn => format!("已选范围内 {samples}"),
-    }
+    t(locale, MessageKey::ScopeTerminalSamples).replace("{samples}", &samples.to_string())
 }
 
 fn coverage_summary(locale: ResolvedLocale, coverage: crate::domain::EvidenceCoverage) -> String {
@@ -1844,40 +1905,16 @@ fn coverage_explanation(
     coverage: crate::domain::EvidenceCoverage,
 ) -> &'static str {
     use crate::domain::EvidenceCoverage;
-    match (locale, coverage) {
-        (ResolvedLocale::EnUs, EvidenceCoverage::Complete) => {
-            "Terminal evidence is complete in this scope."
-        }
-        (ResolvedLocale::ZhCn, EvidenceCoverage::Complete) => "此范围内终态证据完整。",
-        (ResolvedLocale::EnUs, EvidenceCoverage::Partial) => {
-            "Some evidence is observed; terminal coverage is incomplete."
-        }
-        (ResolvedLocale::ZhCn, EvidenceCoverage::Partial) => "已观察到部分证据；终态覆盖不完整。",
-        (ResolvedLocale::EnUs, EvidenceCoverage::SyncOnly) => {
-            "Only synchronous observations are covered."
-        }
-        (ResolvedLocale::ZhCn, EvidenceCoverage::SyncOnly) => "仅覆盖同步观察。",
-        (ResolvedLocale::EnUs, EvidenceCoverage::BestEffort) => {
-            "Evidence is best effort and may be incomplete."
-        }
-        (ResolvedLocale::ZhCn, EvidenceCoverage::BestEffort) => "证据为尽力而为，可能不完整。",
-        (ResolvedLocale::EnUs, EvidenceCoverage::Unknown) => {
-            "Coverage is unknown; reliability is not a health claim."
-        }
-        (ResolvedLocale::ZhCn, EvidenceCoverage::Unknown) => "覆盖范围未知；可靠性不是健康结论。",
-        (ResolvedLocale::EnUs, EvidenceCoverage::NotAdmitted) => {
-            "No admitted evidence source covers this hook."
-        }
-        (ResolvedLocale::ZhCn, EvidenceCoverage::NotAdmitted) => {
-            "没有已接纳的证据来源覆盖此 Hook。"
-        }
-        (ResolvedLocale::EnUs, EvidenceCoverage::SyntheticFixture) => {
-            "Synthetic fixture coverage; not live runtime evidence."
-        }
-        (ResolvedLocale::ZhCn, EvidenceCoverage::SyntheticFixture) => {
-            "合成样例覆盖；不是实时运行时证据。"
-        }
-    }
+    let key = match coverage {
+        EvidenceCoverage::Complete => MessageKey::CoverageExplanationComplete,
+        EvidenceCoverage::Partial => MessageKey::CoverageExplanationPartial,
+        EvidenceCoverage::SyncOnly => MessageKey::CoverageExplanationSyncOnly,
+        EvidenceCoverage::BestEffort => MessageKey::CoverageExplanationBestEffort,
+        EvidenceCoverage::Unknown => MessageKey::CoverageExplanationUnknown,
+        EvidenceCoverage::NotAdmitted => MessageKey::CoverageExplanationNotAdmitted,
+        EvidenceCoverage::SyntheticFixture => MessageKey::CoverageExplanationSyntheticFixture,
+    };
+    t(locale, key)
 }
 
 fn presentation_health(
@@ -1897,16 +1934,13 @@ fn presentation_health(
 }
 
 fn risk_category(locale: ResolvedLocale, score: u8) -> &'static str {
-    match (locale, score) {
-        (ResolvedLocale::EnUs, 0..=24) => "Low risk",
-        (ResolvedLocale::EnUs, 25..=49) => "Guarded risk",
-        (ResolvedLocale::EnUs, 50..=74) => "Elevated risk",
-        (ResolvedLocale::EnUs, _) => "High risk",
-        (ResolvedLocale::ZhCn, 0..=24) => "低风险",
-        (ResolvedLocale::ZhCn, 25..=49) => "需关注风险",
-        (ResolvedLocale::ZhCn, 50..=74) => "较高风险",
-        (ResolvedLocale::ZhCn, _) => "高风险",
-    }
+    let key = match score {
+        0..=24 => MessageKey::RiskLow,
+        25..=49 => MessageKey::RiskGuarded,
+        50..=74 => MessageKey::RiskElevated,
+        _ => MessageKey::RiskHigh,
+    };
+    t(locale, key)
 }
 
 fn risk_reason(
@@ -1915,24 +1949,16 @@ fn risk_reason(
     terminal_samples: u64,
     coverage: crate::domain::EvidenceCoverage,
 ) -> &'static str {
-    match (locale, failed_runs > 0, terminal_samples == 0, coverage) {
-        (ResolvedLocale::EnUs, true, _, _) => "observed execution failures in selected scope.",
-        (ResolvedLocale::ZhCn, true, _, _) => "已选范围内观察到执行失败。",
-        (ResolvedLocale::EnUs, false, true, _) => {
-            "no terminal samples; this is not a healthy result."
-        }
-        (ResolvedLocale::ZhCn, false, true, _) => "无终态样本；这不是健康结果。",
-        (ResolvedLocale::EnUs, false, false, crate::domain::EvidenceCoverage::Complete) => {
-            "no observed failures in selected scope."
-        }
-        (ResolvedLocale::ZhCn, false, false, crate::domain::EvidenceCoverage::Complete) => {
-            "已选范围内未观察到失败。"
-        }
-        (ResolvedLocale::EnUs, false, false, _) => {
-            "no observed failures; terminal coverage is incomplete."
-        }
-        (ResolvedLocale::ZhCn, false, false, _) => "未观察到失败；终态覆盖不完整。",
-    }
+    let key = if failed_runs > 0 {
+        MessageKey::RiskReasonFailures
+    } else if terminal_samples == 0 {
+        MessageKey::RiskReasonNoTerminalSamples
+    } else if coverage == crate::domain::EvidenceCoverage::Complete {
+        MessageKey::RiskReasonComplete
+    } else {
+        MessageKey::RiskReasonIncomplete
+    };
+    t(locale, key)
 }
 
 fn short_revision(revision: &str) -> String {
@@ -2276,11 +2302,25 @@ mod tests {
         assert_eq!(app.screen(), Screen::ChangeDetail);
         let detail = rendered(app, ResolvedLocale::ZhCn, 100, 30).replace(' ', "");
         assert!(detail.contains("指标范围"));
+        assert!(detail.contains("变更发生时间"));
         assert!(detail.contains("首次发现"));
         assert!(detail.contains("最后发现"));
         assert!(detail.contains("修订版本"));
         assert!(!detail.contains("1728000000"));
         assert!(!detail.contains("1036800000"));
+    }
+
+    #[test]
+    fn change_detail_scope_stays_bound_to_accepted_data_during_refresh() {
+        let mut app = changes_app();
+        app.handle(super::super::keymap::Command::Enter);
+        app.handle(super::super::keymap::Command::Enter);
+        assert_eq!(app.screen(), Screen::ChangeDetail);
+
+        app.handle(super::super::keymap::Command::Window(TimeWindow::Today));
+        let detail = rendered(app, ResolvedLocale::EnUs, 100, 40);
+        assert!(detail.contains("Metric scope: Selected Last 7 days, all revisions"));
+        assert!(!detail.contains("Metric scope: Selected Today, all revisions"));
     }
 
     #[test]

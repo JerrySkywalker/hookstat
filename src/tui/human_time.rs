@@ -4,7 +4,7 @@
 //! sole presentation conversion point so local Human text never falls back to
 //! a raw epoch value.
 
-use super::localization::ResolvedLocale;
+use super::localization::{MessageKey, ResolvedLocale, t};
 use chrono::{Local, TimeZone};
 
 pub(super) fn format_human_time(locale: ResolvedLocale, unix_ms: i64, now_unix_ms: i64) -> String {
@@ -35,39 +35,36 @@ fn relative_age(locale: ResolvedLocale, unix_ms: i64, now_unix_ms: i64) -> Strin
     let delta_ms = now_unix_ms.saturating_sub(unix_ms);
     let seconds = delta_ms / 1_000;
     if seconds < 60 {
-        return match locale {
-            ResolvedLocale::EnUs => "just now".into(),
-            ResolvedLocale::ZhCn => "刚刚".into(),
-        };
+        return t(locale, MessageKey::TimeJustNow).to_owned();
     }
-    let (count, unit) = if seconds < 60 * 60 {
-        (seconds / 60, "minute")
+    let (count, singular, plural) = if seconds < 60 * 60 {
+        (
+            seconds / 60,
+            MessageKey::TimeMinuteAgo,
+            MessageKey::TimeMinutesAgo,
+        )
     } else if seconds < 24 * 60 * 60 {
-        (seconds / (60 * 60), "hour")
+        (
+            seconds / (60 * 60),
+            MessageKey::TimeHourAgo,
+            MessageKey::TimeHoursAgo,
+        )
     } else {
-        (seconds / (24 * 60 * 60), "day")
+        (
+            seconds / (24 * 60 * 60),
+            MessageKey::TimeDayAgo,
+            MessageKey::TimeDaysAgo,
+        )
     };
-    match locale {
-        ResolvedLocale::EnUs => {
-            let suffix = if count == 1 { "" } else { "s" };
-            format!("{count} {unit}{suffix} ago")
-        }
-        ResolvedLocale::ZhCn => {
-            let unit = match unit {
-                "minute" => "分钟前",
-                "hour" => "小时前",
-                _ => "天前",
-            };
-            format!("{count} {unit}")
-        }
+    if count == 1 {
+        t(locale, singular).to_owned()
+    } else {
+        t(locale, plural).replace("{count}", &count.to_string())
     }
 }
 
 const fn unavailable_time(locale: ResolvedLocale) -> &'static str {
-    match locale {
-        ResolvedLocale::EnUs => "Time unavailable",
-        ResolvedLocale::ZhCn => "时间不可用",
-    }
+    t(locale, MessageKey::TimeUnavailable)
 }
 
 #[cfg(test)]

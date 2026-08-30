@@ -270,6 +270,13 @@ Yesterday 21:04
 
 Exact style may vary by locale, but the values must be immediately understandable.
 
+Relative age uses deterministic buckets: under 60 seconds is `just now`; from
+one minute through 59 minutes it is expressed in minutes; from one hour through
+23 hours it is expressed in hours; and 24 hours or more is expressed in whole
+days. These age labels describe elapsed time from the accepted presentation
+snapshot only. They never imply runtime health, evidence admission, or current
+runtime installation.
+
 Raw epoch values may remain in machine-readable JSON/debug outputs.
 
 Fields covered include:

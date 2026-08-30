@@ -69,6 +69,9 @@ pub const fn text(key: MessageKey) -> &'static str {
         MessageKey::FieldDataFreshness => "Data freshness",
         MessageKey::FieldRevisionCount => "Historical revisions",
         MessageKey::FieldObservationStatus => "Observation status",
+        MessageKey::FieldMetricScope => "Metric scope",
+        MessageKey::FieldChangeOccurred => "Change occurred",
+        MessageKey::FieldReason => "Reason",
         MessageKey::ColumnName => "Name",
         MessageKey::ColumnEvent => "Event",
         MessageKey::ColumnRuntime => "Runtime",
@@ -263,5 +266,52 @@ pub const fn text(key: MessageKey) -> &'static str {
             "r refreshes reliability pages. All displayed failure rates include sample counts."
         }
         MessageKey::MinimumTerminal => "Resize to at least 24x10",
+        MessageKey::FailureRateUnavailableZeroSamples => {
+            "unavailable (0 terminal samples; no terminal samples)"
+        }
+        MessageKey::ScopeSelectedAllRevisions => "Selected {period}, all revisions",
+        MessageKey::ScopePeriodAllRevisions => "{period}, all revisions",
+        MessageKey::ScopeAllObservedAllRevisions => "All observed time, all revisions",
+        MessageKey::ScopeAllObservedRevisionComparison => {
+            "All observed time, current/previous revision"
+        }
+        MessageKey::ScopeTerminalSamples => "{samples} in selected scope",
+        MessageKey::CoverageExplanationComplete => "Terminal evidence is complete in this scope.",
+        MessageKey::CoverageExplanationPartial => {
+            "Some evidence is observed; terminal coverage is incomplete."
+        }
+        MessageKey::CoverageExplanationSyncOnly => "Only synchronous observations are covered.",
+        MessageKey::CoverageExplanationBestEffort => {
+            "Evidence is best effort and may be incomplete."
+        }
+        MessageKey::CoverageExplanationUnknown => {
+            "Coverage is unknown; reliability is not a health claim."
+        }
+        MessageKey::CoverageExplanationNotAdmitted => {
+            "No admitted evidence source covers this hook."
+        }
+        MessageKey::CoverageExplanationSyntheticFixture => {
+            "Synthetic fixture coverage; not live runtime evidence."
+        }
+        MessageKey::RiskLow => "Low risk",
+        MessageKey::RiskGuarded => "Guarded risk",
+        MessageKey::RiskElevated => "Elevated risk",
+        MessageKey::RiskHigh => "High risk",
+        MessageKey::RiskReasonFailures => "observed execution failures in selected scope.",
+        MessageKey::RiskReasonNoTerminalSamples => {
+            "no terminal samples; this is not a healthy result."
+        }
+        MessageKey::RiskReasonComplete => "no observed failures in selected scope.",
+        MessageKey::RiskReasonIncomplete => {
+            "no observed failures; terminal coverage is incomplete."
+        }
+        MessageKey::TimeUnavailable => "Time unavailable",
+        MessageKey::TimeJustNow => "just now",
+        MessageKey::TimeMinuteAgo => "1 minute ago",
+        MessageKey::TimeMinutesAgo => "{count} minutes ago",
+        MessageKey::TimeHourAgo => "1 hour ago",
+        MessageKey::TimeHoursAgo => "{count} hours ago",
+        MessageKey::TimeDayAgo => "1 day ago",
+        MessageKey::TimeDaysAgo => "{count} days ago",
     }
 }

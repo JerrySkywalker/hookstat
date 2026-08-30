@@ -119,6 +119,7 @@ pub struct ChangeRowViewModel {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChangeDetailViewModel {
     pub row: ChangeRowViewModel,
+    pub window: TimeWindow,
     pub internal_ref: HandlerRef,
     pub coverage: EvidenceCoverage,
     pub first_seen_unix_ms: i64,
@@ -185,6 +186,7 @@ impl ChangesViewModel {
                 let history = histories.get(row.reference.handler_key.as_str())?;
                 Some(ChangeDetailViewModel {
                     row: row.clone(),
+                    window: workbench.window,
                     internal_ref: HandlerRef {
                         runtime: Runtime::Codex,
                         handler_key: history.handler.key.clone(),
