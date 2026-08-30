@@ -1360,7 +1360,7 @@ fn render_runtime_hook_detail(
 
     let reliability = if let Some(detail) = app.matched_reliability_detail() {
         format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
             key_value_text(
                 locale,
                 MessageKey::FieldCoverage,
@@ -1403,6 +1403,21 @@ fn render_runtime_hook_detail(
             key_value_text(
                 locale,
                 MessageKey::FieldHealthExplanation,
+                risk_reason(
+                    locale,
+                    detail.failed_runs,
+                    detail.sample_count,
+                    detail.coverage,
+                ),
+            ),
+            key_value_text(
+                locale,
+                MessageKey::FieldRisk,
+                &risk_score(locale, detail.risk.score),
+            ),
+            key_value_text(
+                locale,
+                MessageKey::FieldReason,
                 risk_reason(
                     locale,
                     detail.failed_runs,
@@ -1531,7 +1546,7 @@ fn render_runtime_hook_detail(
                     .join("\n")
             };
             format!(
-                "{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}: {}\n{}: {}\n{}: {}\n{}: {}",
+                "{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}: {}\n{}: {}",
                 t(locale, MessageKey::SectionRecentFailures),
                 recent,
                 t(locale, MessageKey::SectionTrends),
@@ -1541,15 +1556,6 @@ fn render_runtime_hook_detail(
                 t(locale, MessageKey::SectionFailureFingerprints),
                 fingerprints,
                 t(locale, MessageKey::SectionTechnicalMetadata),
-                t(locale, MessageKey::FieldRisk),
-                risk_score(locale, detail.risk.score),
-                t(locale, MessageKey::FieldReason),
-                risk_reason(
-                    locale,
-                    detail.failed_runs,
-                    detail.sample_count,
-                    detail.coverage
-                ),
                 t(locale, MessageKey::FieldFullRevision),
                 detail.revision,
                 t(locale, MessageKey::FieldInternalIdentity),
@@ -3269,6 +3275,10 @@ mod tests {
         intelligence.handle(super::super::keymap::Command::Enter);
         let detail = rendered(intelligence, ResolvedLocale::EnUs, 140, 150);
         assert!(detail.contains("Metric scope: All observed time, all revisions"));
+        let reliability_summary = &detail[detail.find("Reliability summary").unwrap()
+            ..detail.find("Observation history").unwrap()];
+        assert!(reliability_summary.contains("Risk:"));
+        assert!(reliability_summary.contains("Reason:"));
         assert!(detail.contains("Current revision"));
         assert!(detail.contains("Current revision: runtime-heal…"));
         assert!(!detail.contains("Current revision: runtime-health-r1"));
@@ -3280,6 +3290,9 @@ mod tests {
         assert!(detail.contains("Failure fingerprints"));
         assert!(detail.contains("Advanced technical metadata"));
         assert!(detail.contains("Full revision: runtime-health-r1"));
+        let technical_metadata = &detail[detail.find("Advanced technical metadata").unwrap()..];
+        assert!(!technical_metadata.contains("Risk:"));
+        assert!(!technical_metadata.contains("Reason:"));
 
         let mut unknown = control_center_app();
         unknown.handle(super::super::keymap::Command::Enter);
