@@ -8,6 +8,7 @@
 
 use crate::domain::{ExecutionMode, HandlerIdentity, HookEvent};
 use crate::identity::display_name_from_command;
+use crate::runtime_presentation::RuntimePresentationSnapshot;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -323,6 +324,26 @@ pub fn discover_default() -> Result<Discovery, CodexError> {
 /// write request is ever sent. Raw response values are parsed in-memory only
 /// and immediately reduced to the privacy-preserving structures above.
 pub fn discover_effective(cwd: &Path) -> Result<EffectiveDiscovery, CodexError> {
+    parse_effective_response(&read_hooks_list_response(cwd)?)
+}
+
+/// Uses the official read-only Codex App Server `hooks/list` surface to build
+/// a local-only current-runtime presentation snapshot. The returned type has no
+/// durable serialization path and is not evidence or a configuration write.
+pub fn discover_runtime_presentation(
+    cwd: &Path,
+    captured_at_unix_ms: i64,
+) -> Result<RuntimePresentationSnapshot, CodexError> {
+    RuntimePresentationSnapshot::from_codex_hooks_list(
+        &read_hooks_list_response(cwd)?,
+        captured_at_unix_ms,
+    )
+    .map_err(|_| CodexError::AppServerProtocol)
+}
+
+/// Sends precisely the initialization and one `hooks/list` read request shared
+/// by the sanitized effective-discovery and ephemeral presentation projections.
+fn read_hooks_list_response(cwd: &Path) -> Result<Value, CodexError> {
     let mut child = app_server_command()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -366,8 +387,7 @@ pub fn discover_effective(cwd: &Path) -> Result<EffectiveDiscovery, CodexError> 
     // server lifetime that is unrelated to discovery.
     let _ = child.kill();
     let _ = child.wait();
-    let response = response?;
-    parse_effective_response(&response)
+    response
 }
 
 #[cfg(windows)]
