@@ -11,7 +11,7 @@ Information/read parity is mandatory for v0.4. Write parity is conditional on up
 ```text
 G41=PASS
 G42=PASS
-G43=PASS_OR_CONVERGING_WITHOUT_WRITE_CONFLICT
+G43=PASS
 ```
 
 ## Capability qualification first
@@ -34,8 +34,7 @@ Do not infer that an internal Codex TUI `AppEvent` is automatically an external 
 Allowed:
 
 ```text
-WRITE_PARITY=ADMITTED
-WRITE_PARITY=PARTIAL
+WRITE_PARITY=PASS
 WRITE_PARITY=UPSTREAM_UNAVAILABLE
 ```
 
