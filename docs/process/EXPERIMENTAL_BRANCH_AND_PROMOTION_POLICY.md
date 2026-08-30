@@ -87,6 +87,7 @@ Properties:
 ```text
 MERGE_INTENT=false
 MERGE_TARGET=NONE
+EXP_DIRECT_MAIN_MERGE=false
 PUBLIC_RELEASE_BLOCKER=false
 FAILED_EXPERIMENT_ALLOWED=true
 ARCHITECTURE_MAY_CHANGE=true
@@ -112,6 +113,7 @@ Properties:
 ```text
 BASE=current accepted main
 SOURCE_EVIDENCE=one or more exp/* tracks
+PROMOTION_NOT_MERGE=true
 MERGE_INTENT=true
 MERGE_TARGET=main
 QUALITY_GATES=full production/admission gates
