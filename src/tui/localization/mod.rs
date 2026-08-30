@@ -761,6 +761,12 @@ pub fn sample_count(locale: ResolvedLocale, count: u64) -> String {
 }
 
 pub fn failure_rate_with_sample(locale: ResolvedLocale, rate: f64, samples: u64) -> String {
+    if samples == 0 {
+        return match locale {
+            ResolvedLocale::EnUs => "unavailable (0 terminal samples; no terminal samples)".into(),
+            ResolvedLocale::ZhCn => "不可用（终态样本 0；无终态样本）".into(),
+        };
+    }
     t(locale, MessageKey::RateWithSample)
         .replace("{rate}", &format!("{rate:.2}"))
         .replace("{samples}", &sample_count(locale, samples))
@@ -788,6 +794,18 @@ mod tests {
         let language = LanguageState::resolve(InterfaceLanguage::Auto, Some("fr-FR"), None, None);
         assert_eq!(language.resolved, ResolvedLocale::EnUs);
         assert_eq!(language.source, LocaleSource::Fallback);
+    }
+
+    #[test]
+    fn zero_terminal_samples_are_unavailable_not_healthy() {
+        let english = failure_rate_with_sample(ResolvedLocale::EnUs, 0.0, 0);
+        assert!(english.contains("unavailable"));
+        assert!(english.contains("0 terminal samples"));
+        assert!(!english.contains("0.00%"));
+
+        let chinese = failure_rate_with_sample(ResolvedLocale::ZhCn, 0.0, 0);
+        assert!(chinese.contains("不可用"));
+        assert!(!chinese.contains("0.00%"));
     }
 
     #[test]

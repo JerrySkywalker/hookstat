@@ -6,6 +6,7 @@
 mod app;
 #[cfg(test)]
 mod conformance;
+mod human_time;
 mod keymap;
 mod layout;
 pub mod localization;

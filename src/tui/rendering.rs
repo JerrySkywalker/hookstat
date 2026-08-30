@@ -10,6 +10,7 @@ use ratatui::{
 };
 
 use super::app::{AliasSaveState, App, Screen, SettingsField, SettingsSaveState};
+use super::human_time::format_human_time;
 use super::layout::{ApplicationShell, ShellLayout};
 use super::localization::{
     LanguageState, MessageKey, ResolvedLocale, coverage_name, diagnostic_explanation,
@@ -741,7 +742,7 @@ fn render_change_detail(
     };
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(13), Constraint::Min(7)])
+        .constraints([Constraint::Length(14), Constraint::Min(7)])
         .split(area);
     let identity = display_identity(locale, &detail.row.display_identity, None);
     let current_revision = detail
@@ -754,6 +755,11 @@ fn render_change_detail(
             period_selector(app, locale),
             theme.typography_style(TypographyRole::Metadata),
         )),
+        label_value_line(
+            metric_scope_label(locale),
+            &selected_scope(locale, app.requested_window()),
+            theme,
+        ),
         key_value_line(
             locale,
             MessageKey::FieldClassification,
@@ -766,23 +772,28 @@ fn render_change_detail(
             coverage_name(locale, detail.coverage),
             theme,
         ),
-        key_value_line(locale, MessageKey::FieldRevision, current_revision, theme),
+        key_value_line(
+            locale,
+            MessageKey::FieldRevision,
+            &short_revision(current_revision),
+            theme,
+        ),
         key_value_line(
             locale,
             MessageKey::FieldFirstSeen,
-            &detail.first_seen_unix_ms.to_string(),
+            &format_human_time(locale, detail.first_seen_unix_ms, changes_now(app)),
             theme,
         ),
         key_value_line(
             locale,
             MessageKey::FieldLastSeen,
-            &detail.last_seen_unix_ms.to_string(),
+            &format_human_time(locale, detail.last_seen_unix_ms, changes_now(app)),
             theme,
         ),
         key_value_line(
             locale,
             MessageKey::FieldLatestEvidence,
-            &detail.latest_evidence_unix_ms.to_string(),
+            &format_human_time(locale, detail.latest_evidence_unix_ms, changes_now(app)),
             theme,
         ),
         key_value_line(
@@ -813,10 +824,10 @@ fn render_change_detail(
         .iter()
         .map(|epoch| {
             format!(
-                "{} · {}–{} · {}",
-                epoch.revision,
-                epoch.first_seen_unix_ms,
-                epoch.last_seen_unix_ms,
+                "{} · {} – {} · {}",
+                short_revision(&epoch.revision),
+                format_human_time(locale, epoch.first_seen_unix_ms, changes_now(app)),
+                format_human_time(locale, epoch.last_seen_unix_ms, changes_now(app)),
                 failure_rate_with_sample(
                     locale,
                     epoch.metrics.failure_rate_percent,
@@ -1067,7 +1078,7 @@ fn render_hook_detail(
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(if app.alias_editing() { 15 } else { 12 }),
+            Constraint::Length(if app.alias_editing() { 18 } else { 15 }),
             Constraint::Min(9),
         ])
         .split(area);
@@ -1096,16 +1107,24 @@ fn render_hook_detail(
         key_value_line(
             locale,
             MessageKey::FieldCoverage,
-            coverage_name(locale, detail.coverage),
+            &coverage_summary(locale, detail.coverage),
             theme,
         ),
         key_value_line(
             locale,
             MessageKey::FieldInternalIdentity,
-            &detail.internal_ref.handler_key,
+            &format!(
+                "{} · revision={}",
+                detail.internal_ref.handler_key, detail.revision
+            ),
             theme,
         ),
-        key_value_line(locale, MessageKey::FieldRevision, &detail.revision, theme),
+        key_value_line(
+            locale,
+            MessageKey::FieldRevision,
+            &short_revision(&detail.revision),
+            theme,
+        ),
         key_value_line(
             locale,
             MessageKey::FieldRunCount,
@@ -1118,6 +1137,17 @@ fn render_hook_detail(
             window_name(locale, detail.window),
             theme,
         ),
+        label_value_line(
+            metric_scope_label(locale),
+            &selected_scope(locale, detail.window),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldSamples,
+            &terminal_denominator(locale, detail.sample_count),
+            theme,
+        ),
         key_value_line(
             locale,
             MessageKey::FieldFailureRate,
@@ -1127,7 +1157,22 @@ fn render_hook_detail(
         key_value_line(
             locale,
             MessageKey::FieldRisk,
-            &risk_detail(locale, &detail.risk),
+            &risk_detail(
+                locale,
+                &detail.risk,
+                detail.failed_runs,
+                detail.sample_count,
+                detail.coverage,
+            ),
+            theme,
+        ),
+        key_value_line(
+            locale,
+            MessageKey::FieldHealth,
+            health_name(
+                locale,
+                presentation_health(detail.coverage, detail.failed_runs, detail.sample_count),
+            ),
             theme,
         ),
     ];
@@ -1161,7 +1206,7 @@ fn render_hook_detail(
                 let fingerprint = failure.bounded_fingerprint.as_deref().unwrap_or_default();
                 format!(
                     "{} · {} · {}",
-                    failure.occurred_at_unix_ms,
+                    format_human_time(locale, failure.occurred_at_unix_ms, presentation_now(app)),
                     terminal_status_name(locale, failure.status),
                     fingerprint,
                 )
@@ -1189,17 +1234,25 @@ fn render_hook_detail(
             format!(
                 "{}: {} · {}: {} · {}: {}\n{}: {} · {}: {} · {}: {}",
                 t(locale, MessageKey::FieldFirstSeen),
-                history.first_seen_unix_ms,
+                format_human_time(locale, history.first_seen_unix_ms, presentation_now(app)),
                 t(locale, MessageKey::FieldLastSeen),
-                history.last_seen_unix_ms,
+                format_human_time(locale, history.last_seen_unix_ms, presentation_now(app)),
                 t(locale, MessageKey::FieldLatestEvidence),
-                history.latest_evidence_unix_ms,
+                format_human_time(
+                    locale,
+                    history.latest_evidence_unix_ms,
+                    presentation_now(app)
+                ),
                 t(locale, MessageKey::FieldRevisionCount),
                 history.revision_count,
                 t(locale, MessageKey::FieldObservationStatus),
                 catalog_observation_status(locale, history.historical_status),
                 t(locale, MessageKey::FieldDataFreshness),
-                history.latest_evidence_unix_ms,
+                format_human_time(
+                    locale,
+                    history.latest_evidence_unix_ms,
+                    presentation_now(app)
+                ),
             )
         },
     );
@@ -1215,9 +1268,17 @@ fn render_hook_detail(
                     fingerprint_name(locale, cluster.kind),
                     cluster.occurrences,
                     t(locale, MessageKey::FieldFirstSeen),
-                    cluster.first_occurred_at_unix_ms,
+                    format_human_time(
+                        locale,
+                        cluster.first_occurred_at_unix_ms,
+                        presentation_now(app),
+                    ),
                     t(locale, MessageKey::FieldLatestEvidence),
-                    cluster.latest_occurred_at_unix_ms,
+                    format_human_time(
+                        locale,
+                        cluster.latest_occurred_at_unix_ms,
+                        presentation_now(app),
+                    ),
                 )
             })
             .collect::<Vec<_>>()
@@ -1335,7 +1396,11 @@ fn render_failure_clusters(
                     t(locale, MessageKey::FieldAffectedHooks),
                     cluster.affected_hooks.len(),
                     t(locale, MessageKey::FieldLatestEvidence),
-                    cluster.latest_occurred_at_unix_ms,
+                    format_human_time(
+                        locale,
+                        cluster.latest_occurred_at_unix_ms,
+                        presentation_now(app),
+                    ),
                 )
             })
             .collect::<Vec<_>>()
@@ -1377,8 +1442,16 @@ fn render_failure_clusters(
             Cell::from(fingerprint_name(locale, cluster.reference.kind)),
             Cell::from(cluster.occurrences.to_string()),
             Cell::from(cluster.affected_hooks.len().to_string()),
-            Cell::from(cluster.first_occurred_at_unix_ms.to_string()),
-            Cell::from(cluster.latest_occurred_at_unix_ms.to_string()),
+            Cell::from(format_human_time(
+                locale,
+                cluster.first_occurred_at_unix_ms,
+                presentation_now(app),
+            )),
+            Cell::from(format_human_time(
+                locale,
+                cluster.latest_occurred_at_unix_ms,
+                presentation_now(app),
+            )),
         ])
         .style(style)
     });
@@ -1464,19 +1537,31 @@ fn render_failure_cluster_detail(
         key_value_line(
             locale,
             MessageKey::FieldFirstSeen,
-            &cluster.first_occurred_at_unix_ms.to_string(),
+            &format_human_time(
+                locale,
+                cluster.first_occurred_at_unix_ms,
+                presentation_now(app),
+            ),
             theme,
         ),
         key_value_line(
             locale,
             MessageKey::FieldLatestEvidence,
-            &cluster.latest_occurred_at_unix_ms.to_string(),
+            &format_human_time(
+                locale,
+                cluster.latest_occurred_at_unix_ms,
+                presentation_now(app),
+            ),
             theme,
         ),
         key_value_line(
             locale,
             MessageKey::FieldDataFreshness,
-            &cluster.latest_occurred_at_unix_ms.to_string(),
+            &format_human_time(
+                locale,
+                cluster.latest_occurred_at_unix_ms,
+                presentation_now(app),
+            ),
             theme,
         ),
     ];
@@ -1543,24 +1628,29 @@ fn trend_summary(locale: ResolvedLocale, row: &HookRowViewModel) -> &'static str
 }
 
 fn compact_risk(locale: ResolvedLocale, row: &HookRowViewModel) -> String {
-    format!("{} {}", t(locale, MessageKey::FieldRisk), row.risk.score)
+    format!(
+        "{} ({}/100)",
+        risk_category(locale, row.risk.score),
+        row.risk.score
+    )
 }
 
-fn risk_detail(locale: ResolvedLocale, risk: &crate::analytics::RiskScore) -> String {
+fn risk_detail(
+    locale: ResolvedLocale,
+    risk: &crate::analytics::RiskScore,
+    failed_runs: u64,
+    terminal_samples: u64,
+    coverage: crate::domain::EvidenceCoverage,
+) -> String {
     format!(
-        "{} {} · {} {}% · {} {}% · {} {:+} · {} {:+} · {} {:+}",
-        t(locale, MessageKey::FieldRiskScore),
+        "{} ({}/100)\n{}: {}",
+        risk_category(locale, risk.score),
         risk.score,
-        t(locale, MessageKey::FieldConfidence),
-        risk.sample_confidence_percent,
-        t(locale, MessageKey::FieldCoverage),
-        risk.coverage_multiplier_percent,
-        t(locale, MessageKey::FieldRecency),
-        risk.recency_points,
-        t(locale, MessageKey::ColumnTrend),
-        risk.trend_points,
-        t(locale, MessageKey::FieldImpact),
-        risk.impact_points,
+        match locale {
+            ResolvedLocale::EnUs => "Reason",
+            ResolvedLocale::ZhCn => "原因",
+        },
+        risk_reason(locale, failed_runs, terminal_samples, coverage),
     )
 }
 
@@ -1584,7 +1674,7 @@ fn trend_detail(locale: ResolvedLocale, trend: &crate::analytics::TrendProjectio
     };
     format!(
         "{}: {current} · {comparison} · {}",
-        window_name(locale, trend.window),
+        trend_scope(locale, trend.window),
         trend_summary_from_projection(locale, trend),
     )
 }
@@ -1608,7 +1698,7 @@ fn revision_detail(
     let current = format!(
         "{} {} · {}",
         t(locale, MessageKey::FieldRevision),
-        comparison.current.revision,
+        short_revision(&comparison.current.revision),
         failure_rate_with_sample(
             locale,
             comparison.current.failure_rate_percent,
@@ -1621,7 +1711,7 @@ fn revision_detail(
             format!(
                 "{} {} · {}",
                 t(locale, MessageKey::FieldPreviousPeriod),
-                previous.revision,
+                short_revision(&previous.revision),
                 failure_rate_with_sample(
                     locale,
                     previous.failure_rate_percent,
@@ -1631,7 +1721,8 @@ fn revision_detail(
         },
     );
     format!(
-        "{current}\n{previous}\n{}: {}",
+        "{}\n{current}\n{previous}\n{}: {}",
+        revision_scope(locale),
         t(locale, MessageKey::FieldClassification),
         trend_summary_from_classification(
             locale,
@@ -1670,6 +1761,192 @@ fn key_value_line(
             theme.typography_style(TypographyRole::Value),
         ),
     ])
+}
+
+fn label_value_line(label: &str, value: &str, theme: Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("{label}: "),
+            theme.typography_style(TypographyRole::FieldLabel),
+        ),
+        Span::styled(
+            value.to_owned(),
+            theme.typography_style(TypographyRole::Value),
+        ),
+    ])
+}
+
+fn presentation_now(app: &App) -> i64 {
+    app.view_model()
+        .map(|view| view.overview.generated_at_unix_ms)
+        .unwrap_or(0)
+}
+
+fn changes_now(app: &App) -> i64 {
+    app.changes()
+        .map(|changes| changes.generated_at_unix_ms)
+        .unwrap_or_else(|| presentation_now(app))
+}
+
+fn metric_scope_label(locale: ResolvedLocale) -> &'static str {
+    match locale {
+        ResolvedLocale::EnUs => "Metric scope",
+        ResolvedLocale::ZhCn => "指标范围",
+    }
+}
+
+fn selected_scope(locale: ResolvedLocale, window: TimeWindow) -> String {
+    match (locale, window) {
+        (ResolvedLocale::EnUs, TimeWindow::All) => "All observed time, all revisions".into(),
+        (ResolvedLocale::ZhCn, TimeWindow::All) => "全部观测时间，全部修订版本".into(),
+        (ResolvedLocale::EnUs, _) => {
+            format!("Selected {}, all revisions", window_name(locale, window))
+        }
+        (ResolvedLocale::ZhCn, _) => {
+            format!("已选 {}，全部修订版本", window_name(locale, window))
+        }
+    }
+}
+
+fn trend_scope(locale: ResolvedLocale, window: TimeWindow) -> String {
+    match (locale, window) {
+        (ResolvedLocale::EnUs, TimeWindow::All) => "All observed time, all revisions".into(),
+        (ResolvedLocale::ZhCn, TimeWindow::All) => "全部观测时间，全部修订版本".into(),
+        (ResolvedLocale::EnUs, _) => format!("{}, all revisions", window_name(locale, window)),
+        (ResolvedLocale::ZhCn, _) => format!("{}，全部修订版本", window_name(locale, window)),
+    }
+}
+
+fn revision_scope(locale: ResolvedLocale) -> &'static str {
+    match locale {
+        ResolvedLocale::EnUs => "All observed time, current/previous revision",
+        ResolvedLocale::ZhCn => "全部观测时间，当前/上一修订版本",
+    }
+}
+
+fn terminal_denominator(locale: ResolvedLocale, samples: u64) -> String {
+    match locale {
+        ResolvedLocale::EnUs => format!("{samples} in selected scope"),
+        ResolvedLocale::ZhCn => format!("已选范围内 {samples}"),
+    }
+}
+
+fn coverage_summary(locale: ResolvedLocale, coverage: crate::domain::EvidenceCoverage) -> String {
+    format!(
+        "{} — {}",
+        coverage_name(locale, coverage),
+        coverage_explanation(locale, coverage)
+    )
+}
+
+fn coverage_explanation(
+    locale: ResolvedLocale,
+    coverage: crate::domain::EvidenceCoverage,
+) -> &'static str {
+    use crate::domain::EvidenceCoverage;
+    match (locale, coverage) {
+        (ResolvedLocale::EnUs, EvidenceCoverage::Complete) => {
+            "Terminal evidence is complete in this scope."
+        }
+        (ResolvedLocale::ZhCn, EvidenceCoverage::Complete) => "此范围内终态证据完整。",
+        (ResolvedLocale::EnUs, EvidenceCoverage::Partial) => {
+            "Some evidence is observed; terminal coverage is incomplete."
+        }
+        (ResolvedLocale::ZhCn, EvidenceCoverage::Partial) => "已观察到部分证据；终态覆盖不完整。",
+        (ResolvedLocale::EnUs, EvidenceCoverage::SyncOnly) => {
+            "Only synchronous observations are covered."
+        }
+        (ResolvedLocale::ZhCn, EvidenceCoverage::SyncOnly) => "仅覆盖同步观察。",
+        (ResolvedLocale::EnUs, EvidenceCoverage::BestEffort) => {
+            "Evidence is best effort and may be incomplete."
+        }
+        (ResolvedLocale::ZhCn, EvidenceCoverage::BestEffort) => "证据为尽力而为，可能不完整。",
+        (ResolvedLocale::EnUs, EvidenceCoverage::Unknown) => {
+            "Coverage is unknown; reliability is not a health claim."
+        }
+        (ResolvedLocale::ZhCn, EvidenceCoverage::Unknown) => "覆盖范围未知；可靠性不是健康结论。",
+        (ResolvedLocale::EnUs, EvidenceCoverage::NotAdmitted) => {
+            "No admitted evidence source covers this hook."
+        }
+        (ResolvedLocale::ZhCn, EvidenceCoverage::NotAdmitted) => {
+            "没有已接纳的证据来源覆盖此 Hook。"
+        }
+        (ResolvedLocale::EnUs, EvidenceCoverage::SyntheticFixture) => {
+            "Synthetic fixture coverage; not live runtime evidence."
+        }
+        (ResolvedLocale::ZhCn, EvidenceCoverage::SyntheticFixture) => {
+            "合成样例覆盖；不是实时运行时证据。"
+        }
+    }
+}
+
+fn presentation_health(
+    coverage: crate::domain::EvidenceCoverage,
+    failed_runs: u64,
+    samples: u64,
+) -> Health {
+    if failed_runs > 0 {
+        Health::Degraded
+    } else if samples == 0 {
+        Health::NoTerminalSamples
+    } else if coverage == crate::domain::EvidenceCoverage::Complete {
+        Health::Healthy
+    } else {
+        Health::CoverageLimited
+    }
+}
+
+fn risk_category(locale: ResolvedLocale, score: u8) -> &'static str {
+    match (locale, score) {
+        (ResolvedLocale::EnUs, 0..=24) => "Low risk",
+        (ResolvedLocale::EnUs, 25..=49) => "Guarded risk",
+        (ResolvedLocale::EnUs, 50..=74) => "Elevated risk",
+        (ResolvedLocale::EnUs, _) => "High risk",
+        (ResolvedLocale::ZhCn, 0..=24) => "低风险",
+        (ResolvedLocale::ZhCn, 25..=49) => "需关注风险",
+        (ResolvedLocale::ZhCn, 50..=74) => "较高风险",
+        (ResolvedLocale::ZhCn, _) => "高风险",
+    }
+}
+
+fn risk_reason(
+    locale: ResolvedLocale,
+    failed_runs: u64,
+    terminal_samples: u64,
+    coverage: crate::domain::EvidenceCoverage,
+) -> &'static str {
+    match (locale, failed_runs > 0, terminal_samples == 0, coverage) {
+        (ResolvedLocale::EnUs, true, _, _) => "observed execution failures in selected scope.",
+        (ResolvedLocale::ZhCn, true, _, _) => "已选范围内观察到执行失败。",
+        (ResolvedLocale::EnUs, false, true, _) => {
+            "no terminal samples; this is not a healthy result."
+        }
+        (ResolvedLocale::ZhCn, false, true, _) => "无终态样本；这不是健康结果。",
+        (ResolvedLocale::EnUs, false, false, crate::domain::EvidenceCoverage::Complete) => {
+            "no observed failures in selected scope."
+        }
+        (ResolvedLocale::ZhCn, false, false, crate::domain::EvidenceCoverage::Complete) => {
+            "已选范围内未观察到失败。"
+        }
+        (ResolvedLocale::EnUs, false, false, _) => {
+            "no observed failures; terminal coverage is incomplete."
+        }
+        (ResolvedLocale::ZhCn, false, false, _) => "未观察到失败；终态覆盖不完整。",
+    }
+}
+
+fn short_revision(revision: &str) -> String {
+    const PRIMARY_REVISION_CHARS: usize = 12;
+    let mut chars = revision.chars();
+    let visible = chars
+        .by_ref()
+        .take(PRIMARY_REVISION_CHARS)
+        .collect::<String>();
+    if chars.next().is_some() {
+        format!("{visible}…")
+    } else {
+        visible
+    }
 }
 
 fn status_line(locale: ResolvedLocale, health: Health, theme: Theme) -> Line<'static> {
@@ -1902,13 +2179,15 @@ mod tests {
         let english = rendered(app.clone(), ResolvedLocale::EnUs, 100, 40);
         assert!(english.contains("Reliability intelligence"));
         assert!(english.contains("Trends"));
-        assert!(english.contains("Risk score"));
+        assert!(english.contains("risk ("));
+        assert!(english.contains("Reason:"));
         assert!(english.contains("n="));
 
         let chinese = rendered(app, ResolvedLocale::ZhCn, 100, 40).replace(' ', "");
         assert!(chinese.contains("可靠性智能"));
         assert!(chinese.contains("趋势"));
-        assert!(chinese.contains("风险评分"));
+        assert!(chinese.contains("风险"));
+        assert!(chinese.contains("原因:"));
         assert!(chinese.contains("样本="));
     }
 
@@ -1996,9 +2275,37 @@ mod tests {
         app.handle(super::super::keymap::Command::Enter);
         assert_eq!(app.screen(), Screen::ChangeDetail);
         let detail = rendered(app, ResolvedLocale::ZhCn, 100, 30).replace(' ', "");
+        assert!(detail.contains("指标范围"));
         assert!(detail.contains("首次发现"));
         assert!(detail.contains("最后发现"));
         assert!(detail.contains("修订版本"));
+        assert!(!detail.contains("1728000000"));
+        assert!(!detail.contains("1036800000"));
+    }
+
+    #[test]
+    fn human_reliability_helpers_make_scope_coverage_risk_and_revision_explicit() {
+        assert_eq!(
+            selected_scope(ResolvedLocale::EnUs, TimeWindow::Last7Days),
+            "Selected Last 7 days, all revisions"
+        );
+        assert_eq!(
+            revision_scope(ResolvedLocale::EnUs),
+            "All observed time, current/previous revision"
+        );
+        assert!(
+            coverage_summary(ResolvedLocale::EnUs, EvidenceCoverage::Partial)
+                .contains("terminal coverage is incomplete")
+        );
+        assert_eq!(
+            risk_reason(ResolvedLocale::EnUs, 0, 0, EvidenceCoverage::Partial),
+            "no terminal samples; this is not a healthy result."
+        );
+        assert_eq!(
+            presentation_health(EvidenceCoverage::Partial, 0, 0),
+            Health::NoTerminalSamples
+        );
+        assert_eq!(short_revision("0123456789abcdef"), "0123456789ab…");
     }
 
     #[test]
