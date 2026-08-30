@@ -29,6 +29,10 @@ pub struct RuntimePresentationSnapshot {
 /// merely because HookStat has no historical reliability taxonomy for it yet.
 #[derive(Clone, Eq, PartialEq)]
 pub struct RuntimeEventPresentation {
+    /// The runtime context (`cwd` in Codex `hooks/list`) that reported this
+    /// event. It is kept local so same-named events from distinct contexts are
+    /// never merged into a fabricated single current state.
+    pub runtime_context: String,
     pub runtime_event_name: String,
     pub canonical_event: Option<HookEvent>,
     pub description: Option<String>,
@@ -266,22 +270,22 @@ impl RuntimePresentationSnapshot {
             .or_else(|| response.get("data"))
             .and_then(Value::as_array)
             .ok_or(RuntimeCatalogParseError)?;
-        let mut events = BTreeMap::<String, RuntimeEventPresentation>::new();
+        let mut events = BTreeMap::<(String, String), RuntimeEventPresentation>::new();
         let mut issues = Vec::new();
         for context in contexts {
-            let context_name = text(context, "cwd").map(str::to_owned);
+            let context_name = text(context, "cwd").ok_or(RuntimeCatalogParseError)?;
             collect_issues(
                 context,
                 "warnings",
                 RuntimeCatalogIssueSeverity::Warning,
-                context_name.as_deref(),
+                Some(context_name),
                 &mut issues,
             );
             collect_issues(
                 context,
                 "errors",
                 RuntimeCatalogIssueSeverity::Error,
-                context_name.as_deref(),
+                Some(context_name),
                 &mut issues,
             );
             let hooks = context
@@ -290,16 +294,17 @@ impl RuntimePresentationSnapshot {
                 .ok_or(RuntimeCatalogParseError)?;
             for item in hooks {
                 let event_name = text(item, "eventName").ok_or(RuntimeCatalogParseError)?;
-                let event = events.entry(event_name.to_owned()).or_insert_with(|| {
-                    RuntimeEventPresentation {
+                let event = events
+                    .entry((context_name.to_owned(), event_name.to_owned()))
+                    .or_insert_with(|| RuntimeEventPresentation {
+                        runtime_context: context_name.to_owned(),
                         runtime_event_name: event_name.to_owned(),
                         canonical_event: canonical_event(event_name),
                         description: text(item, "eventDescription")
                             .or_else(|| text(item, "description"))
                             .map(str::to_owned),
                         handlers: Vec::new(),
-                    }
-                });
+                    });
                 if event.description.is_none() {
                     event.description = text(item, "eventDescription")
                         .or_else(|| text(item, "description"))
@@ -397,23 +402,28 @@ impl RuntimePresentationSnapshot {
         &self,
         history: &'a [HistoricalHandlerIdentity],
     ) -> Vec<&'a HistoricalHandlerIdentity> {
-        let joined = self
+        let installed = self
             .events
             .iter()
             .flat_map(|event| {
                 event.handlers.iter().filter_map(move |handler| {
-                    history_candidates(
-                        event.canonical_event,
-                        handler.reliability_handler_key.as_deref(),
-                        history,
-                    )
+                    let event = event.canonical_event?;
+                    let handler_key = handler
+                        .reliability_handler_key
+                        .as_deref()
+                        .filter(|value| !value.is_empty())?;
+                    Some((handler_key.to_owned(), event.as_storage().to_owned()))
                 })
             })
-            .flatten()
             .collect::<BTreeSet<_>>();
         history
             .iter()
-            .filter(|historical| !joined.contains(&historical.handler_key))
+            .filter(|historical| {
+                !installed.contains(&(
+                    historical.handler_key.clone(),
+                    historical.event.as_storage().to_owned(),
+                ))
+            })
             .collect()
     }
 }
@@ -425,7 +435,8 @@ fn parse_handler(
     let runtime_catalog_id = text(item, "key")
         .ok_or(RuntimeCatalogParseError)?
         .to_owned();
-    let managed = boolean(item, "isManaged").unwrap_or(false);
+    let managed = boolean(item, "isManaged").ok_or(RuntimeCatalogParseError)?;
+    let enabled = boolean(item, "enabled").ok_or(RuntimeCatalogParseError)?;
     let trust = parse_trust(text(item, "trustStatus"), managed);
     let kind = parse_handler_kind(item)?;
     let mode = boolean(item, "async").map(|is_async| {
@@ -438,7 +449,7 @@ fn parse_handler(
     Ok(RuntimeHandlerPresentation {
         reliability_handler_key: runtime_reliability_handler_key(item, canonical_event),
         runtime_catalog_id,
-        enabled: boolean(item, "enabled").unwrap_or(true),
+        enabled,
         managed,
         needs_review: matches!(trust, RuntimeTrust::Untrusted | RuntimeTrust::Modified),
         trust,
@@ -552,7 +563,7 @@ fn parse_trust(value: Option<&str>, managed: bool) -> RuntimeTrust {
         return RuntimeTrust::Managed;
     }
     match value.unwrap_or_default().to_ascii_lowercase().as_str() {
-        "trusted" => RuntimeTrust::Trusted,
+        "trusted" | "not_required" => RuntimeTrust::Trusted,
         "untrusted" => RuntimeTrust::Untrusted,
         "modified" => RuntimeTrust::Modified,
         _ => RuntimeTrust::Unknown,
@@ -628,6 +639,18 @@ mod tests {
             .unwrap()
     }
 
+    fn event_in_context<'a>(
+        snapshot: &'a RuntimePresentationSnapshot,
+        context: &str,
+        name: &str,
+    ) -> &'a RuntimeEventPresentation {
+        snapshot
+            .events
+            .iter()
+            .find(|event| event.runtime_context == context && event.runtime_event_name == name)
+            .unwrap()
+    }
+
     fn observed_identity(
         snapshot: &RuntimePresentationSnapshot,
         event_name: &str,
@@ -665,6 +688,10 @@ mod tests {
         assert_eq!(snapshot.events.len(), 6);
         assert_eq!(snapshot.issues.len(), 2);
         let command = &event(&snapshot, "PreToolUse").handlers[0];
+        assert_eq!(
+            event(&snapshot, "PreToolUse").runtime_context,
+            "C:/synthetic/workspace"
+        );
         assert_eq!(command.matcher.as_deref(), Some("^SyntheticTool$"));
         assert_eq!(command.source.as_deref(), Some("user"));
         assert_eq!(
@@ -710,6 +737,55 @@ mod tests {
         assert_eq!(event(&snapshot, "PreToolUse").active_count(), 1);
         assert_eq!(event(&snapshot, "PostToolUse").active_count(), 0);
         assert_eq!(event(&snapshot, "PostToolUse").needs_review_count(), 1);
+    }
+
+    #[test]
+    fn requires_authoritative_status_fields_and_preserves_not_required_trust() {
+        let mut missing_enabled = catalog();
+        missing_enabled["result"]["data"][0]["hooks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("enabled");
+        assert!(RuntimePresentationSnapshot::from_codex_hooks_list(&missing_enabled, 42).is_err());
+
+        let mut missing_managed = catalog();
+        missing_managed["result"]["data"][0]["hooks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("isManaged");
+        assert!(RuntimePresentationSnapshot::from_codex_hooks_list(&missing_managed, 42).is_err());
+
+        let mut not_required = catalog();
+        not_required["result"]["data"][0]["hooks"][0]["trustStatus"] = json!("not_required");
+        let snapshot =
+            RuntimePresentationSnapshot::from_codex_hooks_list(&not_required, 42).unwrap();
+        assert!(matches!(
+            event(&snapshot, "PreToolUse").handlers[0].trust,
+            RuntimeTrust::Trusted
+        ));
+        assert_eq!(event(&snapshot, "PreToolUse").active_count(), 1);
+    }
+
+    #[test]
+    fn preserves_same_named_events_from_distinct_runtime_contexts() {
+        let mut response = catalog();
+        let mut second_handler = response["result"]["data"][0]["hooks"][0].clone();
+        second_handler["key"] = json!("fixture:1:0");
+        response["result"]["data"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "cwd": "C:/synthetic/second-workspace",
+                "hooks": [second_handler]
+            }));
+
+        let snapshot = RuntimePresentationSnapshot::from_codex_hooks_list(&response, 42).unwrap();
+        assert_eq!(snapshot.events.len(), 7);
+        assert_eq!(
+            event_in_context(&snapshot, "C:/synthetic/second-workspace", "PreToolUse").handlers[0]
+                .runtime_catalog_id,
+            "fixture:1:0"
+        );
     }
 
     #[test]
@@ -770,6 +846,20 @@ mod tests {
                 && matches!(joined.join, ReliabilityJoinState::Unsupported)
         }));
         assert_eq!(snapshot.historical_not_installed(&history).len(), 1);
+    }
+
+    #[test]
+    fn historical_identity_requires_matching_event_and_handler_key() {
+        let snapshot = RuntimePresentationSnapshot::from_codex_hooks_list(&catalog(), 42).unwrap();
+        let observed = observed_identity(&snapshot, "PreToolUse");
+        let same_key_other_event = HistoricalHandlerIdentity {
+            handler_key: observed.handler_key.clone(),
+            event: HookEvent::Stop,
+        };
+        let history = [observed, same_key_other_event];
+        let historical_only = snapshot.historical_not_installed(&history);
+        assert_eq!(historical_only.len(), 1);
+        assert!(matches!(historical_only[0].event, HookEvent::Stop));
     }
 
     #[test]
