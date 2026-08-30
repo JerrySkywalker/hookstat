@@ -758,7 +758,7 @@ fn render_change_detail(
         .last()
         .map(|epoch| epoch.revision.as_str())
         .unwrap_or_else(|| t(locale, MessageKey::StateTimelineUnavailable));
-    let facts = vec![
+    let mut facts = vec![
         Line::from(Span::styled(
             period_selector_for_window(locale, detail.window, app.changes_state().is_loading()),
             theme.typography_style(TypographyRole::Metadata),
@@ -778,15 +778,6 @@ fn render_change_detail(
             locale,
             MessageKey::FieldCoverage,
             &coverage_summary(locale, detail.coverage),
-            theme,
-        ),
-        key_value_line(
-            locale,
-            MessageKey::FieldInternalIdentity,
-            &format!(
-                "{} · revision={current_revision}",
-                detail.internal_ref.handler_key
-            ),
             theme,
         ),
         key_value_line(
@@ -840,7 +831,41 @@ fn render_change_detail(
             theme,
         ),
     ];
-    if area.height < 26 {
+    let timeline_rows = detail
+        .revision_timeline
+        .iter()
+        .map(|epoch| {
+            format!(
+                "{} · {} – {} · {}",
+                short_revision(&epoch.revision),
+                format_human_time(locale, epoch.first_seen_unix_ms, changes_now(app)),
+                format_human_time(locale, epoch.last_seen_unix_ms, changes_now(app)),
+                failure_rate_with_sample(
+                    locale,
+                    epoch.metrics.failure_rate_percent,
+                    epoch.metrics.failure_sample_count,
+                ),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let timeline_rows = if timeline_rows.is_empty() {
+        t(locale, MessageKey::StateEmpty).to_owned()
+    } else {
+        timeline_rows
+    };
+    let timeline = format!(
+        "{}\n{}: {}\n{}: {}\n\n{timeline_rows}",
+        t(locale, MessageKey::SectionTechnicalMetadata),
+        t(locale, MessageKey::FieldInternalIdentity),
+        detail.internal_ref.handler_key,
+        t(locale, MessageKey::FieldFullRevision),
+        current_revision,
+    );
+    if area.height < 26 || area.width < 72 {
+        facts.push(Line::from(""));
+        facts.push(Line::from(t(locale, MessageKey::SectionTimeline)));
+        facts.push(Line::from(timeline.clone()));
         frame.render_widget(
             Paragraph::new(facts)
                 .block(themed_block(&identity, theme))
@@ -860,32 +885,9 @@ fn render_change_detail(
             .wrap(Wrap { trim: true }),
         sections[0],
     );
-    let timeline = detail
-        .revision_timeline
-        .iter()
-        .map(|epoch| {
-            format!(
-                "{} · {} – {} · {}",
-                short_revision(&epoch.revision),
-                format_human_time(locale, epoch.first_seen_unix_ms, changes_now(app)),
-                format_human_time(locale, epoch.last_seen_unix_ms, changes_now(app)),
-                failure_rate_with_sample(
-                    locale,
-                    epoch.metrics.failure_rate_percent,
-                    epoch.metrics.failure_sample_count,
-                ),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let timeline = if timeline.is_empty() {
-        t(locale, MessageKey::StateEmpty).to_owned()
-    } else {
-        timeline
-    };
     frame.render_widget(
         Paragraph::new(timeline)
-            .block(themed_block(t(locale, MessageKey::FieldRevision), theme))
+            .block(themed_block(t(locale, MessageKey::SectionTimeline), theme))
             .scroll((app.changes_detail_scroll_lines(), 0))
             .wrap(Wrap { trim: true }),
         sections[1],
@@ -1159,15 +1161,6 @@ fn render_hook_detail(
         ),
         key_value_line(
             locale,
-            MessageKey::FieldInternalIdentity,
-            &format!(
-                "{} · revision={}",
-                detail.internal_ref.handler_key, detail.revision
-            ),
-            theme,
-        ),
-        key_value_line(
-            locale,
             MessageKey::FieldRevision,
             &short_revision(&detail.revision),
             theme,
@@ -1331,8 +1324,16 @@ fn render_hook_detail(
             .collect::<Vec<_>>()
             .join(" · ")
     };
+    let technical_metadata = format!(
+        "{}\n{}: {}\n{}: {}",
+        t(locale, MessageKey::SectionTechnicalMetadata),
+        t(locale, MessageKey::FieldInternalIdentity),
+        detail.internal_ref.handler_key,
+        t(locale, MessageKey::FieldFullRevision),
+        detail.revision,
+    );
     let body = format!(
-        "{catalog_history}\n\n{}: {} · {}: {} · {}: {}\n{}: {} · {}: {} · {}: {}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}",
+        "{catalog_history}\n\n{}: {} · {}: {} · {}: {}\n{}: {} · {}: {} · {}: {}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{}\n{}\n\n{technical_metadata}",
         t(locale, MessageKey::FieldSuccesses),
         terminal.completed,
         t(locale, MessageKey::FieldFailures),
@@ -1354,7 +1355,7 @@ fn render_hook_detail(
         t(locale, MessageKey::SectionFailureFingerprints),
         fingerprints,
     );
-    if area.height < 18 {
+    if area.height < 18 || area.width < 72 {
         let compact = format!(
             "{identity}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{body}",
             key_value_text(
@@ -2321,6 +2322,20 @@ mod tests {
         let detail = rendered(app, ResolvedLocale::EnUs, 100, 40);
         assert!(detail.contains("Metric scope: Selected Last 7 days, all revisions"));
         assert!(!detail.contains("Metric scope: Selected Today, all revisions"));
+    }
+
+    #[test]
+    fn narrow_tall_change_detail_scrolls_into_human_timeline() {
+        let mut app = changes_app();
+        app.handle(super::super::keymap::Command::Enter);
+        app.handle(super::super::keymap::Command::Enter);
+        assert_eq!(app.screen(), Screen::ChangeDetail);
+
+        app.handle(super::super::keymap::Command::PageDown);
+        app.handle(super::super::keymap::Command::PageDown);
+        let detail = rendered(app, ResolvedLocale::EnUs, 44, 40).replace(' ', "");
+        assert!(detail.contains("Timeline"));
+        assert!(!detail.contains("1728000000"));
     }
 
     #[test]
