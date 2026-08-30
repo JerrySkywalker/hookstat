@@ -7,17 +7,40 @@ matchers, source paths, prompts, or tool payloads.
 ```text
 G45_OWNER_VISUAL_CHECK=PENDING
 CODEX_BASELINE=rust-v0.151.0 / 78c290807ce710180111df227df3b7a4fe845452
+PRODUCT_ACCEPTED_MAIN=cf5be21c134fbfa83b9c6a0adf5cc68800d8e4dd
+BUILD_COMMAND=cargo build --locked
+LAUNCH_EN_US=.\target\debug\hookstat.exe tui --lang en-US
+LAUNCH_ZH_CN=.\target\debug\hookstat.exe tui --lang zh-CN
+SAFE_WRITE_UX=UPSTREAM_UNAVAILABLE
 OWNER_CONFIGURATION_MUTATION=NOT_AUTHORIZED
 ```
 
+Budget approximately 20–45 minutes. The Owner performs visual judgment only;
+the deterministic fixture matrix and interaction checks are already prepared
+separately and contain only sanitized values.
+
 ## Setup
 
-1. Open Windows Terminal at a wide ZenBook Duo-sized viewport (at least
-   140x42), then run `hookstat tui --lang en-US`.
-2. Repeat the same sequence at 44x44 and with `hookstat tui --lang zh-CN`.
+1. Run `cargo build --locked` at accepted main. Open Windows Terminal at a
+   wide ZenBook Duo-sized viewport (at least 140x42), then run
+   `.\target\debug\hookstat.exe tui --lang en-US`.
+2. Repeat the same sequence at 44x44 and with
+   `.\target\debug\hookstat.exe tui --lang zh-CN`.
 3. Press `r` on Hooks and wait for the explicit current-runtime catalog state
    to settle. A failed refresh must retain a visibly stale catalog; it must not
    erase separately accepted reliability history.
+
+## Codex `/hooks` A/B sequence
+
+1. Record `codex --version`; this dogfood packet applies only when it is the
+   pinned `0.151.0` baseline. Launch normal `codex`, open `/hooks`, and inspect
+   one representative current hook without mutating it.
+2. Exit Codex normally. Launch HookStat with the command above, refresh Hooks,
+   and find the same current hook.
+3. Compare only information hierarchy: current event/state, enabled/disabled,
+   managed/review/trust state, handler type, command or MCP/prompt/agent
+   details, matcher, and source. Do not compare or exercise mutation controls.
+4. Keep no screenshot, export, or committed note containing Owner hook values.
 
 ## Event catalog
 
@@ -43,8 +66,10 @@ OWNER_CONFIGURATION_MUTATION=NOT_AUTHORIZED
    Runtime Configuration → Reliability Summary → Observation History →
    Advanced Intelligence / Technical Metadata.
 4. For representative Command, MCP Tool, Prompt, and Agent handlers, verify
-   the runtime-facing fields appropriate to the type. Verify managed handlers
-   are visibly read-only; do not attempt a mutation.
+   the runtime-facing fields appropriate to the type. Verify the Hook
+   Management section says read-only because no verified external
+   enable/disable route exists; managed handlers remain visibly read-only; do
+   not attempt a mutation.
 5. On the long Command, Matcher, and Source cases, resize at both target
    widths. Confirm wrapping/scrolling preserves the values and the navigation
    footer stays usable.
@@ -61,3 +86,16 @@ OWNER_CONFIGURATION_MUTATION=NOT_AUTHORIZED
 5. Do not retain screenshots or exports with Owner-private presentation text.
    Use only the sanitized deterministic fixture coverage for repository
    evidence.
+
+## Required Owner answers
+
+Record short answers to all five questions:
+
+1. Do I still need Codex `/hooks` for basic current-hook information?
+2. Is source, command, and matcher understandable?
+3. Is current versus history obvious?
+4. Are metrics understandable without decoding?
+5. Is narrow layout usable?
+
+Do not self-certify these answers. `G45_OWNER_VISUAL_CHECK` remains `PENDING`
+until the Owner has completed this packet.
