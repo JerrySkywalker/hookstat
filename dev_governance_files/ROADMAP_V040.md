@@ -10,8 +10,13 @@ G41=ACCEPTED
 G42=ACCEPTED
 G43=ACCEPTED
 G44=QUALIFIED_UPSTREAM_UNAVAILABLE
-G45=AUTOMATED_PREPARATION_PENDING_OWNER_VISUAL_CHECK
-G46R=WAITING
+G45_AUTOMATED_PREPARATION=ACCEPTED
+G45_OWNER_VISUAL_CHECK=FAIL_CORRECTION_REQUIRED
+G45V_A=ACTIVE_NEXT
+G45V_B=WAITING_G45V_A
+G45V_C=WAITING_G45V_B
+G45_OWNER_REDOGFOOD=WAITING_G45V_C
+G46R=HOLD
 ```
 
 ```text
@@ -21,6 +26,7 @@ PUBLIC_TAG=v0.3.1
 V040_PRODUCT_THEME=Hooks Control Center / Human Usability
 PRODUCTION_RUNTIME=Codex
 EXPERIMENTAL_RUNTIME_REQUIRED_FOR_V040=false
+CURRENT_CORRECTION_BASELINE=c24139842e35f83368db00dbf56d9025817d4a9e
 ```
 
 v0.4 is a product-usability release, not the productionization of a second runtime. DeepSeek Harness, OpenCode, Claude Code, Agy, and other runtime work proceeds in independent `exp/*` tracks and cannot block v0.4.
@@ -38,9 +44,9 @@ For Codex hooks, HookStat must first answer the same human questions as Codex `/
 - whether it is enabled, managed, or trusted;
 - which runtime warnings/errors affect the hook catalog.
 
-Only after that complete runtime truth is visible should HookStat add its unique reliability layer: observed runs, terminal samples, failures, latency, coverage, revisions, trends, fingerprints, history, and health explanations.
+Only after complete runtime truth is visible should HookStat add its reliability layer: observed runs, terminal samples, failures, latency, coverage, revisions, trends, fingerprints, history, and health explanations.
 
-Normative rule:
+Normative rules:
 
 ```text
 RUNTIME_TRUTH_FIRST=true
@@ -50,304 +56,397 @@ HOOKSTAT_RELIABILITY_OVERLAY=ADDITIVE
 RUNTIME_TRUTH_MAY_NOT_BE_REPLACED_BY_ANALYTICS=true
 ```
 
-The official Codex `/hooks` information surface is the v0.4 information-completeness floor. G40 pins the exact Codex source/version baseline used for parity review; the roadmap does not assume one unqualified future Codex version forever.
+## Accepted product foundation
 
-## Information architecture
+The following v0.4 nodes remain accepted historical milestones:
 
-The Hooks area becomes runtime-catalog-first:
+- **G40** — v0.3.1 closeout and Codex `/hooks` parity baseline;
+- **G41** — ephemeral current-runtime hook catalog and conservative reliability join;
+- **G42** — Events → Handlers → Detail Hooks Control Center;
+- **G43** — human-readable reliability presentation;
+- **G44** — safe-management qualification with `WRITE_PARITY=UPSTREAM_UNAVAILABLE`;
+- **G45 automated preparation** — sanitized fixtures and Owner dogfood packet.
 
-```text
-Runtime hooks/list
-      │
-      ▼
-Ephemeral Runtime Presentation Snapshot
-      │
-      ├───────────────┐
-      ▼               ▼
-Current runtime   Historical reliability
-truth             ledger/analytics
-      │               │
-      └───────┬───────┘
-              ▼
-       Hooks Control Center
-```
+The G45 Owner visual check is the first Human acceptance gate after those nodes. It discovered a release-blocking presentation defect. This does not rewrite G42 history; it creates a correction train before release.
 
-Current installed hooks are a LEFT JOIN over reliability history, never the reverse.
+## Owner visual finding — G45-OV-001
 
-Required states:
+Owner dogfood against current main `c24139842e35f83368db00dbf56d9025817d4a9e` found that the Hook Event catalog can display the same semantic Codex event twice.
+
+The current parser seeds pinned event names using PascalCase strings such as `PreToolUse`, while the qualified Codex v0.151.0 v2 protocol serializes `HookEventName` with camelCase values such as `preToolUse`. The runtime presentation map keys by raw `(runtime_context, runtime_event_name)`, so the synthetic zero-handler row and the real `hooks/list` row become distinct entries and later localize to the same Human label.
+
+The same pass also exposed a localization-layer defect: known event descriptions seeded as English strings can leak unchanged into the zh-CN TUI, and known runtime events such as `Interrupt` cannot rely on reliability `HookEvent` support to obtain localized presentation semantics.
+
+Required disposition:
 
 ```text
-INSTALLED_AND_OBSERVED
-INSTALLED_NOT_OBSERVED
-INSTALLED_JOIN_AMBIGUOUS
-HISTORICAL_NOT_INSTALLED
+G45_OWNER_VISUAL_CHECK=FAIL
+EVENT_CATALOG_SEMANTIC_DUPLICATES=true
+ZH_CN_KNOWN_EVENT_DESCRIPTION_LEAK=true
+G46R_ALLOWED=false
+CORRECTION_TRAIN_REQUIRED=G45V
 ```
 
-A current hook is never hidden merely because HookStat has no admitted observations for it. Historical hooks that are no longer installed remain available in Changes/History but must not masquerade as current runtime configuration.
+See `docs/qualification/G45_OWNER_VISUAL_FINDING_001.md`.
 
-## Privacy boundary
+## Why existing automated TUI coverage was insufficient
 
-Runtime presentation metadata may contain human-readable values that HookStat historically refuses to persist, including source paths, matcher text, command text, MCP server/tool names, and other runtime-owned presentation fields.
+HookStat already has deterministic Ratatui rendering and interaction tests, including wide/narrow layouts, bilingual rendering, long runtime fields, runtime error states, and the Hooks Control Center navigation model.
 
-v0.4 may show those values locally in the interactive TUI only through an ephemeral presentation snapshot.
+The gap is not simply a lack of TUI tests. It is the absence of an explicit **Visual Regression CI** that combines:
 
 ```text
-RUNTIME_PRESENTATION_IN_MEMORY_ONLY=true
-RUNTIME_PRESENTATION_LEDGER=false
-RUNTIME_PRESENTATION_RECEIPT=false
-RUNTIME_PRESENTATION_DIAGNOSTICS_EXPORT=false
-RUNTIME_PRESENTATION_REMOTE_TELEMETRY=false
-RAW_PROMPT_CONTENT_PERSISTED=false
-RAW_TOOL_CONTENT_PERSISTED=false
-RAW_COMMAND_PERSISTED_IN_LEDGER=false
-RAW_COMMAND_LEDGER_PERSISTENCE=false
-RAW_MATCHER_LEDGER_PERSISTENCE=false
-RAW_SOURCE_PATH_LEDGER_PERSISTENCE=false
+official-shaped runtime wire fixture
+        ↓
+RuntimePresentationSnapshot parser
+        ↓
+App state
+        ↓
+full Ratatui terminal frame
+        ↓
+golden cell-buffer snapshot + structural invariants
 ```
 
-The persistence/privacy contract remains unchanged. See `docs/architecture/RUNTIME_PRESENTATION_SNAPSHOT.md`.
+Existing tests can construct already-normalized presentation objects and assert selected text fragments. That does not prove the actual Codex wire representation produces a correct final screen.
 
-## Codex `/hooks` parity floor
+Therefore G45V establishes both a product fix and a durable quality gate.
 
-The v0.4 presentation must represent, when the pinned runtime exposes them:
+## Runtime event identity contract after G45V
 
-### Event level
+Runtime event presentation must separate three concepts:
 
 ```text
-Event
-Installed
-Active
-Review
-Description
-Warnings
-Errors
+RAW_RUNTIME_WIRE_IDENTITY
+KNOWN_RUNTIME_PRESENTATION_IDENTITY
+OPTIONAL_RELIABILITY_IDENTITY
 ```
 
-### Handler level
+A known runtime event such as `Interrupt` may be:
 
 ```text
-Enabled / Disabled
-Needs Review
-Managed
-Event
-Matcher
-Source
-Handler type
-Command OR MCP Server/Tool OR Prompt OR Agent
-Mode
-Timeout
-Additional Context limit
-Trust
+known_runtime_event=true
+localized_human_name=true
+localized_description=true
+reliability_event=None
+reliability_state=UNAVAILABLE_OR_NOT_ADMITTED
 ```
 
-Unknown/new runtime event names must remain visible in the current catalog even when HookStat analytics does not yet have canonical reliability semantics for them. Known canonical events are mapped explicitly. Current Codex `Interrupt` support must be audited and, where reliability semantics are provable, added to the canonical event model.
+Reliability support may not determine whether a known runtime event can be localized.
 
-## Human-readable reliability contract
+For the pinned Codex v0.151.0 baseline, semantic wire names are the exact camelCase v2 values:
 
-Machine-oriented values may not leak into the normal Human interface merely because they are easy to render.
+```text
+preToolUse
+permissionRequest
+postToolUse
+preCompact
+postCompact
+sessionStart
+sessionEnd
+userPromptSubmit
+subagentStart
+subagentStop
+stop
+interrupt
+```
+
+The implementation should prefer a typed known-runtime-event mapping over duplicated bare-string tables.
+
+## Runtime context contract
+
+`runtime_context` remains meaningful and must not be discarded merely to make duplicate rows disappear.
+
+Production discovery requests one exact cwd. If multiple contexts are returned unexpectedly, HookStat must either select the exact requested context or visibly disambiguate contexts. It must not silently merge handlers from distinct contexts.
 
 Required:
 
 ```text
-RAW_UNIX_MILLISECONDS_IN_NORMAL_TUI=false
-RAW_FULL_INTERNAL_HASH_PRIMARY=false
-ZERO_SAMPLE_HEALTHY_PERCENT=false
-METRIC_SCOPE_EXPLICIT=true
-SAME_SCOPE_SAME_METRIC_CONSISTENT=true
+SAME_CONTEXT_SEMANTIC_EVENT_DUPLICATES=0
+CROSS_CONTEXT_SILENT_MERGE=false
+CURRENT_CONTEXT_EXPLICIT=true
 ```
 
-Human time examples:
+## Human localization contract
+
+Known event names and descriptions are semantic resources, not English transport strings.
+
+Required:
 
 ```text
-First seen     2026-08-24 21:17
-Last observed  2026-08-29 20:03 (13 hours ago)
-Latest evidence 2026-08-29 20:03
+KNOWN_EVENT_NAME_LOCALIZED=true
+KNOWN_EVENT_DESCRIPTION_LOCALIZED=true
+ZH_CN_KNOWN_EVENT_ENGLISH_LEAK=false
+UNKNOWN_EVENT_RAW_NAME_PRESERVED=true
+UNKNOWN_EVENT_DESCRIPTION_GUESSED=false
 ```
 
-Raw epoch values remain available only in machine/debug surfaces where justified.
+Unknown future runtime event names remain visible verbatim rather than being dropped or guessed.
 
-A failure rate with zero terminal samples renders as an unavailable metric, not `0.00% healthy`.
+## Visual Regression CI architecture
 
-Risk must include an explanation, not only an opaque number.
+The primary visual gate is a Ratatui **cell-buffer golden snapshot**, not an operating-system pixel screenshot.
 
-## Metric scope
+Pixel-level Windows Terminal screenshots are too sensitive to font, DPI, antialiasing, terminal version, transparency, and compositor behavior to serve as the primary deterministic gate.
 
-Every reliability metric shown in Hook Detail must make its scope unambiguous. At minimum distinguish:
+Canonical visual pipeline:
 
 ```text
-SELECTED_WINDOW_ALL_REVISIONS
-CURRENT_REVISION_SELECTED_WINDOW
-HISTORICAL_ALL_TIME
-TERMINAL_SAMPLE_DENOMINATOR
+sanitized fixture / official-shaped wire fixture
+                 ↓
+          deterministic App state
+                 ↓
+          ratatui::TestBackend
+                 ↓
+         complete terminal cell grid
+                 ↓
+ golden snapshot + structural invariants
+                 ↓
+              CI gate
 ```
 
-If two sections use different scopes, the UI labels them. A value such as `runs=5` may not sit beside a trend with `samples=227` without explaining the different scope.
+See `docs/architecture/TUI_VISUAL_REGRESSION_CI.md`.
 
-## v0.4 dependency DAG
+## Visual snapshot baseline matrix
+
+The exact matrix may be refined by implementation evidence, but G45V-B must cover representative canonical frames across:
+
+```text
+Widths/heights:
+- wide: 140x58
+- standard: about 100x32
+- narrow: about 60x30
+- very narrow/tall: 44x44
+
+Locales:
+- en-US
+- zh-CN
+
+Primary views:
+- Overview
+- Hooks / Events
+- Hooks / Handlers
+- Hook Detail
+- Changes
+- Diagnostics
+- Settings
+
+Resource states:
+- loading
+- ready
+- stale accepted data
+- error
+
+Content stress:
+- short values
+- long command
+- long matcher
+- long source
+```
+
+The implementation should select a bounded canonical matrix rather than an uncontrolled Cartesian product. Target approximately 20–30 stable frames unless evidence justifies a different number.
+
+## Structural visual invariants
+
+Golden snapshots alone are insufficient because an accidental baseline update could bless a broken screen.
+
+At minimum, deterministic checks must include applicable invariants such as:
+
+```text
+EVENT_DISPLAY_IDENTITY_DUPLICATES=0
+SELECTED_ROW_COUNT<=1
+FOOTER_VISIBLE=true
+RAW_UNIX_MS_VISIBLE=false
+KNOWN_EVENT_ENGLISH_LEAK_IN_ZH_CN=false
+CURRENT_RUNTIME_SECTION_PRECEDES_RELIABILITY=true
+OUT_OF_BOUNDS_RENDERING=false
+```
+
+Snapshot updates must be explicit, reviewed changes. CI must never auto-accept new visual baselines.
+
+## Dedicated CI gate
+
+G45V-B introduces a stable dedicated visual gate, conceptually:
+
+```text
+CI / tui-visual
+```
+
+TUI-sensitive changes include at minimum:
+
+```text
+src/tui/**
+src/runtime_presentation.rs
+presentation-relevant src/codex.rs changes
+localization resources
+terminal-ui-contract dependency changes
+visual fixture and baseline changes
+```
+
+A workflow implementation may live in the existing CI file or a dedicated workflow, but the result must be separately identifiable from generic `cargo test`.
+
+The visual gate must emit useful failure diagnostics/artifacts without exposing Owner-private runtime values. All committed visual fixtures are sanitized.
+
+## Real-wire end-to-end contract
+
+G45V-C must add an official-shaped, sanitized Codex v0.151.0 `hooks/list` fixture using exact wire names and field casing.
+
+The test path must be:
+
+```text
+v0.151-shaped hooks/list JSON
+        ↓
+from_codex_hooks_list
+        ↓
+RuntimePresentationSnapshot
+        ↓
+App runtime catalog
+        ↓
+Events / Handlers / Detail render
+        ↓
+golden frame
+```
+
+Required proof includes:
+
+```text
+preToolUse appears exactly once
+installed count comes from real fixture handlers
+known description is localized
+interrupt appears exactly once
+unknown future event appears exactly once
+unknown future event remains visible without fabricated reliability
+```
+
+## Revised v0.4 dependency DAG
 
 ```text
 PUBLIC v0.3.1
       │
       ▼
-HS-G40 — Post-release Rebaseline & /hooks Parity Contract
+G40 ✅ Rebaseline & parity
       │
       ▼
-HS-G41 — Live Runtime Hook Catalog
+G41 ✅ Runtime catalog
       │
-      ├─────────────────────────┐
-      ▼                         ▼
-HS-G42                      HS-G43
-Hooks Control Center        Human Reliability Presentation
-      │                         │
-      └──────────────┬──────────┘
-                     ▼
-HS-G44 — Safe Hook Management
-                     │
-                     ▼
-HS-G45 — Human UX / ZenBook Duo Dogfood
-                     │
-                     ▼
-HS-G46R — v0.4 Hardening & Release
-                     │
-                     ▼
-                PUBLIC v0.4
+      ├──────────────────────┐
+      ▼                      ▼
+G42 ✅ Hooks Center       G43 ✅ Human Reliability
+      └──────────┬───────────┘
+                 ▼
+G44 ✅ Safe Management Qualification
+    WRITE_PARITY=UPSTREAM_UNAVAILABLE
+                 │
+                 ▼
+G45 Automated Preparation ✅
+                 │
+                 ▼
+G45 Owner Visual Check ❌
+                 │
+                 ▼
+G45V-A — Runtime Event Identity & Localization Repair
+                 │
+                 ▼
+G45V-B — TUI Visual Regression CI Foundation
+                 │
+                 ▼
+G45V-C — Real-Wire End-to-End Visual Matrix
+                 │
+                 ▼
+G45R — Owner Re-Dogfood
+                 │
+                 ▼
+G46R — v0.4 Hardening & Release
+                 │
+                 ▼
+            PUBLIC v0.4
 ```
 
-G42 and G43 may proceed in isolated branches after G41 if their interfaces are frozen. G44 depends on the runtime catalog but write parity is conditional on an official, externally usable Codex mutation surface. Read/information parity is mandatory; unsupported writes must be represented truthfully rather than implemented by filesystem guessing.
+G46R remains blocked until G45R passes.
 
-## Goal index and estimated effort
+## Revised effort estimate
 
 | Goal | Scope | Estimated effort |
 | --- | --- | ---: |
-| G40 | release rebaseline, parity matrix, v0.4 contracts, experiment governance | 2–3 h |
-| G41 | ephemeral live runtime hook catalog, event compatibility, join semantics | 4–6 h |
-| G42 | event → handlers → detail Hooks Control Center | 4–7 h |
-| G43 | human time, metric scope, health/risk explanations, consistency | 4–6 h |
-| G44 | safe runtime-owned enable/trust operations where officially supported | 3–5 h |
-| G45 | visual/interaction dogfood and Codex `/hooks` A/B parity | 3–5 h |
-| G46R | fast-lane release closeout and publication candidate | 2–4 h |
-| **Total** | **v0.4 product track** | **22–36 h** |
+| G45V-A | semantic event identity, wire-name correction, localization, context semantics | 2–4 h |
+| G45V-B | golden cell-buffer visual harness, structural invariants, dedicated CI gate | 4–7 h |
+| G45V-C | official-shaped real-wire fixture and parser→frame E2E matrix | 2–4 h |
+| G45R | Owner visual A/B re-dogfood | 0.5–1 h Owner time |
+| G46R | release hardening, version/upgrade/package candidate | 2–4 h |
+| **Remaining** | **from failed first Owner visual pass** | **10.5–20 h** |
 
-## G40 — Post-release rebaseline
+## G45V-A — Runtime Event Identity & Localization Repair
 
-G40 establishes the new authoritative product contract before implementation. It must:
+Implement a typed known-runtime-event presentation identity or an equally explicit mechanism that:
 
-- record v0.3.1 as public/closed;
-- update stale public-version/release-candidate wording;
-- pin the exact Codex `/hooks` source/version used for parity;
-- freeze the parity matrix;
-- audit current HookStat metric-scope anomalies;
-- freeze the runtime presentation privacy boundary;
-- establish `agent/*`, `fix/*`, `exp/*`, and `promote/*` branch semantics.
+- maps exact upstream wire values to known semantic events;
+- keeps raw unknown wire names intact;
+- localizes known names/descriptions independent of reliability support;
+- prevents same-context semantic duplicates;
+- preserves runtime context semantics;
+- adds deterministic parser regression tests for the Owner-observed duplicate case.
 
-If the current `runs/sample/trend` mismatch is a genuine correctness defect rather than a presentation-scope issue, repair it through a dedicated `fix/*` train and consider a maintenance release independently of v0.4.
+Acceptance is defined in `goals/HS-G45VA-RUNTIME-EVENT-IDENTITY-LOCALIZATION.md`.
 
-## G41 — Live runtime hook catalog
+## G45V-B — TUI Visual Regression CI Foundation
 
-Implement an in-memory current-runtime catalog using the official Codex `hooks/list` surface. Required concepts include event descriptors, handler presentation, source presentation, trust/state presentation, runtime issues, and conservative reliability join state.
+Implement a bounded, deterministic visual test framework using Ratatui `TestBackend` full-frame cell buffers, explicit golden baselines, structural invariants, and a dedicated CI result.
 
-Do not persist raw runtime presentation fields.
+This goal must not depend on real Owner hook data or pixel screenshots.
 
-Current/new events that are unknown to HookStat analytics remain visible with reliability `UNAVAILABLE`/`NOT_ADMITTED` rather than disappearing.
+Acceptance is defined in `goals/HS-G45VB-TUI-VISUAL-REGRESSION-CI.md`.
 
-## G42 — Hooks Control Center
+## G45V-C — Real-Wire End-to-End Visual Matrix
 
-Replace the analytics-first Hook list mental model with:
+Add an upstream-shaped sanitized `hooks/list` fixture pinned to Codex v0.151.0 and test the full parser→App→frame path at representative widths/locales/states.
 
-```text
-Events
-  ↓
-Handlers for selected event
-  ↓
-Current Hook detail + Reliability overlay
-```
+Acceptance is defined in `goals/HS-G45VC-REAL-WIRE-E2E-VISUAL-MATRIX.md`.
 
-The runtime detail must be usable without opening Codex `/hooks` for missing basic information.
+## G45R — Owner Re-Dogfood
 
-## G43 — Human reliability presentation
+After G45V-A/B/C are accepted, repeat the Owner Windows Terminal / Codex `/hooks` A/B check from exact accepted main.
 
-Humanize timestamps, hashes, coverage, risk, terminal-sample availability, revision history, and metric scopes. Establish deterministic tests for time formatting, zero-sample states, mixed revision/history scopes, narrow layouts, and bilingual presentation.
+The first-pass failure receipt remains historical evidence. Do not overwrite it.
 
-## G44 — Safe hook management
+Required answer to the primary question remains:
 
-Audit Codex's official mutation surfaces for external clients. If a stable, bounded route is proven, support safe enable/disable and trust operations with exact identity/current-hash preconditions. Managed hooks are always read-only.
+> If the user only opens HookStat, do they still need Codex `/hooks` to understand the current hook?
 
-If an official external write route is unavailable or cannot be proved safe:
-
-```text
-READ_PARITY=PASS
-WRITE_PARITY=UPSTREAM_UNAVAILABLE
-```
-
-and v0.4 may still release. Never guess or directly rewrite plugin/managed configuration to imitate the Codex TUI.
-
-## G45 — Human UX dogfood
-
-Run owned Windows Terminal A/B evaluation of Codex `/hooks` versus HookStat on representative width, locale, and handler cases.
-
-Acceptance question:
-
-> If the user only opens HookStat, do they still need Codex `/hooks` to understand what a current hook is and how the runtime sees it?
-
-If yes, G45 fails.
+Required answer: **NO**.
 
 ## G46R — v0.4 release
 
-Use the merged Fast Lane process:
+G46R may begin only after:
+
+```text
+G45V_A=PASS
+G45V_B=PASS
+G45V_C=PASS
+G45_OWNER_REDOGFOOD=PASS
+```
+
+Then use the Fast Lane candidate process:
 
 ```text
 settle code + docs
 → freeze exact candidate SHA
-→ hosted CI / independent review / owner dogfood / release gate in parallel
-→ no post-freeze commits
+→ hosted CI / visual CI / independent review / owner dogfood evidence
+→ release gate
 → merge
-→ separately owner-authorized publication
+→ separately Owner-authorized publication
 ```
 
-Do not recreate pre-v0.3.1 candidate churn.
-
-## Exploration tracks are not version commitments
-
-DeepSeek Harness, OpenCode, Claude Code, Agy, and future runtimes are exploration tracks. Do not assign a production version merely because an experiment starts.
-
-```text
-exp/runtime
-  ↓
-SURFACE_DISCOVERED
-  ↓
-CAPABILITY_MAPPED
-  ↓
-FIXTURES_PASS
-  ↓
-REAL_OWNER_PROOF
-  ↓
-CONFORMANT
-  ↓
-PROMOTION_READY
-  ↓
-promote/runtime-* from current main
-  ↓
-production gates
-  ↓
-main
-```
-
-See `docs/process/EXPERIMENTAL_BRANCH_AND_PROMOTION_POLICY.md`.
-
-## Explicit non-goals for v0.4
+## Explicit non-goals for G45V
 
 - production DeepSeek Harness adapter;
 - production OpenCode adapter;
-- production Claude Code adapter;
-- production Agy adapter;
 - broad Web UI/dashboard work;
-- network broker or cloud aggregation;
-- global mandatory daemon;
+- pixel-perfect OS screenshot gating as the primary CI mechanism;
+- mutation of Owner Codex hook configuration;
 - remote telemetry;
-- AI-generated root-cause diagnosis;
-- weakening HookStat's privacy or truthful-coverage contracts.
+- AI-generated visual acceptance;
+- weakening privacy or reliability admission contracts.
 
-## Completion definition
+## v0.4 completion definition
 
 ```text
 PUBLIC_BASELINE=v0.3.1
@@ -355,6 +454,13 @@ PRODUCTION_RUNTIME=Codex
 
 CODEX_HOOKS_HUMAN_INFORMATION_PARITY=PASS
 LIVE_RUNTIME_HOOK_CATALOG=PASS
+EVENT_DISPLAY_IDENTITY_DUPLICATES=0
+KNOWN_EVENT_LOCALIZATION=PASS
+REAL_WIRE_TO_FRAME_E2E=PASS
+TUI_VISUAL_REGRESSION_CI=PASS
+TUI_GOLDEN_BASELINES=PASS
+TUI_STRUCTURAL_INVARIANTS=PASS
+
 INSTALLED_UNOBSERVED_HOOKS_VISIBLE=true
 HISTORICAL_NOT_INSTALLED_DISTINCT=true
 RUNTIME_ISSUES_VISIBLE=true
@@ -369,8 +475,7 @@ HUMAN_COVERAGE_EXPLANATION=PASS
 
 RUNTIME_PRESENTATION_IN_MEMORY_ONLY=true
 RAW_RUNTIME_PRESENTATION_PERSISTED=false
-
-SAFE_WRITE_PARITY=PASS_OR_TRUTHFULLY_UPSTREAM_UNAVAILABLE
+SAFE_WRITE_PARITY=UPSTREAM_UNAVAILABLE
 MANAGED_HOOK_MUTATION=false
 
 WINDOWS=PASS
