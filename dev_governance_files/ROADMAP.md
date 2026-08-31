@@ -4,7 +4,7 @@
 
 HookStat v0.3.1 is publicly released from accepted main `651620cbc9f204f312fc31efee424c747895927a` with public tag/release `v0.3.1`.
 
-Current product development is governed by [`ROADMAP_V040.md`](ROADMAP_V040.md) and the corresponding `goals/HS-G40*` through `goals/HS-G46R*` contracts.
+Current product development is governed by [`ROADMAP_V040.md`](ROADMAP_V040.md) and the corresponding v0.4 goal contracts.
 
 The v0.4 product theme is **Hooks Control Center / Human Usability**.
 
@@ -13,6 +13,24 @@ Normative product principle:
 > **Runtime Truth First, Reliability Second.**
 
 For Codex hooks, HookStat must expose at least the human-readable current-runtime information provided by the pinned official Codex `/hooks` baseline, then add HookStat reliability/history/diagnosis as an additive layer.
+
+The first G45 Owner visual pass on current-main lineage discovered a release-blocking Event-catalog duplication/localization defect and demonstrated that existing deterministic TUI tests did not yet constitute a complete visual-regression CI pipeline.
+
+Therefore the active v0.4 train now includes a release-blocking G45V correction sequence before G46R:
+
+```text
+G45V-A Runtime Event Identity & Localization Repair
+  ↓
+G45V-B TUI Visual Regression CI Foundation
+  ↓
+G45V-C Real-Wire End-to-End Visual Matrix
+  ↓
+G45R Owner Re-Dogfood
+  ↓
+G46R
+```
+
+G46R is on HOLD until G45R passes.
 
 v0.4 remains Codex production-first. DeepSeek Harness, OpenCode, Claude Code, Agy, and other runtime work proceeds through independent `exp/*` tracks and does not block v0.4 unless explicitly promoted.
 
@@ -32,7 +50,7 @@ Experiments are promoted, not directly merged into `main`.
 
 The v0.3.1 Runtime-Neutral Native & IPC High-Performance Evidence Runtime train is complete and publicly released.
 
-Its historical execution contract remains in [`ROADMAP_V031.md`](ROADMAP_V031.md). Historical receipts and goals remain immutable evidence; the `IN PROGRESS` wording inside that historical execution file is superseded by this top-level public-release record and should be closed during G40 housekeeping rather than rewritten as if the old document had always been final.
+Its historical execution contract remains in [`ROADMAP_V031.md`](ROADMAP_V031.md). Historical receipts and goals remain immutable evidence.
 
 v0.3.1 established:
 
@@ -90,7 +108,7 @@ The accepted post-v0.2 roadmap changed the original historical numbering. v0.3.0
 - revision timeline;
 - safe Human aliases;
 - bounded failure exploration;
-- owner Windows Terminal dogfood;
+- Owner Windows Terminal dogfood;
 - public v0.3.0 release.
 
 Detailed history remains in `HOOKSTAT_POST_V02_TO_V03_ROADMAP.md`.
@@ -106,23 +124,36 @@ Critical path:
 ```text
 PUBLIC v0.3.1
       ↓
-HS-G40 Rebaseline & /hooks Parity Contract
+G40 ✅ Rebaseline & /hooks parity
       ↓
-HS-G41 Live Runtime Hook Catalog
+G41 ✅ Live Runtime Hook Catalog
       ├───────────────┐
       ↓               ↓
-HS-G42              HS-G43
-Hooks Center        Human Reliability Presentation
+G42 ✅              G43 ✅
+Hooks Center        Human Reliability
       └───────┬───────┘
               ↓
-HS-G44 Safe Hook Management
+G44 ✅ Safe Hook Management Qualification
+     WRITE_PARITY=UPSTREAM_UNAVAILABLE
               ↓
-HS-G45 Human UX / Codex /hooks A/B Dogfood
+G45 Automated Preparation ✅
               ↓
-HS-G46R v0.4 Hardening & Release
+G45 Owner Visual Check ❌
+              ↓
+G45V-A Runtime Event Identity & Localization Repair
+              ↓
+G45V-B TUI Visual Regression CI Foundation
+              ↓
+G45V-C Real-Wire End-to-End Visual Matrix
+              ↓
+G45R Owner Re-Dogfood
+              ↓
+G46R v0.4 Hardening & Release
 ```
 
-Read/information parity with Codex `/hooks` is mandatory. Write parity is admitted only when an official externally usable mutation surface is proven; otherwise it is truthfully `UPSTREAM_UNAVAILABLE` and does not authorize configuration guessing.
+Read/information parity with Codex `/hooks` remains mandatory. Write parity is admitted only when an official externally usable mutation surface is proven; the current accepted v0.4 disposition is `UPSTREAM_UNAVAILABLE` and does not authorize configuration guessing.
+
+The G45V train is product infrastructure, not release cleanup. Its visual CI must become a durable guard for future TUI work rather than a one-off test written solely for v0.4.
 
 ## Experimental runtime tracks — independent
 
