@@ -58,7 +58,7 @@ function Assert-Case {
 }
 
 Assert-Case -Name 'docs_only' -Paths @('docs/process/guide.md') -Expected @{
-    RISK_D = $true; LIGHTWEIGHT_ONLY = $true; RUN_FULL_WINDOWS = $false; RUN_FULL_UBUNTU = $false
+    RISK_D = $true; LIGHTWEIGHT_ONLY = $true; RUN_FULL_WINDOWS = $false; RUN_FULL_UBUNTU = $false; RUN_TUI_VISUAL = $false
 }
 Assert-Case -Name 'governance_only' -Paths @('dev_governance_files/FAST_LANE.md') -Expected @{
     RISK_D = $true; LIGHTWEIGHT_ONLY = $true; RUN_FULL_WINDOWS = $false
@@ -88,19 +88,31 @@ Assert-Case -Name 'ledger_schema' -Paths @('src/ledger.rs') -Expected @{
     RISK_C = $true; RISK_S = $true; RUN_RUST_UBUNTU = $true
 }
 Assert-Case -Name 'tui' -Paths @('src/tui/rendering.rs') -Expected @{
-    RISK_C = $true; RISK_T = $true; RUN_RUST_UBUNTU = $true
+    RISK_C = $true; RISK_T = $true; RUN_RUST_UBUNTU = $true; TUI_VISUAL_SENSITIVE = $true; RUN_TUI_VISUAL = $true
+}
+Assert-Case -Name 'runtime_presentation' -Paths @('src/runtime_presentation.rs') -Expected @{
+    RISK_C = $true; RISK_T = $true; TUI_VISUAL_SENSITIVE = $true; RUN_TUI_VISUAL = $true
+}
+Assert-Case -Name 'codex_presentation' -Paths @('src/codex.rs') -Expected @{
+    RISK_C = $true; RISK_T = $true; TUI_VISUAL_SENSITIVE = $true; RUN_TUI_VISUAL = $true
+}
+Assert-Case -Name 'visual_fixture' -Paths @('tests/fixtures/tui_visual/hooks-events-ready.frame') -Expected @{
+    RISK_C = $true; RISK_T = $true; TUI_VISUAL_SENSITIVE = $true; RUN_TUI_VISUAL = $true
+}
+Assert-Case -Name 'visual_script' -Paths @('scripts/tui/update-visual-baselines.ps1') -Expected @{
+    RISK_C = $true; RISK_T = $true; TUI_VISUAL_SENSITIVE = $true; RUN_TUI_VISUAL = $true
 }
 Assert-Case -Name 'cargo_toml' -Paths @('Cargo.toml') -Expected @{
-    RISK_C = $true; RISK_R = $true; PACKAGE_SURFACE_CHANGED = $true; RUN_FULL_WINDOWS = $true; RUN_FULL_UBUNTU = $true
+    RISK_C = $true; RISK_R = $true; PACKAGE_SURFACE_CHANGED = $true; RUN_FULL_WINDOWS = $true; RUN_FULL_UBUNTU = $true; RUN_TUI_VISUAL = $true
 }
 Assert-Case -Name 'cargo_lock' -Paths @('Cargo.lock') -Expected @{
-    RISK_C = $true; RISK_R = $true; PACKAGE_SURFACE_CHANGED = $true; RUN_FULL_WINDOWS = $true; RUN_FULL_UBUNTU = $true
+    RISK_C = $true; RISK_R = $true; PACKAGE_SURFACE_CHANGED = $true; RUN_FULL_WINDOWS = $true; RUN_FULL_UBUNTU = $true; RUN_TUI_VISUAL = $true
 }
 Assert-Case -Name 'release_script' -Paths @('scripts/release/release-gate.ps1') -Expected @{
     RISK_R = $true; PACKAGE_SURFACE_CHANGED = $true; RUN_FULL_WINDOWS = $true; RUN_FULL_UBUNTU = $true
 }
 Assert-Case -Name 'workflow' -Paths @('.github/workflows/ci.yml') -Expected @{
-    RISK_R = $true; WORKFLOW_CHANGED = $true; RUN_FULL_WINDOWS = $true; RUN_FULL_UBUNTU = $true
+    RISK_R = $true; WORKFLOW_CHANGED = $true; RUN_FULL_WINDOWS = $true; RUN_FULL_UBUNTU = $true; RUN_TUI_VISUAL = $true
 }
 Assert-Case -Name 'mixed_docs_rust' -Paths @('docs/process/guide.md', 'src/report.rs') -Expected @{
     RISK_D = $true; RISK_C = $true; RUN_RUST_UBUNTU = $true; LIGHTWEIGHT_ONLY = $false

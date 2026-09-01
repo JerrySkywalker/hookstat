@@ -1,0 +1,31 @@
+# hookstat-tui-frame-v1 id=hooks-handlers-review-narrow-en-us geometry=60x30 locale=en-US
+000|HookStat Reliability Center — ! Degraded                    |
+001|────────────────────────────────────────────────────────────|
+002|┌Sections───────────┐┌Hook catalog — After tool use────────┐|
+003|│  Overview         ││>[!] synthetic-tool                  │|
+004|│> Hooks            ││Enabled: Disabled · project · MCP    │|
+005|│  Changes          ││tool · Unavailable                   │|
+006|│  Diagnostics      ││Trust: Untrusted · Health: Not       │|
+007|│  Settings         ││observed                             │|
+008|│                   ││                                     │|
+009|│                   ││                                     │|
+010|│                   ││                                     │|
+011|│                   ││                                     │|
+012|│                   ││                                     │|
+013|│                   ││                                     │|
+014|│                   ││                                     │|
+015|│                   ││                                     │|
+016|│                   ││                                     │|
+017|│                   ││                                     │|
+018|│                   ││                                     │|
+019|│                   ││                                     │|
+020|│                   ││                                     │|
+021|│                   ││                                     │|
+022|│                   ││                                     │|
+023|│                   ││                                     │|
+024|│                   ││                                     │|
+025|│                   ││                                     │|
+026|│                   ││                                     │|
+027|└───────────────────┘└─────────────────────────────────────┘|
+028|↑↓ navigate  Enter open  Esc back  q quit                   |
+029|                                                            |

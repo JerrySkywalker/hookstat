@@ -1,0 +1,59 @@
+# hookstat-tui-frame-v1 id=hook-detail-long-wide-en-us geometry=140x58 locale=en-US
+000|HookStat Reliability Center — ! Degraded                                                                                                    |
+001|────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+002|┌Sections───────────┐┌Hook detail──────────────────────────────────────────────────────────────────────────────────────────────────────────┐|
+003|│  Overview         ││Runtime configuration                                                                                                │|
+004|│> Hooks            ││Event: Before tool use                                                                                               │|
+005|│  Changes          ││Enabled: true                                                                                                        │|
+006|│  Diagnostics      ││Managed: false                                                                                                       │|
+007|│  Settings         ││Needs review: false                                                                                                  │|
+008|│                   ││Trust: Trusted                                                                                                       │|
+009|│                   ││Handler type: Command                                                                                                │|
+010|│                   ││Matcher: ^SyntheticToolWithAnIntentionallyLongSafeName$                                                              │|
+011|│                   ││Source: project · C:/synthetic/very/long/source/hooks.json                                                           │|
+012|│                   ││Command: synthetic command --very-long-safe-argument=1234567890 --another-safe-argument=abcdefghijklmnopqrstuvwxyz   │|
+013|│                   ││Mode: Sync                                                                                                           │|
+014|│                   ││Timeout: 9s                                                                                                          │|
+015|│                   ││Additional context: 64                                                                                               │|
+016|│                   ││                                                                                                                     │|
+017|│                   ││Hook management                                                                                                      │|
+018|│                   ││Read-only: no verified external enable/disable route.                                                                │|
+019|│                   ││                                                                                                                     │|
+020|│                   ││Reliability summary                                                                                                  │|
+021|│                   ││Not observed                                                                                                         │|
+022|│                   ││                                                                                                                     │|
+023|│                   ││Observation history                                                                                                  │|
+024|│                   ││Reliability unavailable                                                                                              │|
+025|│                   ││                                                                                                                     │|
+026|│                   ││Reliability intelligence                                                                                             │|
+027|│                   ││Reliability unavailable                                                                                              │|
+028|│                   ││                                                                                                                     │|
+029|│                   ││                                                                                                                     │|
+030|│                   ││                                                                                                                     │|
+031|│                   ││                                                                                                                     │|
+032|│                   ││                                                                                                                     │|
+033|│                   ││                                                                                                                     │|
+034|│                   ││                                                                                                                     │|
+035|│                   ││                                                                                                                     │|
+036|│                   ││                                                                                                                     │|
+037|│                   ││                                                                                                                     │|
+038|│                   ││                                                                                                                     │|
+039|│                   ││                                                                                                                     │|
+040|│                   ││                                                                                                                     │|
+041|│                   ││                                                                                                                     │|
+042|│                   ││                                                                                                                     │|
+043|│                   ││                                                                                                                     │|
+044|│                   ││                                                                                                                     │|
+045|│                   ││                                                                                                                     │|
+046|│                   ││                                                                                                                     │|
+047|│                   ││                                                                                                                     │|
+048|│                   ││                                                                                                                     │|
+049|│                   ││                                                                                                                     │|
+050|│                   ││                                                                                                                     │|
+051|│                   ││                                                                                                                     │|
+052|│                   ││                                                                                                                     │|
+053|│                   ││                                                                                                                     │|
+054|│                   ││                                                                                                                     │|
+055|└───────────────────┘└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘|
+056|PgUp/PgDn page  Esc back  ? help  r refresh                                                                                                 |
+057|                                                                                                                                            |
