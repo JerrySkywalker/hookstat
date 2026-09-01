@@ -19,7 +19,9 @@ use crate::domain::{
     Runtime, TerminalStatus,
 };
 use crate::report::{instrumented_report, synthetic_fixture_report};
-use crate::runtime_presentation::{KnownRuntimeEvent, RuntimePresentationSnapshot};
+use crate::runtime_presentation::{
+    KnownRuntimeEvent, RuntimeHandlerKind, RuntimePresentationSnapshot,
+};
 use ratatui::{Terminal, backend::TestBackend, layout::Rect, style::Modifier};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -29,8 +31,13 @@ use unicode_width::UnicodeWidthStr;
 
 const PRESENTATION_NOW_UNIX_MS: i64 = 1_725_000_123_456;
 const CATALOG_CAPTURED_AT_UNIX_MS: i64 = 1_725_000_987_654;
+const REAL_WIRE_CAPTURED_AT_UNIX_MS: i64 = 1_725_001_111_222;
 const CHANGE_NOW_UNIX_MS: i64 = 20 * 24 * 60 * 60 * 1_000;
 const BASELINE_UPDATE_ENV: &str = "HOOKSTAT_UPDATE_VISUAL_BASELINES";
+const REAL_WIRE_FIXTURE_JSON: &str =
+    include_str!("../../tests/fixtures/codex/v0.151.0/hooks-list.json");
+const REAL_WIRE_CONTRACT_JSON: &str =
+    include_str!("../../tests/fixtures/codex/v0.151.0/wire-contract.json");
 
 const KNOWN_RUNTIME_EVENTS: [KnownRuntimeEvent; 12] = [
     KnownRuntimeEvent::PreToolUse,
@@ -67,6 +74,9 @@ enum Scenario {
     DiagnosticsLoadingWithAcceptedData,
     DiagnosticsErrorWithAcceptedData,
     SettingsReady,
+    RealWireEvents,
+    RealWireHandlersPreToolUse,
+    RealWireManagedDetail,
 }
 
 #[derive(Clone, Copy)]
@@ -353,6 +363,40 @@ fn canonical_cases() -> Vec<FrameCase> {
             ResolvedLocale::ZhCn,
             Scenario::SettingsReady,
         ),
+        FrameCase::new(
+            "real-wire-events-wide-en-us",
+            140,
+            58,
+            ResolvedLocale::EnUs,
+            Scenario::RealWireEvents,
+        )
+        .selected_row()
+        .event_display_counts(),
+        FrameCase::new(
+            "real-wire-events-wide-zh-cn",
+            140,
+            58,
+            ResolvedLocale::ZhCn,
+            Scenario::RealWireEvents,
+        )
+        .selected_row()
+        .event_display_counts(),
+        FrameCase::new(
+            "real-wire-handlers-narrow-zh-cn",
+            60,
+            30,
+            ResolvedLocale::ZhCn,
+            Scenario::RealWireHandlersPreToolUse,
+        )
+        .selected_row(),
+        FrameCase::new(
+            "real-wire-detail-wide-en-us",
+            140,
+            58,
+            ResolvedLocale::EnUs,
+            Scenario::RealWireManagedDetail,
+        )
+        .ordered_detail(),
     ]
 }
 
@@ -435,6 +479,37 @@ fn runtime_catalog() -> RuntimePresentationSnapshot {
     .expect("sanitized visual runtime catalog must parse")
 }
 
+fn real_wire_fixture() -> Value {
+    serde_json::from_str(REAL_WIRE_FIXTURE_JSON)
+        .expect("committed Codex v0.151.0 hooks/list fixture must be valid JSON")
+}
+
+fn real_wire_catalog() -> RuntimePresentationSnapshot {
+    RuntimePresentationSnapshot::from_codex_hooks_list(
+        &real_wire_fixture(),
+        REAL_WIRE_CAPTURED_AT_UNIX_MS,
+    )
+    .expect("committed Codex v0.151.0 hooks/list fixture must parse")
+}
+
+fn real_wire_ready_app() -> App {
+    let mut app = App::from_report(synthetic_fixture_report(PRESENTATION_NOW_UNIX_MS));
+    app.apply_runtime_catalog(real_wire_catalog());
+    app
+}
+
+fn real_wire_zero_sample_app() -> App {
+    let mut app = App::from_report(instrumented_report(
+        &[],
+        PRESENTATION_NOW_UNIX_MS,
+        TimeWindow::Last7Days,
+        0,
+        0,
+    ));
+    app.apply_runtime_catalog(real_wire_catalog());
+    app
+}
+
 fn ready_app() -> App {
     let mut app = App::from_report(synthetic_fixture_report(PRESENTATION_NOW_UNIX_MS));
     app.apply_runtime_catalog(runtime_catalog());
@@ -472,6 +547,25 @@ fn hooks_handlers_app(event_name: &str) -> App {
 
 fn hook_detail_app() -> App {
     let mut app = hooks_handlers_app("preToolUse");
+    app.handle(Command::Enter);
+    app
+}
+
+fn real_wire_events_app() -> App {
+    let mut app = real_wire_ready_app();
+    enter_hooks_events(&mut app);
+    app
+}
+
+fn real_wire_handlers_app(event_name: &str) -> App {
+    let mut app = real_wire_events_app();
+    select_runtime_event(&mut app, event_name);
+    app.handle(Command::Enter);
+    app
+}
+
+fn real_wire_managed_detail_app() -> App {
+    let mut app = real_wire_handlers_app("sessionStart");
     app.handle(Command::Enter);
     app
 }
@@ -613,6 +707,9 @@ fn app_for(case: FrameCase) -> App {
             app
         }
         Scenario::SettingsReady => settings_app(),
+        Scenario::RealWireEvents => real_wire_events_app(),
+        Scenario::RealWireHandlersPreToolUse => real_wire_handlers_app("preToolUse"),
+        Scenario::RealWireManagedDetail => real_wire_managed_detail_app(),
     }
 }
 
@@ -782,6 +879,35 @@ fn event_display_count_failures(locale: ResolvedLocale, app: &App, frame: &str) 
         .collect()
 }
 
+fn runtime_event_display_count(
+    locale: ResolvedLocale,
+    app: &App,
+    frame: &str,
+    runtime_event_name: &str,
+) -> usize {
+    let event = app
+        .runtime_catalog()
+        .and_then(|catalog| {
+            catalog
+                .events
+                .iter()
+                .find(|event| event.runtime_event_name == runtime_event_name)
+        })
+        .unwrap_or_else(|| panic!("runtime event missing from visual app: {runtime_event_name}"));
+    let display_name = event.known_event.map_or_else(
+        || event.runtime_event_name.as_str(),
+        |known| known_runtime_event_name(locale, known),
+    );
+    let normalized_name = normalize_for_leak_check(display_name);
+    frame
+        .lines()
+        .filter_map(content_segment)
+        .map(normalize_for_leak_check)
+        .map(|row| row.trim_start_matches('>').trim_start().to_owned())
+        .filter(|row| row.starts_with(&normalized_name))
+        .count()
+}
+
 fn selected_event_display_count_failures(
     locale: ResolvedLocale,
     app: &App,
@@ -858,7 +984,9 @@ fn selected_row_failures(selected_rows: &BTreeSet<u16>) -> Vec<String> {
 
 fn footer_visibility_failures(case: FrameCase, frame: &str) -> Vec<String> {
     let (action, key) = match case.scenario {
-        Scenario::HookDetailLongConfiguration => ("Esc", MessageKey::FooterBack),
+        Scenario::HookDetailLongConfiguration | Scenario::RealWireManagedDetail => {
+            ("Esc", MessageKey::FooterBack)
+        }
         Scenario::ChangesReady
         | Scenario::ChangesLoadingWithAcceptedData
         | Scenario::ChangesErrorWithAcceptedData => ("Enter", MessageKey::FooterOpen),
@@ -884,6 +1012,7 @@ fn raw_unix_ms_failures(frame: &str) -> Vec<String> {
     [
         PRESENTATION_NOW_UNIX_MS,
         CATALOG_CAPTURED_AT_UNIX_MS,
+        REAL_WIRE_CAPTURED_AT_UNIX_MS,
         CHANGE_NOW_UNIX_MS,
     ]
     .into_iter()
@@ -1036,6 +1165,9 @@ fn validate_structural_invariants(
                 | Scenario::HooksHandlersNeedsReview
                 | Scenario::HooksHandlersManaged
                 | Scenario::HookDetailLongConfiguration
+                | Scenario::RealWireEvents
+                | Scenario::RealWireHandlersPreToolUse
+                | Scenario::RealWireManagedDetail
         )
     {
         let leaks = known_event_english_leaks(&rendered.plain_text);
@@ -1148,7 +1280,7 @@ fn write_baseline_if_changed(path: &Path, content: &str) -> std::io::Result<bool
 #[test]
 fn tui_visual_canonical_frames_match() {
     let cases = canonical_cases();
-    assert_eq!(cases.len(), 26, "CANONICAL_FRAME_COUNT must remain bounded");
+    assert_eq!(cases.len(), 30, "CANONICAL_FRAME_COUNT must remain bounded");
     let mut failures = canonical_baseline_inventory_failures(&cases);
     for case in cases {
         let app = app_for(case);
@@ -1205,7 +1337,7 @@ fn update_tui_visual_baselines() {
             println!("UNCHANGED={}", path.display());
         }
     }
-    println!("CANONICAL_FRAME_COUNT=26");
+    println!("CANONICAL_FRAME_COUNT=30");
 }
 
 #[test]
@@ -1402,6 +1534,509 @@ fn tui_visual_zh_cn_leak_invariant_rejects_crafted_english_semantics() {
 }
 
 #[test]
+fn codex_v0151_real_wire_contract_is_pinned_offline_and_deliberate() {
+    let contract: Value = serde_json::from_str(REAL_WIRE_CONTRACT_JSON)
+        .expect("committed Codex v0.151.0 wire contract must be valid JSON");
+    assert_eq!(contract["contractVersion"], 1);
+    assert_eq!(contract["codexVersion"], "0.151.0");
+    assert_eq!(contract["codexTag"], "rust-v0.151.0");
+    assert_eq!(
+        contract["codexSourceCommit"],
+        "78c290807ce710180111df227df3b7a4fe845452"
+    );
+    assert_eq!(contract["fixture"], "hooks-list.json");
+
+    let pinned_wire_names = contract["knownWireEventNames"]
+        .as_array()
+        .expect("wire contract must list known event names")
+        .iter()
+        .map(|value| value.as_str().expect("wire name must be text"))
+        .collect::<Vec<_>>();
+    let product_wire_names = KNOWN_RUNTIME_EVENTS
+        .into_iter()
+        .map(KnownRuntimeEvent::wire_name)
+        .collect::<Vec<_>>();
+    assert_eq!(pinned_wire_names, product_wire_names);
+
+    let fixture = real_wire_fixture();
+    assert_eq!(
+        fixture
+            .as_object()
+            .expect("official-shaped fixture response must be an object")
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["id", "result"])
+    );
+    assert!(fixture["id"].is_i64() || fixture["id"].is_u64());
+    assert_eq!(
+        fixture["result"]
+            .as_object()
+            .expect("official-shaped result must be an object")
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["data"])
+    );
+    let contexts = fixture["result"]["data"]
+        .as_array()
+        .expect("official-shaped fixture must contain context data");
+    assert_eq!(contexts.len(), 1);
+    let context = contexts[0]
+        .as_object()
+        .expect("official-shaped fixture context must be an object");
+    assert_eq!(
+        context.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        BTreeSet::from(["cwd", "errors", "hooks", "warnings"])
+    );
+    assert!(context["cwd"].is_string());
+    assert!(
+        context["warnings"]
+            .as_array()
+            .expect("v0.151.0 warnings must be an array")
+            .iter()
+            .all(Value::is_string),
+        "v0.151.0 warnings must be strings"
+    );
+    for error in context["errors"]
+        .as_array()
+        .expect("v0.151.0 errors must be an array")
+    {
+        let error = error
+            .as_object()
+            .expect("v0.151.0 errors must be path/message objects");
+        assert_eq!(
+            error.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            BTreeSet::from(["message", "path"])
+        );
+        assert!(error["path"].is_string());
+        assert!(error["message"].is_string());
+    }
+
+    let hooks = context["hooks"]
+        .as_array()
+        .expect("official-shaped fixture must contain hooks");
+    let common_fields = BTreeSet::from([
+        "additionalContextLimit",
+        "currentHash",
+        "displayOrder",
+        "enabled",
+        "eventName",
+        "handlerType",
+        "isManaged",
+        "key",
+        "matcher",
+        "pluginId",
+        "source",
+        "sourcePath",
+        "statusMessage",
+        "timeoutSec",
+        "trustStatus",
+    ]);
+    let valid_sources = BTreeSet::from([
+        "cloudManagedConfig",
+        "cloudRequirements",
+        "legacyManagedConfigFile",
+        "legacyManagedConfigMdm",
+        "mdm",
+        "plugin",
+        "project",
+        "sessionFlags",
+        "system",
+        "unknown",
+        "user",
+    ]);
+    let valid_trust_statuses = BTreeSet::from(["managed", "modified", "trusted", "untrusted"]);
+    for hook in hooks {
+        let hook = hook
+            .as_object()
+            .expect("v0.151.0 hook metadata must be an object");
+        let handler_type = hook["handlerType"]
+            .as_str()
+            .expect("v0.151.0 handlerType must be text");
+        let mut expected_fields = common_fields.clone();
+        match handler_type {
+            "command" => expected_fields.extend(["async", "command"]),
+            "mcpTool" => expected_fields.extend(["server", "tool"]),
+            "prompt" | "agent" => {}
+            other => panic!("unsupported v0.151.0 handlerType in pinned fixture: {other}"),
+        }
+        assert_eq!(
+            hook.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            expected_fields,
+            "pinned fixture must use the exact v0.151.0 fields for {handler_type}"
+        );
+        assert!(hook["key"].is_string());
+        assert!(hook["eventName"].is_string());
+        assert!(hook["matcher"].is_null() || hook["matcher"].is_string());
+        assert!(hook["timeoutSec"].is_u64());
+        assert!(hook["statusMessage"].is_null() || hook["statusMessage"].is_string());
+        assert!(
+            hook["additionalContextLimit"].is_null() || hook["additionalContextLimit"].is_u64()
+        );
+        assert!(hook["sourcePath"].is_string());
+        assert!(
+            valid_sources.contains(
+                hook["source"]
+                    .as_str()
+                    .expect("v0.151.0 source must be text")
+            )
+        );
+        assert!(hook["pluginId"].is_null() || hook["pluginId"].is_string());
+        assert!(hook["displayOrder"].is_i64() || hook["displayOrder"].is_u64());
+        assert!(hook["enabled"].is_boolean());
+        assert!(hook["isManaged"].is_boolean());
+        assert!(
+            hook["currentHash"]
+                .as_str()
+                .expect("v0.151.0 currentHash must be text")
+                .starts_with("fixture-current-hash-")
+        );
+        assert!(
+            valid_trust_statuses.contains(
+                hook["trustStatus"]
+                    .as_str()
+                    .expect("v0.151.0 trustStatus must be text")
+            )
+        );
+        match handler_type {
+            "command" => {
+                assert!(hook["command"].is_string());
+                assert!(hook["async"].is_boolean());
+            }
+            "mcpTool" => {
+                assert!(hook["server"].is_string());
+                assert!(hook["tool"].is_string());
+            }
+            "prompt" | "agent" => {}
+            _ => unreachable!(),
+        }
+    }
+    let raw_event_names = hooks
+        .iter()
+        .map(|hook| {
+            hook["eventName"]
+                .as_str()
+                .expect("fixture eventName must be text")
+        })
+        .collect::<Vec<_>>();
+    for required in ["preToolUse", "permissionRequest", "interrupt"] {
+        assert!(
+            raw_event_names.contains(&required),
+            "pinned fixture missing exact wire event {required}"
+        );
+    }
+    for raw_name in raw_event_names {
+        if let Some(known) = KnownRuntimeEvent::from_codex_wire_name(raw_name) {
+            assert_eq!(
+                raw_name,
+                known.wire_name(),
+                "official-shaped fixture must use exact v0.151.0 camelCase"
+            );
+        }
+    }
+
+    let affected_frames = contract["affectedGoldenFrames"]
+        .as_array()
+        .expect("wire contract must list affected frames")
+        .iter()
+        .map(|value| value.as_str().expect("frame id must be text"))
+        .collect::<BTreeSet<_>>();
+    let committed_real_wire_cases = canonical_cases()
+        .into_iter()
+        .filter(|case| case.id.starts_with("real-wire-"))
+        .map(|case| case.id)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(affected_frames, committed_real_wire_cases);
+    assert_eq!(
+        contract["deliberateUpdateRequirements"],
+        json!([
+            "sourcePin",
+            "wireFixture",
+            "knownMapping",
+            "affectedGoldenFrames"
+        ])
+    );
+    assert!(
+        !REAL_WIRE_FIXTURE_JSON.contains("http://") && !REAL_WIRE_FIXTURE_JSON.contains("https://"),
+        "ordinary visual CI must consume only the committed fixture"
+    );
+    for forbidden_legacy_shape in [
+        "\"mcp_tool\"",
+        "\"mcpServer\"",
+        "\"future_handler\"",
+        "\"eventDescription\"",
+    ] {
+        assert!(
+            !REAL_WIRE_FIXTURE_JSON.contains(forbidden_legacy_shape),
+            "pinned fixture contains non-v0.151.0 wire field {forbidden_legacy_shape}"
+        );
+    }
+}
+
+#[test]
+fn codex_v0151_real_wire_reaches_events_handlers_detail_and_whole_frames() {
+    let fixture = real_wire_fixture();
+    let fixture_handlers = fixture["result"]["data"][0]["hooks"]
+        .as_array()
+        .expect("official-shaped fixture must contain hooks");
+    let catalog =
+        RuntimePresentationSnapshot::from_codex_hooks_list(&fixture, REAL_WIRE_CAPTURED_AT_UNIX_MS)
+            .expect("official-shaped fixture must parse through the product boundary");
+    let event = |name: &str| {
+        catalog
+            .events
+            .iter()
+            .find(|event| event.runtime_event_name == name)
+            .unwrap_or_else(|| panic!("parsed event missing: {name}"))
+    };
+
+    let pre_tool_use = event("preToolUse");
+    assert_eq!(pre_tool_use.installed_count(), 2);
+    assert_eq!(pre_tool_use.active_count(), 1);
+    assert_eq!(pre_tool_use.needs_review_count(), 1);
+    assert!(matches!(
+        &pre_tool_use.handlers[0].handler_kind,
+        RuntimeHandlerKind::Command { command }
+            if command.starts_with("fixture-command --safe-long-argument=")
+    ));
+    assert!(matches!(
+        &pre_tool_use.handlers[1].handler_kind,
+        RuntimeHandlerKind::McpTool { server, tool }
+            if server == "fixture-server" && tool == "fixture-tool"
+    ));
+    assert!(!pre_tool_use.handlers[1].enabled);
+    assert!(pre_tool_use.handlers[1].needs_review);
+
+    let permission = event("permissionRequest");
+    assert!(matches!(
+        permission.handlers[0].handler_kind,
+        RuntimeHandlerKind::Prompt
+    ));
+    assert_eq!(permission.needs_review_count(), 1);
+    let managed = event("sessionStart");
+    assert!(matches!(
+        managed.handlers[0].handler_kind,
+        RuntimeHandlerKind::Agent
+    ));
+    assert!(managed.handlers[0].managed);
+    assert!(managed.handlers[0].enabled);
+
+    let interrupt = event("interrupt");
+    assert_eq!(interrupt.known_event, Some(KnownRuntimeEvent::Interrupt));
+    assert_eq!(interrupt.canonical_event, None);
+    let future = event("futureCodexEventV2");
+    assert_eq!(future.known_event, None);
+    assert_eq!(future.canonical_event, None);
+    assert_eq!(future.runtime_event_name, "futureCodexEventV2");
+    assert_eq!(future.description, None);
+
+    assert_eq!(
+        catalog
+            .events
+            .iter()
+            .map(|event| event.installed_count())
+            .sum::<usize>(),
+        fixture_handlers.len(),
+        "INSTALLED_COUNT_MATCHES_FIXTURE"
+    );
+    assert_eq!(
+        catalog
+            .events
+            .iter()
+            .map(|event| event.active_count())
+            .sum::<usize>(),
+        4,
+        "ACTIVE_COUNT_MATCHES_FIXTURE"
+    );
+    assert_eq!(
+        catalog
+            .events
+            .iter()
+            .map(|event| event.needs_review_count())
+            .sum::<usize>(),
+        2,
+        "REVIEW_COUNT_MATCHES_FIXTURE"
+    );
+    assert_eq!(catalog.issues.len(), 2);
+    assert!(catalog.events.iter().all(|event| {
+        event.runtime_context == "C:/hookstat-fixtures/codex-v0.151/project-alpha"
+    }));
+
+    let mut two_context_fixture = fixture.clone();
+    let mut second_context = fixture["result"]["data"][0].clone();
+    second_context["cwd"] = json!("C:/hookstat-fixtures/codex-v0.151/project-beta");
+    second_context["warnings"] = json!([]);
+    second_context["errors"] = json!([]);
+    let mut second_handler = fixture_handlers[0].clone();
+    second_handler["key"] = json!("fixture-beta:0:0");
+    second_handler["sourcePath"] =
+        json!("C:/hookstat-fixtures/codex-v0.151/project-beta/.codex/hooks.json");
+    second_context["hooks"] = json!([second_handler]);
+    two_context_fixture["result"]["data"]
+        .as_array_mut()
+        .expect("fixture data must be mutable")
+        .push(second_context);
+    let two_context_catalog = RuntimePresentationSnapshot::from_codex_hooks_list(
+        &two_context_fixture,
+        REAL_WIRE_CAPTURED_AT_UNIX_MS,
+    )
+    .expect("two official-shaped contexts must parse");
+    let pre_tool_use_contexts = two_context_catalog
+        .events
+        .iter()
+        .filter(|event| event.runtime_event_name == "preToolUse")
+        .map(|event| event.runtime_context.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        pre_tool_use_contexts,
+        BTreeSet::from([
+            "C:/hookstat-fixtures/codex-v0.151/project-alpha",
+            "C:/hookstat-fixtures/codex-v0.151/project-beta",
+        ]),
+        "CROSS_CONTEXT_SILENT_MERGE=false"
+    );
+
+    let cases = canonical_cases();
+    for case_id in [
+        "real-wire-events-wide-en-us",
+        "real-wire-events-wide-zh-cn",
+        "real-wire-handlers-narrow-zh-cn",
+        "real-wire-detail-wide-en-us",
+    ] {
+        let case = *cases
+            .iter()
+            .find(|case| case.id == case_id)
+            .unwrap_or_else(|| panic!("real-wire case missing: {case_id}"));
+        let app = app_for(case);
+        let rendered = render_frame(case, &app);
+        assert!(
+            validate_structural_invariants(case, &app, &rendered).is_empty(),
+            "real-wire structural invariants failed for {case_id}"
+        );
+        compare_baseline(case, &rendered.baseline).unwrap_or_else(|failure| panic!("{failure}"));
+    }
+
+    let en_case = *cases
+        .iter()
+        .find(|case| case.id == "real-wire-events-wide-en-us")
+        .unwrap();
+    let en_app = app_for(en_case);
+    let en_frame = render_frame(en_case, &en_app);
+    assert_eq!(
+        runtime_event_display_count(
+            ResolvedLocale::EnUs,
+            &en_app,
+            &en_frame.plain_text,
+            "preToolUse"
+        ),
+        1,
+        "PRE_TOOL_USE_DISPLAY_COUNT"
+    );
+    assert_eq!(
+        runtime_event_display_count(
+            ResolvedLocale::EnUs,
+            &en_app,
+            &en_frame.plain_text,
+            "interrupt"
+        ),
+        1,
+        "INTERRUPT_DISPLAY_COUNT"
+    );
+    assert_eq!(
+        runtime_event_display_count(
+            ResolvedLocale::EnUs,
+            &en_app,
+            &en_frame.plain_text,
+            "futureCodexEventV2"
+        ),
+        1,
+        "UNKNOWN_EVENT_DISPLAY_COUNT"
+    );
+    assert!(
+        normalize_for_leak_check(&en_frame.plain_text).contains(&normalize_for_leak_check(
+            known_runtime_event_description(ResolvedLocale::EnUs, KnownRuntimeEvent::PreToolUse)
+        ))
+    );
+
+    let zh_case = *cases
+        .iter()
+        .find(|case| case.id == "real-wire-events-wide-zh-cn")
+        .unwrap();
+    let zh_app = app_for(zh_case);
+    let zh_frame = render_frame(zh_case, &zh_app);
+    assert!(
+        normalize_for_leak_check(&zh_frame.plain_text).contains(&normalize_for_leak_check(
+            known_runtime_event_description(ResolvedLocale::ZhCn, KnownRuntimeEvent::PreToolUse)
+        ))
+    );
+    assert!(known_event_english_leaks(&zh_frame.plain_text).is_empty());
+
+    let mut navigation = real_wire_ready_app();
+    enter_hooks_events(&mut navigation);
+    assert!(navigation.hooks_events_active());
+    select_runtime_event(&mut navigation, "preToolUse");
+    navigation.handle(Command::Enter);
+    assert!(navigation.hooks_handlers_active());
+    assert_eq!(
+        navigation
+            .selected_runtime_event()
+            .expect("preToolUse must remain selected")
+            .handlers
+            .len(),
+        2
+    );
+    navigation.handle(Command::Enter);
+    assert!(navigation.runtime_hook_detail_active());
+    assert!(navigation.selected_runtime_handler().is_some());
+
+    let managed_detail = real_wire_managed_detail_app();
+    assert!(managed_detail.runtime_hook_detail_active());
+    assert!(
+        managed_detail
+            .selected_runtime_handler()
+            .expect("managed detail must retain selected handler")
+            .managed
+    );
+    let detail_case = *cases
+        .iter()
+        .find(|case| case.id == "real-wire-detail-wide-en-us")
+        .unwrap();
+    let detail_frame = render_frame(detail_case, &managed_detail);
+    let detail = normalize_for_leak_check(&detail_frame.plain_text);
+    let section_positions = [
+        MessageKey::SectionRuntimeConfiguration,
+        MessageKey::SectionReliabilitySummary,
+        MessageKey::SectionObservationHistory,
+        MessageKey::SectionIntelligence,
+    ]
+    .map(|key| {
+        detail
+            .find(&normalize_for_leak_check(t(ResolvedLocale::EnUs, key)))
+            .unwrap_or_else(|| panic!("detail section missing: {key:?}"))
+    });
+    assert!(section_positions.windows(2).all(|pair| pair[0] < pair[1]));
+
+    let zero_case = *cases
+        .iter()
+        .find(|case| case.id == "overview-zero-samples-standard-en-us")
+        .unwrap();
+    let zero_app = real_wire_zero_sample_app();
+    let zero_frame = render_frame(zero_case, &zero_app);
+    assert!(
+        validate_structural_invariants(zero_case, &zero_app, &zero_frame).is_empty(),
+        "real-wire zero-sample structural contract failed"
+    );
+    compare_baseline(zero_case, &zero_frame.baseline).unwrap_or_else(|failure| panic!("{failure}"));
+    assert!(
+        normalize_for_leak_check(&zero_frame.plain_text).contains(&normalize_for_leak_check(t(
+            ResolvedLocale::EnUs,
+            MessageKey::FieldMetricScope
+        )))
+    );
+}
+
+#[test]
 fn tui_visual_fixture_is_sanitized_and_uses_exact_wire_case() {
     let serialized = runtime_catalog_fixture().to_string();
     assert!(serialized.contains("\"eventName\":\"preToolUse\""));
@@ -1418,6 +2053,24 @@ fn tui_visual_fixture_is_sanitized_and_uses_exact_wire_case() {
         assert!(
             !serialized.contains(forbidden),
             "visual fixture contains forbidden private marker {forbidden}"
+        );
+    }
+
+    let real_wire = format!("{REAL_WIRE_FIXTURE_JSON}\n{REAL_WIRE_CONTRACT_JSON}");
+    for forbidden in [
+        "JerrySkywalker",
+        "C:/Users/",
+        "C:\\\\Users\\\\",
+        "V:/src/",
+        "V:\\\\src\\\\",
+        "raw prompt",
+        "tool payload",
+        "github_pat_",
+        "ghp_",
+    ] {
+        assert!(
+            !real_wire.contains(forbidden),
+            "real-wire fixture contains forbidden private marker {forbidden}"
         );
     }
 }

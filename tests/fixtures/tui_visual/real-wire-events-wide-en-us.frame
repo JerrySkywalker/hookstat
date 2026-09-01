@@ -1,0 +1,59 @@
+# hookstat-tui-frame-v1 id=real-wire-events-wide-en-us geometry=140x58 locale=en-US
+000|HookStat Reliability Center — ! Degraded                                                                                                    |
+001|────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+002|┌Sections───────────┐┌Hook catalog─────────────────────────────────────────────────────────────────────────────────────────────────────────┐|
+003|│  Overview         ││Event                  Installed   Active   Review   Health                   Description                            │|
+004|│> Hooks            ││futureCodexEventV2     1           1        0        Not admitted — No admitt —                                      │|
+005|│  Changes          ││Interrupt              1           1        0        Not admitted — No admitt Right before an interrupted turn is abo│|
+006|│  Diagnostics      ││Permission request     1           0        1        Not observed             When permission is requested           │|
+007|│  Settings         ││After compaction       0           0        0        Reliability unavailable  After context compaction               │|
+008|│                   ││After tool use         1           0        0        Not observed             After a tool executes                  │|
+009|│                   ││Before compaction      0           0        0        Reliability unavailable  Before context compaction              │|
+010|│                   ││Before tool use        2           1        1        Not observed             Before a tool executes                 │|
+011|│                   ││Session end            0           0        0        Reliability unavailable  Right before a session ends            │|
+012|│                   ││Session start          1           1        0        Not observed             When a new session starts              │|
+013|│                   ││Stop                   0           0        0        Reliability unavailable  Right before Codex ends its turn       │|
+014|│                   ││Subagent start         0           0        0        Reliability unavailable  When a subagent is created             │|
+015|│                   ││Subagent stop          0           0        0        Reliability unavailable  Right before a subagent ends its turn  │|
+016|│                   ││Prompt submit          0           0        0        Reliability unavailable  When the user submits a prompt         │|
+017|│                   ││                                                                                                                     │|
+018|│                   ││                                                                                                                     │|
+019|│                   ││                                                                                                                     │|
+020|│                   ││                                                                                                                     │|
+021|│                   ││                                                                                                                     │|
+022|│                   ││                                                                                                                     │|
+023|│                   ││                                                                                                                     │|
+024|│                   ││                                                                                                                     │|
+025|│                   ││                                                                                                                     │|
+026|│                   ││                                                                                                                     │|
+027|│                   ││                                                                                                                     │|
+028|│                   ││                                                                                                                     │|
+029|│                   ││                                                                                                                     │|
+030|│                   ││                                                                                                                     │|
+031|│                   ││                                                                                                                     │|
+032|│                   ││                                                                                                                     │|
+033|│                   ││                                                                                                                     │|
+034|│                   ││                                                                                                                     │|
+035|│                   ││                                                                                                                     │|
+036|│                   ││                                                                                                                     │|
+037|│                   ││                                                                                                                     │|
+038|│                   ││                                                                                                                     │|
+039|│                   ││                                                                                                                     │|
+040|│                   ││                                                                                                                     │|
+041|│                   ││                                                                                                                     │|
+042|│                   ││                                                                                                                     │|
+043|│                   ││                                                                                                                     │|
+044|│                   ││                                                                                                                     │|
+045|│                   ││                                                                                                                     │|
+046|│                   ││                                                                                                                     │|
+047|│                   ││                                                                                                                     │|
+048|│                   ││                                                                                                                     │|
+049|│                   ││                                                                                                                     │|
+050|│                   ││                                                                                                                     │|
+051|│                   ││                                                                                                                     │|
+052|│                   ││                                                                                                                     │|
+053|│                   ││                                                                                                                     │|
+054|│                   ││                                                                                                                     │|
+055|└───────────────────┘Runtime issues: Warning: Synthetic warning: one fixture handler requires review. · Error: Synthetic error: one fixture |
+056|↑↓ navigate  Enter open  Esc back  ? help  r refresh  q quit                                                                                |
+057|                                                                                                                                            |

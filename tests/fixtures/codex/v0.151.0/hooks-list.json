@@ -1,0 +1,150 @@
+{
+  "id": 45,
+  "result": {
+    "data": [
+      {
+        "cwd": "C:/hookstat-fixtures/codex-v0.151/project-alpha",
+        "warnings": [
+          "Synthetic warning: one fixture handler requires review."
+        ],
+        "errors": [
+          {
+            "path": "C:/hookstat-fixtures/codex-v0.151/unavailable/hooks.json",
+            "message": "Synthetic error: one fixture source is intentionally unavailable."
+          }
+        ],
+        "hooks": [
+          {
+            "key": "fixture:0:0",
+            "eventName": "preToolUse",
+            "handlerType": "command",
+            "command": "fixture-command --safe-long-argument=abcdefghijklmnopqrstuvwxyz0123456789 --mode=read-only",
+            "async": false,
+            "matcher": "^FixtureToolWithAnIntentionallyLongSyntheticName$",
+            "timeoutSec": 9,
+            "statusMessage": null,
+            "additionalContextLimit": 64,
+            "sourcePath": "C:/hookstat-fixtures/codex-v0.151/project-alpha/.codex/hooks.json",
+            "source": "project",
+            "pluginId": null,
+            "displayOrder": 0,
+            "enabled": true,
+            "isManaged": false,
+            "currentHash": "fixture-current-hash-0000",
+            "trustStatus": "trusted"
+          },
+          {
+            "key": "fixture:0:1",
+            "eventName": "preToolUse",
+            "handlerType": "mcpTool",
+            "server": "fixture-server",
+            "tool": "fixture-tool",
+            "matcher": "^FixtureMcpTool$",
+            "timeoutSec": 9,
+            "statusMessage": "Synthetic review required.",
+            "additionalContextLimit": null,
+            "sourcePath": "C:/hookstat-fixtures/codex-v0.151/project-alpha/.codex/hooks.json",
+            "source": "project",
+            "pluginId": "fixture-plugin",
+            "displayOrder": 1,
+            "enabled": false,
+            "isManaged": false,
+            "currentHash": "fixture-current-hash-0001",
+            "trustStatus": "untrusted"
+          },
+          {
+            "key": "fixture:1:0",
+            "eventName": "permissionRequest",
+            "handlerType": "prompt",
+            "matcher": null,
+            "timeoutSec": 9,
+            "statusMessage": null,
+            "additionalContextLimit": null,
+            "sourcePath": "C:/hookstat-fixtures/codex-v0.151/synthetic-user/hooks.json",
+            "source": "user",
+            "pluginId": null,
+            "displayOrder": 2,
+            "enabled": true,
+            "isManaged": false,
+            "currentHash": "fixture-current-hash-0002",
+            "trustStatus": "modified"
+          },
+          {
+            "key": "fixture:2:0",
+            "eventName": "sessionStart",
+            "handlerType": "agent",
+            "matcher": "^FixtureManagedAgentWithAnIntentionallyLongSyntheticMatcher$",
+            "timeoutSec": 9,
+            "statusMessage": null,
+            "additionalContextLimit": null,
+            "sourcePath": "C:/hookstat-fixtures/codex-v0.151/managed/very-long-synthetic-source/hooks.json",
+            "source": "mdm",
+            "pluginId": null,
+            "displayOrder": 3,
+            "enabled": true,
+            "isManaged": true,
+            "currentHash": "fixture-current-hash-0003",
+            "trustStatus": "managed"
+          },
+          {
+            "key": "fixture:3:0",
+            "eventName": "postToolUse",
+            "handlerType": "command",
+            "command": "fixture-disabled-post-tool-handler",
+            "async": false,
+            "matcher": null,
+            "timeoutSec": 9,
+            "statusMessage": null,
+            "additionalContextLimit": null,
+            "sourcePath": "C:/hookstat-fixtures/codex-v0.151/project-alpha/.codex/hooks.json",
+            "source": "project",
+            "pluginId": null,
+            "displayOrder": 4,
+            "enabled": false,
+            "isManaged": false,
+            "currentHash": "fixture-current-hash-0004",
+            "trustStatus": "trusted"
+          },
+          {
+            "key": "fixture:4:0",
+            "eventName": "interrupt",
+            "handlerType": "command",
+            "command": "fixture-interrupt-handler",
+            "async": false,
+            "matcher": null,
+            "timeoutSec": 9,
+            "statusMessage": null,
+            "additionalContextLimit": null,
+            "sourcePath": "C:/hookstat-fixtures/codex-v0.151/project-alpha/.codex/hooks.json",
+            "source": "project",
+            "pluginId": null,
+            "displayOrder": 5,
+            "enabled": true,
+            "isManaged": false,
+            "currentHash": "fixture-current-hash-0005",
+            "trustStatus": "trusted"
+          },
+          {
+            "key": "fixture:5:0",
+            "eventName": "futureCodexEventV2",
+            "handlerType": "command",
+            "command": "fixture-future-event-handler",
+            "async": false,
+            "matcher": null,
+            "timeoutSec": 9,
+            "statusMessage": null,
+            "additionalContextLimit": null,
+            "sourcePath": "C:/hookstat-fixtures/codex-v0.151/project-alpha/.codex/hooks.json",
+            "source": "project",
+            "pluginId": null,
+            "displayOrder": 6,
+            "enabled": true,
+            "isManaged": false,
+            "currentHash": "fixture-current-hash-0006",
+            "trustStatus": "trusted"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "contractVersion": 1,
+  "codexVersion": "0.151.0",
+  "codexTag": "rust-v0.151.0",
+  "codexSourceCommit": "78c290807ce710180111df227df3b7a4fe845452",
+  "fixture": "hooks-list.json",
+  "knownWireEventNames": [
+    "preToolUse",
+    "permissionRequest",
+    "postToolUse",
+    "preCompact",
+    "postCompact",
+    "sessionStart",
+    "sessionEnd",
+    "userPromptSubmit",
+    "subagentStart",
+    "subagentStop",
+    "stop",
+    "interrupt"
+  ],
+  "affectedGoldenFrames": [
+    "real-wire-events-wide-en-us",
+    "real-wire-events-wide-zh-cn",
+    "real-wire-handlers-narrow-zh-cn",
+    "real-wire-detail-wide-en-us"
+  ],
+  "deliberateUpdateRequirements": [
+    "sourcePin",
+    "wireFixture",
+    "knownMapping",
+    "affectedGoldenFrames"
+  ]
+}
