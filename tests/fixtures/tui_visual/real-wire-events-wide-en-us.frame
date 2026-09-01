@@ -3,7 +3,7 @@
 001|────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
 002|┌Sections───────────┐┌Hook catalog─────────────────────────────────────────────────────────────────────────────────────────────────────────┐|
 003|│  Overview         ││Event                  Installed   Active   Review   Health                   Description                            │|
-004|│> Hooks            ││futureCodexEventV2     1           1        0        Not admitted — No admitt Synthetic future event supplied verbati│|
+004|│> Hooks            ││futureCodexEventV2     1           1        0        Not admitted — No admitt —                                      │|
 005|│  Changes          ││Interrupt              1           1        0        Not admitted — No admitt Right before an interrupted turn is abo│|
 006|│  Diagnostics      ││Permission request     1           0        1        Not observed             When permission is requested           │|
 007|│  Settings         ││After compaction       0           0        0        Reliability unavailable  After context compaction               │|

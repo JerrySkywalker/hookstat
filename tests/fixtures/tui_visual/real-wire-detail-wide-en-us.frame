@@ -10,21 +10,21 @@
 008|│                   ││Trust: Managed                                                                                                       │|
 009|│                   ││Handler type: Agent                                                                                                  │|
 010|│                   ││Matcher: ^FixtureManagedAgentWithAnIntentionallyLongSyntheticMatcher$                                                │|
-011|│                   ││Source: managed · C:/hookstat-fixtures/codex-v0.151/managed/very-long-synthetic-source/hooks.json                    │|
+011|│                   ││Source: mdm · C:/hookstat-fixtures/codex-v0.151/managed/very-long-synthetic-source/hooks.json                        │|
 012|│                   ││Agent: Agent                                                                                                         │|
-013|│                   ││                                                                                                                     │|
-014|│                   ││Hook management                                                                                                      │|
-015|│                   ││Read-only: no verified external enable/disable route.                                                                │|
-016|│                   ││                                                                                                                     │|
-017|│                   ││Reliability summary                                                                                                  │|
-018|│                   ││Not observed                                                                                                         │|
-019|│                   ││                                                                                                                     │|
-020|│                   ││Observation history                                                                                                  │|
-021|│                   ││Reliability unavailable                                                                                              │|
-022|│                   ││                                                                                                                     │|
-023|│                   ││Reliability intelligence                                                                                             │|
-024|│                   ││Reliability unavailable                                                                                              │|
-025|│                   ││                                                                                                                     │|
+013|│                   ││Timeout: 9s                                                                                                          │|
+014|│                   ││                                                                                                                     │|
+015|│                   ││Hook management                                                                                                      │|
+016|│                   ││Read-only: no verified external enable/disable route.                                                                │|
+017|│                   ││                                                                                                                     │|
+018|│                   ││Reliability summary                                                                                                  │|
+019|│                   ││Not observed                                                                                                         │|
+020|│                   ││                                                                                                                     │|
+021|│                   ││Observation history                                                                                                  │|
+022|│                   ││Reliability unavailable                                                                                              │|
+023|│                   ││                                                                                                                     │|
+024|│                   ││Reliability intelligence                                                                                             │|
+025|│                   ││Reliability unavailable                                                                                              │|
 026|│                   ││                                                                                                                     │|
 027|│                   ││                                                                                                                     │|
 028|│                   ││                                                                                                                     │|

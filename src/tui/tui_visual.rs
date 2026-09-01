@@ -1559,9 +1559,159 @@ fn codex_v0151_real_wire_contract_is_pinned_offline_and_deliberate() {
     assert_eq!(pinned_wire_names, product_wire_names);
 
     let fixture = real_wire_fixture();
-    let hooks = fixture["result"]["data"][0]["hooks"]
+    assert_eq!(
+        fixture
+            .as_object()
+            .expect("official-shaped fixture response must be an object")
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["id", "result"])
+    );
+    assert!(fixture["id"].is_i64() || fixture["id"].is_u64());
+    assert_eq!(
+        fixture["result"]
+            .as_object()
+            .expect("official-shaped result must be an object")
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["data"])
+    );
+    let contexts = fixture["result"]["data"]
+        .as_array()
+        .expect("official-shaped fixture must contain context data");
+    assert_eq!(contexts.len(), 1);
+    let context = contexts[0]
+        .as_object()
+        .expect("official-shaped fixture context must be an object");
+    assert_eq!(
+        context.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        BTreeSet::from(["cwd", "errors", "hooks", "warnings"])
+    );
+    assert!(context["cwd"].is_string());
+    assert!(
+        context["warnings"]
+            .as_array()
+            .expect("v0.151.0 warnings must be an array")
+            .iter()
+            .all(Value::is_string),
+        "v0.151.0 warnings must be strings"
+    );
+    for error in context["errors"]
+        .as_array()
+        .expect("v0.151.0 errors must be an array")
+    {
+        let error = error
+            .as_object()
+            .expect("v0.151.0 errors must be path/message objects");
+        assert_eq!(
+            error.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            BTreeSet::from(["message", "path"])
+        );
+        assert!(error["path"].is_string());
+        assert!(error["message"].is_string());
+    }
+
+    let hooks = context["hooks"]
         .as_array()
         .expect("official-shaped fixture must contain hooks");
+    let common_fields = BTreeSet::from([
+        "additionalContextLimit",
+        "currentHash",
+        "displayOrder",
+        "enabled",
+        "eventName",
+        "handlerType",
+        "isManaged",
+        "key",
+        "matcher",
+        "pluginId",
+        "source",
+        "sourcePath",
+        "statusMessage",
+        "timeoutSec",
+        "trustStatus",
+    ]);
+    let valid_sources = BTreeSet::from([
+        "cloudManagedConfig",
+        "cloudRequirements",
+        "legacyManagedConfigFile",
+        "legacyManagedConfigMdm",
+        "mdm",
+        "plugin",
+        "project",
+        "sessionFlags",
+        "system",
+        "unknown",
+        "user",
+    ]);
+    let valid_trust_statuses = BTreeSet::from(["managed", "modified", "trusted", "untrusted"]);
+    for hook in hooks {
+        let hook = hook
+            .as_object()
+            .expect("v0.151.0 hook metadata must be an object");
+        let handler_type = hook["handlerType"]
+            .as_str()
+            .expect("v0.151.0 handlerType must be text");
+        let mut expected_fields = common_fields.clone();
+        match handler_type {
+            "command" => expected_fields.extend(["async", "command"]),
+            "mcpTool" => expected_fields.extend(["server", "tool"]),
+            "prompt" | "agent" => {}
+            other => panic!("unsupported v0.151.0 handlerType in pinned fixture: {other}"),
+        }
+        assert_eq!(
+            hook.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            expected_fields,
+            "pinned fixture must use the exact v0.151.0 fields for {handler_type}"
+        );
+        assert!(hook["key"].is_string());
+        assert!(hook["eventName"].is_string());
+        assert!(hook["matcher"].is_null() || hook["matcher"].is_string());
+        assert!(hook["timeoutSec"].is_u64());
+        assert!(hook["statusMessage"].is_null() || hook["statusMessage"].is_string());
+        assert!(
+            hook["additionalContextLimit"].is_null() || hook["additionalContextLimit"].is_u64()
+        );
+        assert!(hook["sourcePath"].is_string());
+        assert!(
+            valid_sources.contains(
+                hook["source"]
+                    .as_str()
+                    .expect("v0.151.0 source must be text")
+            )
+        );
+        assert!(hook["pluginId"].is_null() || hook["pluginId"].is_string());
+        assert!(hook["displayOrder"].is_i64() || hook["displayOrder"].is_u64());
+        assert!(hook["enabled"].is_boolean());
+        assert!(hook["isManaged"].is_boolean());
+        assert!(
+            hook["currentHash"]
+                .as_str()
+                .expect("v0.151.0 currentHash must be text")
+                .starts_with("fixture-current-hash-")
+        );
+        assert!(
+            valid_trust_statuses.contains(
+                hook["trustStatus"]
+                    .as_str()
+                    .expect("v0.151.0 trustStatus must be text")
+            )
+        );
+        match handler_type {
+            "command" => {
+                assert!(hook["command"].is_string());
+                assert!(hook["async"].is_boolean());
+            }
+            "mcpTool" => {
+                assert!(hook["server"].is_string());
+                assert!(hook["tool"].is_string());
+            }
+            "prompt" | "agent" => {}
+            _ => unreachable!(),
+        }
+    }
     let raw_event_names = hooks
         .iter()
         .map(|hook| {
@@ -1611,6 +1761,17 @@ fn codex_v0151_real_wire_contract_is_pinned_offline_and_deliberate() {
         !REAL_WIRE_FIXTURE_JSON.contains("http://") && !REAL_WIRE_FIXTURE_JSON.contains("https://"),
         "ordinary visual CI must consume only the committed fixture"
     );
+    for forbidden_legacy_shape in [
+        "\"mcp_tool\"",
+        "\"mcpServer\"",
+        "\"future_handler\"",
+        "\"eventDescription\"",
+    ] {
+        assert!(
+            !REAL_WIRE_FIXTURE_JSON.contains(forbidden_legacy_shape),
+            "pinned fixture contains non-v0.151.0 wire field {forbidden_legacy_shape}"
+        );
+    }
 }
 
 #[test]
@@ -1668,10 +1829,7 @@ fn codex_v0151_real_wire_reaches_events_handlers_detail_and_whole_frames() {
     assert_eq!(future.known_event, None);
     assert_eq!(future.canonical_event, None);
     assert_eq!(future.runtime_event_name, "futureCodexEventV2");
-    assert_eq!(
-        future.description.as_deref(),
-        Some("Synthetic future event supplied verbatim by the fixture.")
-    );
+    assert_eq!(future.description, None);
 
     assert_eq!(
         catalog
@@ -1907,7 +2065,6 @@ fn tui_visual_fixture_is_sanitized_and_uses_exact_wire_case() {
         "V:\\\\src\\\\",
         "raw prompt",
         "tool payload",
-        "currentHash",
         "github_pat_",
         "ghp_",
     ] {
