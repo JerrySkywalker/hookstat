@@ -11,47 +11,108 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::Path;
 
+/// Presentation identity for the exact Codex v0.151.0 runtime event surface.
+///
+/// This identity is deliberately independent from [`HookEvent`]. A runtime
+/// event can be known and localized before HookStat has admitted reliability
+/// semantics for it (notably `interrupt`).
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum KnownRuntimeEvent {
+    PreToolUse,
+    PermissionRequest,
+    PostToolUse,
+    PreCompact,
+    PostCompact,
+    SessionStart,
+    SessionEnd,
+    UserPromptSubmit,
+    SubagentStart,
+    SubagentStop,
+    Stop,
+    Interrupt,
+}
+
+impl KnownRuntimeEvent {
+    /// The exact camelCase spelling serialized by the pinned v0.151.0 wire
+    /// contract. Known aliases normalize to this value for presentation.
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::PreToolUse => "preToolUse",
+            Self::PermissionRequest => "permissionRequest",
+            Self::PostToolUse => "postToolUse",
+            Self::PreCompact => "preCompact",
+            Self::PostCompact => "postCompact",
+            Self::SessionStart => "sessionStart",
+            Self::SessionEnd => "sessionEnd",
+            Self::UserPromptSubmit => "userPromptSubmit",
+            Self::SubagentStart => "subagentStart",
+            Self::SubagentStop => "subagentStop",
+            Self::Stop => "stop",
+            Self::Interrupt => "interrupt",
+        }
+    }
+
+    /// Accepts exact v0.151.0 wire values and historical HookStat spellings
+    /// that may coexist with a live response during an in-memory refresh. Only
+    /// recognized values normalize; unknown runtime identities remain verbatim.
+    pub fn from_codex_wire_name(value: &str) -> Option<Self> {
+        match value {
+            "preToolUse" | "PreToolUse" | "pre_tool_use" => Some(Self::PreToolUse),
+            "permissionRequest" | "PermissionRequest" | "permission_request" => {
+                Some(Self::PermissionRequest)
+            }
+            "postToolUse" | "PostToolUse" | "post_tool_use" => Some(Self::PostToolUse),
+            "preCompact" | "PreCompact" | "pre_compact" => Some(Self::PreCompact),
+            "postCompact" | "PostCompact" | "post_compact" => Some(Self::PostCompact),
+            "sessionStart" | "SessionStart" | "session_start" => Some(Self::SessionStart),
+            "sessionEnd" | "SessionEnd" | "session_end" => Some(Self::SessionEnd),
+            "userPromptSubmit" | "UserPromptSubmit" | "user_prompt_submit" => {
+                Some(Self::UserPromptSubmit)
+            }
+            "subagentStart" | "SubagentStart" | "subagent_start" => Some(Self::SubagentStart),
+            "subagentStop" | "SubagentStop" | "subagent_stop" => Some(Self::SubagentStop),
+            "stop" | "Stop" => Some(Self::Stop),
+            "interrupt" | "Interrupt" => Some(Self::Interrupt),
+            _ => None,
+        }
+    }
+
+    pub const fn reliability_event(self) -> Option<HookEvent> {
+        match self {
+            Self::PreToolUse => Some(HookEvent::PreToolUse),
+            Self::PermissionRequest => Some(HookEvent::PermissionRequest),
+            Self::PostToolUse => Some(HookEvent::PostToolUse),
+            Self::PreCompact => Some(HookEvent::PreCompact),
+            Self::PostCompact => Some(HookEvent::PostCompact),
+            Self::SessionStart => Some(HookEvent::SessionStart),
+            Self::SessionEnd => Some(HookEvent::SessionEnd),
+            Self::UserPromptSubmit => Some(HookEvent::UserPromptSubmit),
+            Self::SubagentStart => Some(HookEvent::SubagentStart),
+            Self::SubagentStop => Some(HookEvent::SubagentStop),
+            Self::Stop => Some(HookEvent::Stop),
+            Self::Interrupt => None,
+        }
+    }
+}
+
 /// The exact Codex v0.151.0 event surface qualified by G40. `hooks/list`
 /// reports handlers, so a known event with zero current handlers needs an
 /// explicit empty descriptor to remain visible in the event catalog. Unknown
 /// names returned by the runtime are still added verbatim below.
-const PINNED_CODEX_EVENT_NAMES: &[&str] = &[
-    "PreToolUse",
-    "PermissionRequest",
-    "PostToolUse",
-    "PreCompact",
-    "PostCompact",
-    "SessionStart",
-    "SessionEnd",
-    "UserPromptSubmit",
-    "SubagentStart",
-    "SubagentStop",
-    "Stop",
-    "Interrupt",
+const PINNED_CODEX_EVENTS: &[KnownRuntimeEvent] = &[
+    KnownRuntimeEvent::PreToolUse,
+    KnownRuntimeEvent::PermissionRequest,
+    KnownRuntimeEvent::PostToolUse,
+    KnownRuntimeEvent::PreCompact,
+    KnownRuntimeEvent::PostCompact,
+    KnownRuntimeEvent::SessionStart,
+    KnownRuntimeEvent::SessionEnd,
+    KnownRuntimeEvent::UserPromptSubmit,
+    KnownRuntimeEvent::SubagentStart,
+    KnownRuntimeEvent::SubagentStop,
+    KnownRuntimeEvent::Stop,
+    KnownRuntimeEvent::Interrupt,
 ];
-
-/// Codex v0.151.0 derives these labels in its own `/hooks` browser instead of
-/// transporting them in `HookMetadata`. Keep the qualified copy local so the
-/// response remains the source of current installation state, while every
-/// pinned event retains its normal Human description even with zero handlers.
-/// Unknown events intentionally have no guessed description.
-fn pinned_codex_event_description(event_name: &str) -> Option<&'static str> {
-    match event_name {
-        "PreToolUse" => Some("Before a tool executes"),
-        "PermissionRequest" => Some("When permission is requested"),
-        "PostToolUse" => Some("After a tool executes"),
-        "PreCompact" => Some("Before context compaction"),
-        "PostCompact" => Some("After context compaction"),
-        "SessionStart" => Some("When a new session starts"),
-        "SessionEnd" => Some("Right before a session ends"),
-        "UserPromptSubmit" => Some("When the user submits a prompt"),
-        "SubagentStart" => Some("When a subagent is created"),
-        "SubagentStop" => Some("Right before a subagent ends its turn"),
-        "Stop" => Some("Right before Codex ends its turn"),
-        "Interrupt" => Some("Right before an interrupted turn is aborted"),
-        _ => None,
-    }
-}
 
 /// A local, in-memory representation of the current runtime hook catalog.
 ///
@@ -75,8 +136,15 @@ pub struct RuntimeEventPresentation {
     /// event. It is kept local so same-named events from distinct contexts are
     /// never merged into a fabricated single current state.
     pub runtime_context: String,
+    /// Canonical v0.151.0 camelCase wire spelling for a known event, or the
+    /// exact raw runtime spelling for an unknown future event.
     pub runtime_event_name: String,
+    pub known_event: Option<KnownRuntimeEvent>,
+    /// Optional reliability identity. This can be `None` even when
+    /// `known_event` is present.
     pub canonical_event: Option<HookEvent>,
+    /// Runtime-provided description for an unknown event only. Known event
+    /// descriptions are semantic locale resources selected during rendering.
     pub description: Option<String>,
     pub handlers: Vec<RuntimeHandlerPresentation>,
 }
@@ -317,14 +385,16 @@ impl RuntimePresentationSnapshot {
         let mut issues = Vec::new();
         for context in contexts {
             let context_name = text(context, "cwd").ok_or(RuntimeCatalogParseError)?;
-            for event_name in PINNED_CODEX_EVENT_NAMES {
+            for known_event in PINNED_CODEX_EVENTS {
+                let event_name = known_event.wire_name();
                 events
-                    .entry((context_name.to_owned(), (*event_name).to_owned()))
+                    .entry((context_name.to_owned(), event_name.to_owned()))
                     .or_insert_with(|| RuntimeEventPresentation {
                         runtime_context: context_name.to_owned(),
-                        runtime_event_name: (*event_name).to_owned(),
-                        canonical_event: canonical_event(event_name),
-                        description: pinned_codex_event_description(event_name).map(str::to_owned),
+                        runtime_event_name: event_name.to_owned(),
+                        known_event: Some(*known_event),
+                        canonical_event: known_event.reliability_event(),
+                        description: None,
                         handlers: Vec::new(),
                     });
             }
@@ -347,23 +417,31 @@ impl RuntimePresentationSnapshot {
                 .and_then(Value::as_array)
                 .ok_or(RuntimeCatalogParseError)?;
             for item in hooks {
-                let event_name = text(item, "eventName").ok_or(RuntimeCatalogParseError)?;
+                let raw_event_name = text(item, "eventName").ok_or(RuntimeCatalogParseError)?;
+                let known_event = KnownRuntimeEvent::from_codex_wire_name(raw_event_name);
+                let event_name = known_event
+                    .map(KnownRuntimeEvent::wire_name)
+                    .unwrap_or(raw_event_name);
                 let event = events
                     .entry((context_name.to_owned(), event_name.to_owned()))
                     .or_insert_with(|| RuntimeEventPresentation {
                         runtime_context: context_name.to_owned(),
                         runtime_event_name: event_name.to_owned(),
-                        canonical_event: canonical_event(event_name),
-                        description: text(item, "eventDescription")
-                            .or_else(|| text(item, "description"))
-                            .or_else(|| pinned_codex_event_description(event_name))
-                            .map(str::to_owned),
+                        known_event,
+                        canonical_event: known_event.and_then(KnownRuntimeEvent::reliability_event),
+                        description: known_event
+                            .is_none()
+                            .then(|| {
+                                text(item, "eventDescription")
+                                    .or_else(|| text(item, "description"))
+                                    .map(str::to_owned)
+                            })
+                            .flatten(),
                         handlers: Vec::new(),
                     });
-                if event.description.is_none() {
+                if event.known_event.is_none() && event.description.is_none() {
                     event.description = text(item, "eventDescription")
                         .or_else(|| text(item, "description"))
-                        .or_else(|| pinned_codex_event_description(event_name))
                         .map(str::to_owned);
                 }
                 event
@@ -610,10 +688,6 @@ fn resolve_join(
     }
 }
 
-fn canonical_event(value: &str) -> Option<HookEvent> {
-    crate::codex::parse_event(value)
-}
-
 fn parse_trust(value: Option<&str>, managed: bool) -> RuntimeTrust {
     if managed {
         return RuntimeTrust::Managed;
@@ -673,11 +747,11 @@ mod tests {
                 "warnings": ["synthetic warning"],
                 "errors": ["synthetic error"],
                 "hooks": [
-                    {"key":"fixture:0:0","eventName":"PreToolUse","handlerType":"command","command":"synthetic command --with-a-very-long-safe-argument","matcher":"^SyntheticTool$","source":"user","sourcePath":"C:/synthetic/hooks.json","enabled":true,"isManaged":false,"trustStatus":"trusted","async":false,"timeoutSec":9,"additionalContextLimit":64},
-                    {"key":"fixture:0:1","eventName":"PostToolUse","handlerType":"mcp_tool","mcpServer":"synthetic-server","mcpTool":"synthetic-tool","source":"project","sourcePath":"C:/synthetic/hooks.json","enabled":false,"isManaged":false,"trustStatus":"untrusted"},
-                    {"key":"fixture:0:2","eventName":"UserPromptSubmit","handlerType":"prompt","enabled":true,"isManaged":false,"trustStatus":"modified"},
-                    {"key":"fixture:0:3","eventName":"SubagentStart","handlerType":"agent","enabled":true,"isManaged":true,"trustStatus":"trusted"},
-                    {"key":"fixture:0:4","eventName":"Interrupt","handlerType":"command","command":"synthetic interrupt","enabled":true,"isManaged":false,"trustStatus":"trusted"},
+                    {"key":"fixture:0:0","eventName":"preToolUse","handlerType":"command","command":"synthetic command --with-a-very-long-safe-argument","matcher":"^SyntheticTool$","source":"user","sourcePath":"C:/synthetic/hooks.json","enabled":true,"isManaged":false,"trustStatus":"trusted","async":false,"timeoutSec":9,"additionalContextLimit":64},
+                    {"key":"fixture:0:1","eventName":"postToolUse","handlerType":"mcp_tool","mcpServer":"synthetic-server","mcpTool":"synthetic-tool","source":"project","sourcePath":"C:/synthetic/hooks.json","enabled":false,"isManaged":false,"trustStatus":"untrusted"},
+                    {"key":"fixture:0:2","eventName":"userPromptSubmit","handlerType":"prompt","enabled":true,"isManaged":false,"trustStatus":"modified"},
+                    {"key":"fixture:0:3","eventName":"subagentStart","handlerType":"agent","enabled":true,"isManaged":true,"trustStatus":"trusted"},
+                    {"key":"fixture:0:4","eventName":"interrupt","handlerType":"command","command":"synthetic interrupt","enabled":true,"isManaged":false,"trustStatus":"trusted"},
                     {"key":"fixture:0:5","eventName":"FutureRuntimeEvent","handlerType":"future_handler","enabled":true,"isManaged":false,"trustStatus":"trusted"}
                 ]
             }]}
@@ -741,11 +815,11 @@ mod tests {
     #[test]
     fn preserves_codex_human_fields_only_in_memory() {
         let snapshot = RuntimePresentationSnapshot::from_codex_hooks_list(&catalog(), 42).unwrap();
-        assert_eq!(snapshot.events.len(), PINNED_CODEX_EVENT_NAMES.len() + 1);
+        assert_eq!(snapshot.events.len(), PINNED_CODEX_EVENTS.len() + 1);
         assert_eq!(snapshot.issues.len(), 2);
-        let command = &event(&snapshot, "PreToolUse").handlers[0];
+        let command = &event(&snapshot, "preToolUse").handlers[0];
         assert_eq!(
-            event(&snapshot, "PreToolUse").runtime_context,
+            event(&snapshot, "preToolUse").runtime_context,
             "C:/synthetic/workspace"
         );
         assert_eq!(command.matcher.as_deref(), Some("^SyntheticTool$"));
@@ -774,37 +848,78 @@ mod tests {
             RuntimeHandlerKind::Command { .. }
         ));
         assert!(matches!(
-            event(&snapshot, "PostToolUse").handlers[0].handler_kind,
+            event(&snapshot, "postToolUse").handlers[0].handler_kind,
             RuntimeHandlerKind::McpTool { .. }
         ));
         assert!(matches!(
-            event(&snapshot, "UserPromptSubmit").handlers[0].handler_kind,
+            event(&snapshot, "userPromptSubmit").handlers[0].handler_kind,
             RuntimeHandlerKind::Prompt
         ));
         assert!(matches!(
-            event(&snapshot, "SubagentStart").handlers[0].handler_kind,
+            event(&snapshot, "subagentStart").handlers[0].handler_kind,
             RuntimeHandlerKind::Agent
         ));
-        assert!(event(&snapshot, "PostToolUse").handlers[0].needs_review);
-        assert!(event(&snapshot, "UserPromptSubmit").handlers[0].needs_review);
-        assert!(event(&snapshot, "SubagentStart").handlers[0].managed);
-        assert!(!event(&snapshot, "PostToolUse").handlers[0].enabled);
-        assert_eq!(event(&snapshot, "PreToolUse").installed_count(), 1);
+        assert!(event(&snapshot, "postToolUse").handlers[0].needs_review);
+        assert!(event(&snapshot, "userPromptSubmit").handlers[0].needs_review);
+        assert!(event(&snapshot, "subagentStart").handlers[0].managed);
+        assert!(!event(&snapshot, "postToolUse").handlers[0].enabled);
+        assert_eq!(event(&snapshot, "preToolUse").installed_count(), 1);
         assert_eq!(
-            event(&snapshot, "PreToolUse").description.as_deref(),
-            Some("Before a tool executes")
+            event(&snapshot, "preToolUse").known_event,
+            Some(KnownRuntimeEvent::PreToolUse)
         );
-        assert_eq!(event(&snapshot, "PreToolUse").active_count(), 1);
-        assert_eq!(event(&snapshot, "PostToolUse").active_count(), 0);
-        assert_eq!(event(&snapshot, "PostToolUse").needs_review_count(), 1);
-        let zero_handler = event(&snapshot, "SessionEnd");
+        assert_eq!(event(&snapshot, "preToolUse").description, None);
+        assert_eq!(event(&snapshot, "preToolUse").active_count(), 1);
+        assert_eq!(event(&snapshot, "postToolUse").active_count(), 0);
+        assert_eq!(event(&snapshot, "postToolUse").needs_review_count(), 1);
+        let zero_handler = event(&snapshot, "sessionEnd");
         assert_eq!(zero_handler.installed_count(), 0);
         assert_eq!(zero_handler.active_count(), 0);
         assert_eq!(zero_handler.needs_review_count(), 0);
         assert_eq!(
-            event(&snapshot, "Interrupt").description.as_deref(),
-            Some("Right before an interrupted turn is aborted")
+            event(&snapshot, "interrupt").known_event,
+            Some(KnownRuntimeEvent::Interrupt)
         );
+        assert_eq!(event(&snapshot, "interrupt").description, None);
+    }
+
+    #[test]
+    fn owner_observed_pinned_plus_real_wire_event_has_one_semantic_row() {
+        let snapshot = RuntimePresentationSnapshot::from_codex_hooks_list(&catalog(), 42).unwrap();
+        let pre_tool_use = snapshot
+            .events
+            .iter()
+            .filter(|event| {
+                event.runtime_context == "C:/synthetic/workspace"
+                    && event.known_event == Some(KnownRuntimeEvent::PreToolUse)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(pre_tool_use.len(), 1);
+        assert_eq!(pre_tool_use[0].runtime_event_name, "preToolUse");
+        assert_eq!(pre_tool_use[0].installed_count(), 1);
+    }
+
+    #[test]
+    fn same_context_known_casing_variants_share_presentation_identity() {
+        let mut response = catalog();
+        let mut legacy_alias = response["result"]["data"][0]["hooks"][0].clone();
+        legacy_alias["key"] = json!("fixture:0:6");
+        legacy_alias["eventName"] = json!("PreToolUse");
+        response["result"]["data"][0]["hooks"]
+            .as_array_mut()
+            .unwrap()
+            .push(legacy_alias);
+
+        let snapshot = RuntimePresentationSnapshot::from_codex_hooks_list(&response, 42).unwrap();
+        let rows = snapshot
+            .events
+            .iter()
+            .filter(|event| event.known_event == Some(KnownRuntimeEvent::PreToolUse))
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].runtime_context, "C:/synthetic/workspace");
+        assert_eq!(rows[0].runtime_event_name, "preToolUse");
+        assert_eq!(rows[0].installed_count(), 2);
     }
 
     #[test]
@@ -828,10 +943,10 @@ mod tests {
         let snapshot =
             RuntimePresentationSnapshot::from_codex_hooks_list(&not_required, 42).unwrap();
         assert!(matches!(
-            event(&snapshot, "PreToolUse").handlers[0].trust,
+            event(&snapshot, "preToolUse").handlers[0].trust,
             RuntimeTrust::Trusted
         ));
-        assert_eq!(event(&snapshot, "PreToolUse").active_count(), 1);
+        assert_eq!(event(&snapshot, "preToolUse").active_count(), 1);
     }
 
     #[test]
@@ -848,12 +963,9 @@ mod tests {
             }));
 
         let snapshot = RuntimePresentationSnapshot::from_codex_hooks_list(&response, 42).unwrap();
+        assert_eq!(snapshot.events.len(), PINNED_CODEX_EVENTS.len() * 2 + 1);
         assert_eq!(
-            snapshot.events.len(),
-            PINNED_CODEX_EVENT_NAMES.len() * 2 + 1
-        );
-        assert_eq!(
-            event_in_context(&snapshot, "C:/synthetic/second-workspace", "PreToolUse").handlers[0]
+            event_in_context(&snapshot, "C:/synthetic/second-workspace", "preToolUse").handlers[0]
                 .runtime_catalog_id,
             "fixture:1:0"
         );
@@ -862,8 +974,11 @@ mod tests {
     #[test]
     fn preserves_interrupt_and_future_event_without_canonical_reliability() {
         let snapshot = RuntimePresentationSnapshot::from_codex_hooks_list(&catalog(), 42).unwrap();
-        let interrupt = event(&snapshot, "Interrupt");
+        let interrupt = event(&snapshot, "interrupt");
         let future = event(&snapshot, "FutureRuntimeEvent");
+        assert_eq!(interrupt.known_event, Some(KnownRuntimeEvent::Interrupt));
+        assert_eq!(future.known_event, None);
+        assert_eq!(future.runtime_event_name, "FutureRuntimeEvent");
         assert_eq!(interrupt.canonical_event, None);
         assert_eq!(future.canonical_event, None);
         let joined = snapshot.join_reliability(&[]);
@@ -897,7 +1012,7 @@ mod tests {
     fn joins_from_current_catalog_through_admitted_handler_identity() {
         let snapshot = RuntimePresentationSnapshot::from_codex_hooks_list(&catalog(), 42).unwrap();
         let history = vec![
-            observed_identity(&snapshot, "PreToolUse"),
+            observed_identity(&snapshot, "preToolUse"),
             HistoricalHandlerIdentity {
                 handler_key: "historical-only".into(),
                 event: HookEvent::Stop,
@@ -922,7 +1037,7 @@ mod tests {
     #[test]
     fn historical_identity_requires_matching_event_and_handler_key() {
         let snapshot = RuntimePresentationSnapshot::from_codex_hooks_list(&catalog(), 42).unwrap();
-        let observed = observed_identity(&snapshot, "PreToolUse");
+        let observed = observed_identity(&snapshot, "preToolUse");
         let same_key_other_event = HistoricalHandlerIdentity {
             handler_key: observed.handler_key.clone(),
             event: HookEvent::Stop,
@@ -941,7 +1056,7 @@ mod tests {
         )
         .unwrap();
         let history = vec![
-            observed_identity(&snapshot, "PreToolUse"),
+            observed_identity(&snapshot, "preToolUse"),
             HistoricalHandlerIdentity {
                 handler_key: "historical-only".into(),
                 event: HookEvent::Stop,
@@ -974,7 +1089,7 @@ mod tests {
         assert_eq!(resource.explicit_refreshes(), 0);
         assert_eq!(resource.state(), RuntimeCatalogResourceState::Loading);
         let snapshot = RuntimePresentationSnapshot::from_codex_hooks_list(&catalog(), 42).unwrap();
-        let observed = observed_identity(&snapshot, "PreToolUse");
+        let observed = observed_identity(&snapshot, "preToolUse");
         resource.accepted(snapshot);
         resource.period_switched();
         assert_eq!(resource.state(), RuntimeCatalogResourceState::Ready);

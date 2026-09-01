@@ -1664,10 +1664,10 @@ mod tests {
                 "warnings":["synthetic warning"],
                 "errors":["synthetic error"],
                 "hooks":[
-                    {"key":"fixture:0:0","eventName":"PreToolUse","handlerType":"command","command":"synthetic command --long-safe-argument","matcher":"^SyntheticTool$","source":"user","sourcePath":"C:/synthetic/hooks.json","enabled":true,"isManaged":false,"trustStatus":"trusted","async":false},
-                    {"key":"fixture:0:1","eventName":"Interrupt","handlerType":"agent","source":"managed","enabled":true,"isManaged":true,"trustStatus":"trusted"},
+                    {"key":"fixture:0:0","eventName":"preToolUse","handlerType":"command","command":"synthetic command --long-safe-argument","matcher":"^SyntheticTool$","source":"user","sourcePath":"C:/synthetic/hooks.json","enabled":true,"isManaged":false,"trustStatus":"trusted","async":false},
+                    {"key":"fixture:0:1","eventName":"interrupt","handlerType":"agent","source":"managed","enabled":true,"isManaged":true,"trustStatus":"trusted"},
                     {"key":"fixture:0:2","eventName":"FutureRuntimeEvent","handlerType":"prompt","source":"project","enabled":false,"isManaged":false,"trustStatus":"modified"},
-                    {"key":"fixture:0:3","eventName":"Stop","handlerType":"command","command":"synthetic stop","enabled":true,"isManaged":false,"trustStatus":"trusted"}
+                    {"key":"fixture:0:3","eventName":"stop","handlerType":"command","command":"synthetic stop","enabled":true,"isManaged":false,"trustStatus":"trusted"}
                 ]
             }]}}),
             1_000,
@@ -1680,7 +1680,7 @@ mod tests {
         let handler = catalog
             .events
             .iter_mut()
-            .find(|event| event.runtime_event_name == "Stop")
+            .find(|event| event.runtime_event_name == "stop")
             .expect("synthetic event must exist")
             .handlers
             .first_mut()
@@ -1747,7 +1747,7 @@ mod tests {
         assert_eq!(
             app.selected_runtime_event()
                 .map(|event| event.runtime_event_name.as_str()),
-            Some("Interrupt")
+            Some("interrupt")
         );
         app.handle(Command::Enter);
         assert!(app.hooks_handlers_active());
@@ -2065,7 +2065,7 @@ mod tests {
 
     #[test]
     fn legacy_alias_edit_uses_the_historical_detail_even_after_runtime_navigation() {
-        let mut app = runtime_detail_app(matched_runtime_catalog(), "Stop", "fixture:0:3");
+        let mut app = runtime_detail_app(matched_runtime_catalog(), "stop", "fixture:0:3");
         let legacy_target = app
             .view_model()
             .expect("history must be loaded")
@@ -2146,7 +2146,7 @@ mod tests {
 
     #[test]
     fn runtime_identity_change_cancels_an_open_alias_draft_even_with_the_same_catalog_id() {
-        let mut app = runtime_detail_app(matched_runtime_catalog(), "Stop", "fixture:0:3");
+        let mut app = runtime_detail_app(matched_runtime_catalog(), "stop", "fixture:0:3");
         app.handle(Command::EditAlias);
         app.handle(Command::SearchInput('!'));
         assert!(app.alias_editing());
@@ -2155,7 +2155,7 @@ mod tests {
         let handler = refreshed
             .events
             .iter_mut()
-            .find(|event| event.runtime_event_name == "Stop")
+            .find(|event| event.runtime_event_name == "stop")
             .expect("synthetic event must exist")
             .handlers
             .first_mut()
@@ -2192,7 +2192,7 @@ mod tests {
 
     #[test]
     fn runtime_matched_alias_edit_captures_the_runtime_target_not_stale_history() {
-        let mut app = runtime_detail_app(matched_runtime_catalog(), "Stop", "fixture:0:3");
+        let mut app = runtime_detail_app(matched_runtime_catalog(), "stop", "fixture:0:3");
         let runtime_event = app
             .selected_runtime_event()
             .expect("runtime event must be selected")
@@ -2242,7 +2242,7 @@ mod tests {
 
     #[test]
     fn runtime_no_history_alias_edit_is_refused() {
-        let mut app = runtime_detail_app(runtime_catalog(), "PreToolUse", "fixture:0:0");
+        let mut app = runtime_detail_app(runtime_catalog(), "preToolUse", "fixture:0:0");
         app.handle(Command::EditAlias);
         assert!(!app.alias_editing());
     }
@@ -2253,13 +2253,13 @@ mod tests {
         let event = catalog
             .events
             .iter_mut()
-            .find(|event| event.runtime_event_name == "Stop")
+            .find(|event| event.runtime_event_name == "stop")
             .expect("synthetic event must exist");
         let mut duplicate = event.handlers[0].clone();
         duplicate.runtime_catalog_id = "fixture:0:3:ambiguous".to_owned();
         event.handlers.push(duplicate);
 
-        let mut app = runtime_detail_app(catalog, "Stop", "fixture:0:3");
+        let mut app = runtime_detail_app(catalog, "stop", "fixture:0:3");
         app.handle(Command::EditAlias);
         assert!(!app.alias_editing());
     }
@@ -2275,14 +2275,14 @@ mod tests {
     fn runtime_unavailable_alias_edit_is_refused() {
         let mut app = App::loading(TimeWindow::Last7Days);
         app.apply_runtime_catalog(matched_runtime_catalog());
-        show_runtime_detail(&mut app, "Stop", "fixture:0:3");
+        show_runtime_detail(&mut app, "stop", "fixture:0:3");
         app.handle(Command::EditAlias);
         assert!(!app.alias_editing());
     }
 
     #[test]
     fn runtime_catalog_selection_change_cancels_an_open_alias_draft() {
-        let mut app = runtime_detail_app(matched_runtime_catalog(), "Stop", "fixture:0:3");
+        let mut app = runtime_detail_app(matched_runtime_catalog(), "stop", "fixture:0:3");
         app.handle(Command::EditAlias);
         app.handle(Command::SearchInput('!'));
         assert!(app.alias_editing());
@@ -2291,7 +2291,7 @@ mod tests {
         let event = refreshed
             .events
             .iter_mut()
-            .find(|event| event.runtime_event_name == "Stop")
+            .find(|event| event.runtime_event_name == "stop")
             .expect("synthetic event must exist");
         event.handlers[0].runtime_catalog_id = "fixture:0:3:replacement".to_owned();
         event.handlers[0].reliability_handler_key = None;
@@ -2311,7 +2311,7 @@ mod tests {
 
     #[test]
     fn alias_save_error_keeps_the_exact_runtime_target_and_mutates_no_alias() {
-        let mut app = runtime_detail_app(matched_runtime_catalog(), "Stop", "fixture:0:3");
+        let mut app = runtime_detail_app(matched_runtime_catalog(), "stop", "fixture:0:3");
         let runtime_event = app
             .selected_runtime_event()
             .expect("runtime event must be selected")

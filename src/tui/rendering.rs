@@ -21,7 +21,8 @@ use super::localization::{
     LanguageState, MessageKey, ResolvedLocale, coverage_name, diagnostic_explanation,
     diagnostic_status_name, diagnostic_title, event_name, failure_rate_with_sample,
     fingerprint_name, health_name, intelligence_availability_name, interface_color_name,
-    interface_language_name, regression_name, runtime_name, t, terminal_status_name, window_name,
+    interface_language_name, known_runtime_event_description, known_runtime_event_name,
+    regression_name, runtime_name, t, terminal_status_name, window_name,
 };
 use super::state::ResourceState;
 use super::theme::{ColorRole, Theme, TypographyRole};
@@ -1027,6 +1028,11 @@ fn render_runtime_events(
     locale: ResolvedLocale,
     theme: Theme,
 ) {
+    let show_runtime_context = events.first().is_some_and(|first| {
+        events
+            .iter()
+            .any(|event| event.runtime_context != first.runtime_context)
+    });
     let mut notices = runtime_resource_notices(app, locale);
     let issue_text = issues
         .iter()
@@ -1043,8 +1049,9 @@ fn render_runtime_events(
         notices.push(issue_text);
     }
     let notice = notices.join(" · ");
-    if area.width < 88 {
-        let rows_per_viewport = usize::from(area.height.saturating_sub(4) / 5).max(1);
+    if area.width < if show_runtime_context { 120 } else { 88 } {
+        let event_height = if show_runtime_context { 6 } else { 5 };
+        let rows_per_viewport = usize::from(area.height.saturating_sub(4) / event_height).max(1);
         let (start, end) = visible_list_window(
             app.runtime_event_selection_index(),
             events.len(),
@@ -1062,8 +1069,17 @@ fn render_runtime_events(
                 } else {
                     " "
                 };
+                let context = if show_runtime_context {
+                    format!(
+                        "\n  {}: {}",
+                        t(locale, MessageKey::FieldRuntimeContext),
+                        event.runtime_context
+                    )
+                } else {
+                    String::new()
+                };
                 format!(
-                    "{marker} {}\n  {}: {} · {}: {} · {}: {}\n  {}: {}\n  {}",
+                    "{marker} {}{context}\n  {}: {} · {}: {} · {}: {}\n  {}: {}\n  {}",
                     runtime_event_name(locale, event),
                     t(locale, MessageKey::FieldInstalled),
                     event.installed_count(),
@@ -1073,7 +1089,7 @@ fn render_runtime_events(
                     event.needs_review_count(),
                     t(locale, MessageKey::FieldHealth),
                     runtime_event_health(locale, app, event),
-                    event.description.as_deref().unwrap_or("—"),
+                    runtime_event_description(locale, event),
                 )
             })
             .collect::<Vec<_>>()
@@ -1110,15 +1126,18 @@ fn render_runtime_events(
         );
         return;
     }
-    let header = Row::new([
-        t(locale, MessageKey::ColumnEvent),
+    let mut header_cells = vec![t(locale, MessageKey::ColumnEvent)];
+    if show_runtime_context {
+        header_cells.push(t(locale, MessageKey::FieldRuntimeContext));
+    }
+    header_cells.extend([
         t(locale, MessageKey::ColumnInstalled),
         t(locale, MessageKey::ColumnActive),
         t(locale, MessageKey::ColumnReview),
         t(locale, MessageKey::ColumnHealth),
         t(locale, MessageKey::ColumnDescription),
-    ])
-    .style(theme.typography_style(TypographyRole::SectionTitle));
+    ]);
+    let header = Row::new(header_cells).style(theme.typography_style(TypographyRole::SectionTitle));
     let rows_per_viewport = usize::from(area.height.saturating_sub(3)).max(1);
     let (start, end) = visible_list_window(
         app.runtime_event_selection_index(),
@@ -1135,29 +1154,33 @@ fn render_runtime_events(
         } else {
             theme.typography_style(TypographyRole::Value)
         };
-        Row::new([
-            Cell::from(runtime_event_name(locale, event)),
+        let mut cells = vec![Cell::from(runtime_event_name(locale, event))];
+        if show_runtime_context {
+            cells.push(Cell::from(event.runtime_context.clone()));
+        }
+        cells.extend([
             Cell::from(event.installed_count().to_string()),
             Cell::from(event.active_count().to_string()),
             Cell::from(event.needs_review_count().to_string()),
             Cell::from(runtime_event_health(locale, app, event)),
-            Cell::from(event.description.as_deref().unwrap_or("—")),
-        ])
-        .style(style)
+            Cell::from(runtime_event_description(locale, event)),
+        ]);
+        Row::new(cells).style(style)
     });
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(22),
-            Constraint::Length(11),
-            Constraint::Length(8),
-            Constraint::Length(8),
-            Constraint::Length(24),
-            Constraint::Min(24),
-        ],
-    )
-    .header(header)
-    .block(themed_block(t(locale, MessageKey::ViewHooks), theme));
+    let mut constraints = vec![Constraint::Length(22)];
+    if show_runtime_context {
+        constraints.push(Constraint::Length(24));
+    }
+    constraints.extend([
+        Constraint::Length(11),
+        Constraint::Length(8),
+        Constraint::Length(8),
+        Constraint::Length(24),
+        Constraint::Min(24),
+    ]);
+    let table = Table::new(rows, constraints)
+        .header(header)
+        .block(themed_block(t(locale, MessageKey::ViewHooks), theme));
     frame.render_widget(table, area);
     if !notice.is_empty() {
         render_notice(
@@ -1585,9 +1608,17 @@ fn render_runtime_hook_detail(
 
 fn runtime_event_name(locale: ResolvedLocale, event: &RuntimeEventPresentation) -> String {
     event
-        .canonical_event
-        .map(|event| event_name(locale, event).to_owned())
+        .known_event
+        .map(|event| known_runtime_event_name(locale, event).to_owned())
         .unwrap_or_else(|| event.runtime_event_name.clone())
+}
+
+fn runtime_event_description(locale: ResolvedLocale, event: &RuntimeEventPresentation) -> String {
+    event
+        .known_event
+        .map(|event| known_runtime_event_description(locale, event).to_owned())
+        .or_else(|| event.description.clone())
+        .unwrap_or_else(|| "—".to_owned())
 }
 
 fn runtime_handler_label(
@@ -2939,14 +2970,31 @@ mod tests {
                 "warnings":["synthetic catalog warning"],
                 "errors":["synthetic catalog error"],
                 "hooks":[
-                    {"key":"fixture:0:0","eventName":"PreToolUse","handlerType":"command","command":"synthetic command --very-long-safe-argument=1234567890 --another-safe-argument=abcdefghijklmnopqrstuvwxyz","matcher":"^SyntheticToolWithAnIntentionallyLongSafeName$","source":"C:/synthetic/very/long/source/hooks.json","sourcePath":"C:/synthetic/very/long/source/hooks.json","enabled":true,"isManaged":false,"trustStatus":"trusted","async":false,"timeoutSec":9,"additionalContextLimit":64},
-                    {"key":"fixture:0:1","eventName":"PostToolUse","handlerType":"mcp_tool","mcpServer":"synthetic-server","mcpTool":"synthetic-tool","source":"project","enabled":false,"isManaged":false,"trustStatus":"untrusted"},
-                    {"key":"fixture:0:2","eventName":"UserPromptSubmit","handlerType":"prompt","source":"user","enabled":true,"isManaged":false,"trustStatus":"modified"},
-                    {"key":"fixture:0:3","eventName":"SubagentStart","handlerType":"agent","source":"managed","enabled":true,"isManaged":true,"trustStatus":"trusted"},
-                    {"key":"fixture:0:4","eventName":"Interrupt","handlerType":"command","command":"synthetic interrupt","enabled":true,"isManaged":false,"trustStatus":"trusted"},
+                    {"key":"fixture:0:0","eventName":"preToolUse","handlerType":"command","command":"synthetic command --very-long-safe-argument=1234567890 --another-safe-argument=abcdefghijklmnopqrstuvwxyz","matcher":"^SyntheticToolWithAnIntentionallyLongSafeName$","source":"C:/synthetic/very/long/source/hooks.json","sourcePath":"C:/synthetic/very/long/source/hooks.json","enabled":true,"isManaged":false,"trustStatus":"trusted","async":false,"timeoutSec":9,"additionalContextLimit":64},
+                    {"key":"fixture:0:1","eventName":"postToolUse","handlerType":"mcp_tool","mcpServer":"synthetic-server","mcpTool":"synthetic-tool","source":"project","enabled":false,"isManaged":false,"trustStatus":"untrusted"},
+                    {"key":"fixture:0:2","eventName":"userPromptSubmit","handlerType":"prompt","source":"user","enabled":true,"isManaged":false,"trustStatus":"modified"},
+                    {"key":"fixture:0:3","eventName":"subagentStart","handlerType":"agent","source":"managed","enabled":true,"isManaged":true,"trustStatus":"trusted"},
+                    {"key":"fixture:0:4","eventName":"interrupt","handlerType":"command","command":"synthetic interrupt","enabled":true,"isManaged":false,"trustStatus":"trusted"},
                     {"key":"fixture:0:5","eventName":"FutureRuntimeEvent","handlerType":"future_handler","enabled":true,"isManaged":false,"trustStatus":"trusted"}
                 ]
             }]}}),
+            1_000,
+        )
+        .unwrap()
+    }
+
+    fn multi_context_catalog() -> crate::runtime_presentation::RuntimePresentationSnapshot {
+        crate::runtime_presentation::RuntimePresentationSnapshot::from_codex_hooks_list(
+            &json!({"result":{"data":[
+                {
+                    "cwd":"C:/synthetic/alpha",
+                    "hooks":[{"key":"alpha:0:0","eventName":"preToolUse","handlerType":"command","command":"alpha command","enabled":true,"isManaged":false,"trustStatus":"trusted"}]
+                },
+                {
+                    "cwd":"C:/synthetic/beta",
+                    "hooks":[{"key":"beta:0:0","eventName":"preToolUse","handlerType":"command","command":"beta command","enabled":true,"isManaged":false,"trustStatus":"trusted"}]
+                }
+            ]}}),
             1_000,
         )
         .unwrap()
@@ -2965,7 +3013,7 @@ mod tests {
         let event = catalog
             .events
             .iter()
-            .find(|event| event.runtime_event_name == "PreToolUse")
+            .find(|event| event.runtime_event_name == "preToolUse")
             .unwrap();
         let handler_key = event.handlers[0].reliability_handler_key.clone().unwrap();
         let value = HookInvocation {
@@ -3018,7 +3066,7 @@ mod tests {
         assert_eq!(
             app.selected_runtime_event()
                 .map(|event| event.runtime_event_name.as_str()),
-            Some("PreToolUse")
+            Some("preToolUse")
         );
         app
     }
@@ -3049,7 +3097,7 @@ mod tests {
             .map(|index| {
                 json!({
                     "key": format!("fixture:0:{index}"),
-                    "eventName": "PreToolUse",
+                    "eventName": "preToolUse",
                     "handlerType": "command",
                     "command": format!("handler-{index:02}"),
                     "enabled": true,
@@ -3170,11 +3218,17 @@ mod tests {
         assert!(events.contains("Session end"));
         assert!(events.contains("synthetic catalog warning"));
         assert!(events.contains("synthetic catalog error"));
+        assert!(!events.contains("Runtime context"));
 
         let chinese = rendered(app.clone(), ResolvedLocale::ZhCn, 140, 42);
         let chinese = chinese.replace(' ', "");
         assert!(chinese.contains("已安装"));
         assert!(chinese.contains("运行时问题"));
+        assert!(chinese.contains("工具执行前"));
+        assert!(chinese.contains("中断"));
+        assert!(chinese.contains("中断的轮次终止前"));
+        assert!(!chinese.contains("Beforeatoolexecutes"));
+        assert!(!chinese.contains("Rightbeforeaninterruptedturnisaborted"));
 
         for _ in 0..6 {
             app.handle(super::super::keymap::Command::Down);
@@ -3199,6 +3253,30 @@ mod tests {
         let narrow = rendered(app, ResolvedLocale::ZhCn, 44, 44).replace(' ', "");
         assert!(narrow.contains("运行时配置"));
         assert!(narrow.contains("可靠性摘要"));
+    }
+
+    #[test]
+    fn unexpected_multiple_runtime_contexts_are_visibly_disambiguated() {
+        let mut app = App::from_report(synthetic_fixture_report(1_000));
+        app.apply_runtime_catalog(multi_context_catalog());
+        app.handle(super::super::keymap::Command::Down);
+        app.handle(super::super::keymap::Command::Enter);
+
+        let alpha = rendered(app.clone(), ResolvedLocale::EnUs, 140, 58);
+        assert!(alpha.contains("Runtime context"));
+        assert!(alpha.contains("C:/synthetic/alpha"));
+
+        for _ in 0..12 {
+            app.handle(super::super::keymap::Command::Down);
+        }
+        let beta = rendered(app.clone(), ResolvedLocale::EnUs, 140, 58);
+        assert!(beta.contains("Runtime context"));
+        assert!(beta.contains("C:/synthetic/beta"));
+
+        let chinese = rendered(app, ResolvedLocale::ZhCn, 140, 58);
+        let chinese = chinese.replace(' ', "");
+        assert!(chinese.contains("运行时上下文"));
+        assert!(chinese.contains("C:/synthetic/beta"));
     }
 
     #[test]
@@ -3264,7 +3342,7 @@ mod tests {
         let event = mixed_catalog
             .events
             .iter_mut()
-            .find(|event| event.runtime_event_name == "PreToolUse")
+            .find(|event| event.runtime_event_name == "preToolUse")
             .unwrap();
         let mut unobserved = event.handlers[0].clone();
         unobserved.runtime_catalog_id = "fixture:0:unobserved".into();
@@ -3360,7 +3438,7 @@ mod tests {
         let event = fallback_catalog
             .events
             .iter_mut()
-            .find(|event| event.runtime_event_name == "PreToolUse")
+            .find(|event| event.runtime_event_name == "preToolUse")
             .unwrap();
         for handler in &mut event.handlers {
             handler.handler_kind = crate::runtime_presentation::RuntimeHandlerKind::Prompt;
