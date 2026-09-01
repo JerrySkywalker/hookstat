@@ -229,6 +229,12 @@ fn reference_producer_controlled_matrix_covers_one_five_ten_clients_and_ten_thou
     let temp = tempfile::tempdir().unwrap();
     let mut configuration = config(temp.path());
     configuration.ack_timeout = Duration::from_secs(5);
+    // The controlled matrix deliberately tolerates up to five seconds of
+    // scheduler contention per exchange. Keep the test host alive beyond that
+    // allowance so its shorter shared-fixture lease cannot stop the broker
+    // while clients are still exercising the matrix. This remains below the
+    // production default and does not relax the separate performance gate.
+    configuration.idle_timeout = Duration::from_secs(30);
     let host = BrokerHost::start(configuration).unwrap();
 
     let mut expected_frames = 0_u64;
