@@ -1,0 +1,101 @@
+{
+  "id": 45,
+  "result": {
+    "data": [
+      {
+        "cwd": "C:/hookstat-fixtures/codex-v0.151/project-alpha",
+        "warnings": [
+          "Synthetic warning: one fixture handler requires review."
+        ],
+        "errors": [
+          "Synthetic error: one fixture source is intentionally unavailable."
+        ],
+        "hooks": [
+          {
+            "key": "fixture:0:0",
+            "eventName": "preToolUse",
+            "handlerType": "command",
+            "command": "fixture-command --safe-long-argument=abcdefghijklmnopqrstuvwxyz0123456789 --mode=read-only",
+            "matcher": "^FixtureToolWithAnIntentionallyLongSyntheticName$",
+            "source": "project",
+            "sourcePath": "C:/hookstat-fixtures/codex-v0.151/project-alpha/.codex/hooks.json",
+            "enabled": true,
+            "isManaged": false,
+            "trustStatus": "trusted",
+            "async": false,
+            "timeoutSec": 9,
+            "additionalContextLimit": 64
+          },
+          {
+            "key": "fixture:0:1",
+            "eventName": "preToolUse",
+            "handlerType": "mcp_tool",
+            "mcpServer": "fixture-server",
+            "mcpTool": "fixture-tool",
+            "matcher": "^FixtureMcpTool$",
+            "source": "project",
+            "sourcePath": "C:/hookstat-fixtures/codex-v0.151/project-alpha/.codex/hooks.json",
+            "enabled": false,
+            "isManaged": false,
+            "trustStatus": "untrusted",
+            "async": true
+          },
+          {
+            "key": "fixture:1:0",
+            "eventName": "permissionRequest",
+            "handlerType": "prompt",
+            "source": "user",
+            "sourcePath": "C:/hookstat-fixtures/codex-v0.151/synthetic-user/hooks.json",
+            "enabled": true,
+            "isManaged": false,
+            "trustStatus": "modified"
+          },
+          {
+            "key": "fixture:2:0",
+            "eventName": "sessionStart",
+            "handlerType": "agent",
+            "matcher": "^FixtureManagedAgentWithAnIntentionallyLongSyntheticMatcher$",
+            "source": "managed",
+            "sourcePath": "C:/hookstat-fixtures/codex-v0.151/managed/very-long-synthetic-source/hooks.json",
+            "enabled": true,
+            "isManaged": true,
+            "trustStatus": "trusted"
+          },
+          {
+            "key": "fixture:3:0",
+            "eventName": "postToolUse",
+            "handlerType": "command",
+            "command": "fixture-disabled-post-tool-handler",
+            "source": "project",
+            "sourcePath": "C:/hookstat-fixtures/codex-v0.151/project-alpha/.codex/hooks.json",
+            "enabled": false,
+            "isManaged": false,
+            "trustStatus": "trusted"
+          },
+          {
+            "key": "fixture:4:0",
+            "eventName": "interrupt",
+            "handlerType": "command",
+            "command": "fixture-interrupt-handler",
+            "source": "project",
+            "sourcePath": "C:/hookstat-fixtures/codex-v0.151/project-alpha/.codex/hooks.json",
+            "enabled": true,
+            "isManaged": false,
+            "trustStatus": "trusted"
+          },
+          {
+            "key": "fixture:5:0",
+            "eventName": "futureCodexEventV2",
+            "eventDescription": "Synthetic future event supplied verbatim by the fixture.",
+            "handlerType": "future_handler",
+            "source": "project",
+            "sourcePath": "C:/hookstat-fixtures/codex-v0.151/project-alpha/.codex/hooks.json",
+            "enabled": true,
+            "isManaged": false,
+            "trustStatus": "trusted"
+          }
+        ]
+      }
+    ]
+  }
+}
