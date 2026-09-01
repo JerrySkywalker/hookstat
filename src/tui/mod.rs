@@ -16,6 +16,8 @@ mod rendering;
 mod state;
 mod terminal;
 mod theme;
+#[cfg(test)]
+mod tui_visual;
 mod view_model;
 mod widgets;
 

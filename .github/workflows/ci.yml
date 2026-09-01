@@ -47,6 +47,8 @@ jobs:
       run_rust_windows: ${{ steps.classify.outputs.run_rust_windows }}
       run_rust_ubuntu: ${{ steps.classify.outputs.run_rust_ubuntu }}
       lightweight_only: ${{ steps.classify.outputs.lightweight_only }}
+      tui_visual_sensitive: ${{ steps.classify.outputs.tui_visual_sensitive }}
+      run_tui_visual: ${{ steps.classify.outputs.run_tui_visual }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -90,7 +92,7 @@ jobs:
           # A frozen candidate is intentionally dispatched with this input.
           # It is a monotonic safety override: it can only widen validation.
           if ($eventName -eq 'workflow_dispatch' -and '${{ inputs.full_matrix }}' -eq 'true') {
-            foreach ($name in 'run_full_windows', 'run_full_ubuntu', 'run_rust_windows', 'run_rust_ubuntu') {
+            foreach ($name in 'run_full_windows', 'run_full_ubuntu', 'run_rust_windows', 'run_rust_ubuntu', 'run_tui_visual') {
               "$name=true" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Append -Encoding utf8
             }
             'CANDIDATE_FULL_MATRIX_OVERRIDE=true'
@@ -110,6 +112,69 @@ jobs:
       - name: Workflow structure sanity
         shell: pwsh
         run: pwsh ./scripts/ci/test-workflow-sanity.ps1
+
+  tui-visual:
+    name: tui-visual
+    if: ${{ always() }}
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Assert checkout SHA
+        shell: pwsh
+        run: |
+          $actual = (git rev-parse HEAD).Trim()
+          $expected = "${{ github.sha }}"
+          if ($actual -ne $expected) { throw "checkout SHA mismatch: actual=$actual expected=$expected" }
+
+      - name: Fail closed when classifier is incomplete
+        if: ${{ needs.changes.result != 'success' }}
+        shell: pwsh
+        run: throw 'changes job did not pass; refusing to satisfy the visual contract'
+
+      - name: Validate visual classifier outputs
+        if: ${{ needs.changes.result == 'success' }}
+        shell: pwsh
+        env:
+          CLASSIFIER_RUN_TUI_VISUAL: ${{ needs.changes.outputs.run_tui_visual }}
+          CLASSIFIER_BASE_SHA: ${{ needs.changes.outputs.base_sha }}
+          CLASSIFIER_HEAD_SHA: ${{ needs.changes.outputs.head_sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:CLASSIFIER_RUN_TUI_VISUAL -notin @('true', 'false')) {
+            throw "invalid run_tui_visual classifier output: '$($env:CLASSIFIER_RUN_TUI_VISUAL)'"
+          }
+          if ($env:CLASSIFIER_BASE_SHA -notmatch '^[0-9a-f]{40}$') {
+            throw 'visual classifier base SHA is missing or malformed'
+          }
+          if ($env:CLASSIFIER_HEAD_SHA -notmatch '^[0-9a-f]{40}$') {
+            throw 'visual classifier head SHA is missing or malformed'
+          }
+
+      - name: Non-visual diff validation
+        if: ${{ needs.changes.result == 'success' && needs.changes.outputs.run_tui_visual != 'true' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git diff --check '${{ needs.changes.outputs.base_sha }}' '${{ needs.changes.outputs.head_sha }}' --
+          if ($LASTEXITCODE -ne 0) { throw 'non-visual diff validation failed' }
+          'TUI_VISUAL_NOT_REQUIRED=true'
+
+      - name: Install pinned Rust toolchain
+        if: ${{ needs.changes.result == 'success' && needs.changes.outputs.run_tui_visual == 'true' }}
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup override set 1.97.1
+          rustc --version
+          cargo --version
+
+      - name: Check deterministic Ratatui cell frames
+        if: ${{ needs.changes.result == 'success' && needs.changes.outputs.run_tui_visual == 'true' }}
+        run: cargo test --locked --lib tui_visual -- --nocapture
 
   # Keep this job id and matrix values stable. Branch-protection contexts were
   # unprovable during the audit (HTTP 401), so CI / rust (windows-latest) and

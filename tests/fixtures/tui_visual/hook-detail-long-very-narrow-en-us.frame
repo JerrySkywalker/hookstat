@@ -1,0 +1,45 @@
+# hookstat-tui-frame-v1 id=hook-detail-long-very-narrow-en-us geometry=44x44 locale=en-US
+000|HookStat Reliability Center — ! Degraded    |
+001|────────────────────────────────────────────|
+002|┌Sections───────────┐┌Hook detail──────────┐|
+003|│  Overview         ││Runtime configuration│|
+004|│> Hooks            ││Event: Before tool   │|
+005|│  Changes          ││use                  │|
+006|│  Diagnostics      ││Enabled: true        │|
+007|│  Settings         ││Managed: false       │|
+008|│                   ││Needs review: false  │|
+009|│                   ││Trust: Trusted       │|
+010|│                   ││Handler type: Command│|
+011|│                   ││Matcher:             │|
+012|│                   ││^SyntheticToolWithAnI│|
+013|│                   ││ntentionallyLongSafeN│|
+014|│                   ││ame$                 │|
+015|│                   ││Source: project ·    │|
+016|│                   ││C:/synthetic/very/lon│|
+017|│                   ││g/source/hooks.json  │|
+018|│                   ││Command: synthetic   │|
+019|│                   ││command              │|
+020|│                   ││--very-long-safe-argu│|
+021|│                   ││ment=1234567890      │|
+022|│                   ││--another-safe-argume│|
+023|│                   ││nt=abcdefghijklmnopqr│|
+024|│                   ││stuvwxyz             │|
+025|│                   ││Mode: Sync           │|
+026|│                   ││Timeout: 9s          │|
+027|│                   ││Additional context:  │|
+028|│                   ││64                   │|
+029|│                   ││                     │|
+030|│                   ││Hook management      │|
+031|│                   ││Read-only: no        │|
+032|│                   ││verified external    │|
+033|│                   ││enable/disable route.│|
+034|│                   ││                     │|
+035|│                   ││Reliability summary  │|
+036|│                   ││Not observed         │|
+037|│                   ││                     │|
+038|│                   ││Observation history  │|
+039|│                   ││Reliability          │|
+040|│                   ││unavailable          │|
+041|└───────────────────┘└─────────────────────┘|
+042|PgUp/PgDn page  Esc back  ? help  r refresh |
+043|                                            |

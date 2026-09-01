@@ -1,0 +1,33 @@
+# hookstat-tui-frame-v1 id=overview-zero-samples-standard-en-us geometry=100x32 locale=en-US
+000|HookStat Reliability Center — ! No terminal samples                                                 |
+001|────────────────────────────────────────────────────────────────────────────────────────────────────|
+002|┌Sections───────────┐┌Runtime summary──────────────────────────────────────────────────────────────┐|
+003|│> Overview         ││Today | 24h | [7d] | 30d | All                                               │|
+004|│  Hooks            ││Metric scope: Selected Last 7 days, all revisions                            │|
+005|│  Changes          ││Runtime: Codex                                                               │|
+006|│  Diagnostics      ││Coverage: Partial — Some evidence is observed; terminal coverage is          │|
+007|│  Settings         ││incomplete.                                                                  │|
+008|│                   ││Total runs: 0                                                                │|
+009|│                   ││Failure rate: unavailable (0 terminal samples; no terminal samples)          │|
+010|│                   ││Health: ! No terminal samples                                                │|
+011|│                   ││                                                                             │|
+012|│                   │└─────────────────────────────────────────────────────────────────────────────┘|
+013|│                   │┌Risky hooks──────────────────────────────────────────────────────────────────┐|
+014|│                   ││No admitted receipt rows yet. This is not 0.00% healthy.                     │|
+015|│                   ││                                                                             │|
+016|│                   ││                                                                             │|
+017|│                   ││                                                                             │|
+018|│                   ││                                                                             │|
+019|│                   ││                                                                             │|
+020|│                   ││                                                                             │|
+021|│                   ││                                                                             │|
+022|│                   ││                                                                             │|
+023|│                   ││                                                                             │|
+024|│                   ││                                                                             │|
+025|│                   ││                                                                             │|
+026|│                   ││                                                                             │|
+027|│                   ││                                                                             │|
+028|│                   ││                                                                             │|
+029|└───────────────────┘└─────────────────────────────────────────────────────────────────────────────┘|
+030|↑↓ navigate  Enter open  ? help  r refresh  q quit                                                  |
+031|                                                                                                    |

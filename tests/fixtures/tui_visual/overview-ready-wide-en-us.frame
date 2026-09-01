@@ -1,0 +1,59 @@
+# hookstat-tui-frame-v1 id=overview-ready-wide-en-us geometry=140x58 locale=en-US
+000|HookStat Reliability Center — ! Degraded                                                                                                    |
+001|────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────|
+002|┌Sections───────────┐┌Runtime summary──────────────────────────────────────────────────────────────────────────────────────────────────────┐|
+003|│> Overview         ││Today | 24h | [7d] | 30d | All                                                                                       │|
+004|│  Hooks            ││Metric scope: Selected Last 7 days, all revisions                                                                    │|
+005|│  Changes          ││Runtime: Codex                                                                                                       │|
+006|│  Diagnostics      ││Coverage: Synthetic fixture — Synthetic fixture coverage; not live runtime evidence.                                 │|
+007|│  Settings         ││Total runs: 5                                                                                                        │|
+008|│                   ││Failure rate: 20.00% (n=5)                                                                                           │|
+009|│                   ││Health: ! Degraded                                                                                                   │|
+010|│                   ││                                                                                                                     │|
+011|│                   ││                                                                                                                     │|
+012|│                   │└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘|
+013|│                   │┌Risky hooks──────────────────────────────────────────────────────────────────────────────────────────────────────────┐|
+014|│                   ││> alpha                                                                                                              │|
+015|│                   ││Stop · Codex · 33.33% (n=3) · Insufficient history                                                                   │|
+016|│                   ││Risk: Guarded risk (38/100)                                                                                          │|
+017|│                   ││Coverage: Synthetic fixture — Synthetic fixture coverage; not live runtime evidence.                                 │|
+018|│                   ││Reason: observed execution failures in selected scope.                                                               │|
+019|│                   ││beta                                                                                                                 │|
+020|│                   ││Stop · Codex · 0.00% (n=2) · Insufficient history                                                                    │|
+021|│                   ││Risk: Low risk (15/100)                                                                                              │|
+022|│                   ││Coverage: Synthetic fixture — Synthetic fixture coverage; not live runtime evidence.                                 │|
+023|│                   ││Reason: no observed failures; terminal coverage is incomplete.                                                       │|
+024|│                   ││                                                                                                                     │|
+025|│                   ││                                                                                                                     │|
+026|│                   ││                                                                                                                     │|
+027|│                   ││                                                                                                                     │|
+028|│                   ││                                                                                                                     │|
+029|│                   ││                                                                                                                     │|
+030|│                   ││                                                                                                                     │|
+031|│                   ││                                                                                                                     │|
+032|│                   ││                                                                                                                     │|
+033|│                   ││                                                                                                                     │|
+034|│                   ││                                                                                                                     │|
+035|│                   ││                                                                                                                     │|
+036|│                   ││                                                                                                                     │|
+037|│                   ││                                                                                                                     │|
+038|│                   ││                                                                                                                     │|
+039|│                   ││                                                                                                                     │|
+040|│                   ││                                                                                                                     │|
+041|│                   ││                                                                                                                     │|
+042|│                   ││                                                                                                                     │|
+043|│                   ││                                                                                                                     │|
+044|│                   ││                                                                                                                     │|
+045|│                   ││                                                                                                                     │|
+046|│                   ││                                                                                                                     │|
+047|│                   ││                                                                                                                     │|
+048|│                   ││                                                                                                                     │|
+049|│                   ││                                                                                                                     │|
+050|│                   ││                                                                                                                     │|
+051|│                   ││                                                                                                                     │|
+052|│                   ││                                                                                                                     │|
+053|│                   ││                                                                                                                     │|
+054|│                   ││                                                                                                                     │|
+055|└───────────────────┘└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘|
+056|↑↓ navigate  Enter open  ? help  r refresh  q quit                                                                                          |
+057|                                                                                                                                            |

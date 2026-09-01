@@ -24,7 +24,7 @@ function Set-True {
 function Set-FullMatrix {
     param([Parameter(Mandatory = $true)][System.Collections.IDictionary]$State)
 
-    Set-True -State $State -Names @('RUN_FULL_WINDOWS', 'RUN_FULL_UBUNTU', 'RUN_RUST_WINDOWS', 'RUN_RUST_UBUNTU')
+    Set-True -State $State -Names @('RUN_FULL_WINDOWS', 'RUN_FULL_UBUNTU', 'RUN_RUST_WINDOWS', 'RUN_RUST_UBUNTU', 'RUN_TUI_VISUAL')
 }
 
 function Set-UnknownRisk {
@@ -47,11 +47,13 @@ $state = [ordered]@{
     PACKAGE_SURFACE_CHANGED    = $false
     PERFORMANCE_SURFACE_CHANGED = $false
     WORKFLOW_CHANGED           = $false
+    TUI_VISUAL_SENSITIVE       = $false
     UNKNOWN_RISK               = $false
     RUN_FULL_WINDOWS           = $false
     RUN_FULL_UBUNTU            = $false
     RUN_RUST_WINDOWS           = $false
     RUN_RUST_UBUNTU            = $false
+    RUN_TUI_VISUAL             = $false
     LIGHTWEIGHT_ONLY           = $false
     CHANGED_FILE_COUNT         = 0
 }
@@ -134,6 +136,12 @@ foreach ($path in $normalizedFiles) {
         continue
     }
 
+    if ($path -match '^scripts/tui/') {
+        Set-True -State $state -Names @('RISK_C', 'RISK_T', 'TUI_VISUAL_SENSITIVE', 'RUN_TUI_VISUAL')
+        $state.RUN_RUST_UBUNTU = $true
+        continue
+    }
+
     if ($path -match '^scripts/qualification/') {
         Set-True -State $state -Names @('RISK_R')
         Set-FullMatrix -State $state
@@ -179,7 +187,13 @@ foreach ($path in $normalizedFiles) {
     }
 
     if ($path -match '^src/tui/') {
-        Set-True -State $state -Names @('RISK_C', 'RISK_T')
+        Set-True -State $state -Names @('RISK_C', 'RISK_T', 'TUI_VISUAL_SENSITIVE', 'RUN_TUI_VISUAL')
+        $state.RUN_RUST_UBUNTU = $true
+        continue
+    }
+
+    if ($path -match '^src/(?:runtime_presentation|codex)\.rs$') {
+        Set-True -State $state -Names @('RISK_C', 'RISK_T', 'TUI_VISUAL_SENSITIVE', 'RUN_TUI_VISUAL')
         $state.RUN_RUST_UBUNTU = $true
         continue
     }
@@ -214,7 +228,7 @@ foreach ($path in $normalizedFiles) {
     }
 
     if ($path -match '^tests/.*(?:tui|render)') {
-        Set-True -State $state -Names @('RISK_C', 'RISK_T')
+        Set-True -State $state -Names @('RISK_C', 'RISK_T', 'TUI_VISUAL_SENSITIVE', 'RUN_TUI_VISUAL')
         $state.RUN_RUST_UBUNTU = $true
         continue
     }

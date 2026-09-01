@@ -90,15 +90,25 @@ pub fn render_shortcut_footer(
         // The shared contract's generic LocalList includes search/filter/sort
         // affordances. Current runtime catalog rows deliberately expose only
         // actions that are actually available at this local level.
-        format!(
-            "↑↓ {}  Enter {}  Esc {}  ? {}  r {}  q {}",
-            t(locale, MessageKey::FooterNavigate),
-            t(locale, MessageKey::FooterOpen),
-            t(locale, MessageKey::FooterBack),
-            t(locale, MessageKey::FooterHelp),
-            t(locale, MessageKey::FooterRefresh),
-            t(locale, MessageKey::FooterQuit),
-        )
+        if area.width < 64 {
+            format!(
+                "↑↓ {}  Enter {}  Esc {}  q {}",
+                t(locale, MessageKey::FooterNavigate),
+                t(locale, MessageKey::FooterOpen),
+                t(locale, MessageKey::FooterBack),
+                t(locale, MessageKey::FooterQuit),
+            )
+        } else {
+            format!(
+                "↑↓ {}  Enter {}  Esc {}  ? {}  r {}  q {}",
+                t(locale, MessageKey::FooterNavigate),
+                t(locale, MessageKey::FooterOpen),
+                t(locale, MessageKey::FooterBack),
+                t(locale, MessageKey::FooterHelp),
+                t(locale, MessageKey::FooterRefresh),
+                t(locale, MessageKey::FooterQuit),
+            )
+        }
     } else {
         let state = footer_state(app);
         format_footer(state, |action| footer_action_text(locale, action))
