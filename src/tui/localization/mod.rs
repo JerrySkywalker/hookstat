@@ -7,6 +7,7 @@ use crate::analytics::{
     FailureFingerprintKind, IntelligenceAvailability, RegressionClassification, TimeWindow,
 };
 use crate::domain::{EvidenceCoverage, HookEvent, Runtime, TerminalStatus};
+use crate::runtime_presentation::KnownRuntimeEvent;
 use crate::tui::view_model::{DiagnosticCheckId, DiagnosticStatus, Health, HookSort};
 use terminal_ui_contract::locale::{
     Locale as SharedLocale, LocaleInputs as SharedLocaleInputs, LocaleSource as SharedLocaleSource,
@@ -143,6 +144,7 @@ pub enum MessageKey {
     FieldMode,
     FieldTimeout,
     FieldAdditionalContext,
+    FieldRuntimeContext,
     FieldTrust,
     FieldNeedsReview,
     ValueSync,
@@ -267,6 +269,19 @@ pub enum MessageKey {
     EventStop,
     EventSubagentStart,
     EventSubagentStop,
+    EventInterrupt,
+    EventDescriptionPreToolUse,
+    EventDescriptionPermissionRequest,
+    EventDescriptionPostToolUse,
+    EventDescriptionPreCompact,
+    EventDescriptionPostCompact,
+    EventDescriptionSessionStart,
+    EventDescriptionSessionEnd,
+    EventDescriptionUserPromptSubmit,
+    EventDescriptionSubagentStart,
+    EventDescriptionSubagentStop,
+    EventDescriptionStop,
+    EventDescriptionInterrupt,
     TerminalCompleted,
     TerminalFailed,
     TerminalBlocked,
@@ -451,6 +466,7 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::FieldMode,
     MessageKey::FieldTimeout,
     MessageKey::FieldAdditionalContext,
+    MessageKey::FieldRuntimeContext,
     MessageKey::FieldTrust,
     MessageKey::FieldNeedsReview,
     MessageKey::ValueSync,
@@ -575,6 +591,19 @@ pub const ALL_MESSAGE_KEYS: &[MessageKey] = &[
     MessageKey::EventStop,
     MessageKey::EventSubagentStart,
     MessageKey::EventSubagentStop,
+    MessageKey::EventInterrupt,
+    MessageKey::EventDescriptionPreToolUse,
+    MessageKey::EventDescriptionPermissionRequest,
+    MessageKey::EventDescriptionPostToolUse,
+    MessageKey::EventDescriptionPreCompact,
+    MessageKey::EventDescriptionPostCompact,
+    MessageKey::EventDescriptionSessionStart,
+    MessageKey::EventDescriptionSessionEnd,
+    MessageKey::EventDescriptionUserPromptSubmit,
+    MessageKey::EventDescriptionSubagentStart,
+    MessageKey::EventDescriptionSubagentStop,
+    MessageKey::EventDescriptionStop,
+    MessageKey::EventDescriptionInterrupt,
     MessageKey::TerminalCompleted,
     MessageKey::TerminalFailed,
     MessageKey::TerminalBlocked,
@@ -753,6 +782,48 @@ pub const fn event_name(locale: ResolvedLocale, event: HookEvent) -> &'static st
         HookEvent::Stop => MessageKey::EventStop,
         HookEvent::SubagentStart => MessageKey::EventSubagentStart,
         HookEvent::SubagentStop => MessageKey::EventSubagentStop,
+    };
+    t(locale, key)
+}
+
+pub const fn known_runtime_event_name(
+    locale: ResolvedLocale,
+    event: KnownRuntimeEvent,
+) -> &'static str {
+    let key = match event {
+        KnownRuntimeEvent::SessionStart => MessageKey::EventSessionStart,
+        KnownRuntimeEvent::SessionEnd => MessageKey::EventSessionEnd,
+        KnownRuntimeEvent::UserPromptSubmit => MessageKey::EventUserPromptSubmit,
+        KnownRuntimeEvent::PreToolUse => MessageKey::EventPreToolUse,
+        KnownRuntimeEvent::PostToolUse => MessageKey::EventPostToolUse,
+        KnownRuntimeEvent::PermissionRequest => MessageKey::EventPermissionRequest,
+        KnownRuntimeEvent::PreCompact => MessageKey::EventPreCompact,
+        KnownRuntimeEvent::PostCompact => MessageKey::EventPostCompact,
+        KnownRuntimeEvent::Stop => MessageKey::EventStop,
+        KnownRuntimeEvent::SubagentStart => MessageKey::EventSubagentStart,
+        KnownRuntimeEvent::SubagentStop => MessageKey::EventSubagentStop,
+        KnownRuntimeEvent::Interrupt => MessageKey::EventInterrupt,
+    };
+    t(locale, key)
+}
+
+pub const fn known_runtime_event_description(
+    locale: ResolvedLocale,
+    event: KnownRuntimeEvent,
+) -> &'static str {
+    let key = match event {
+        KnownRuntimeEvent::PreToolUse => MessageKey::EventDescriptionPreToolUse,
+        KnownRuntimeEvent::PermissionRequest => MessageKey::EventDescriptionPermissionRequest,
+        KnownRuntimeEvent::PostToolUse => MessageKey::EventDescriptionPostToolUse,
+        KnownRuntimeEvent::PreCompact => MessageKey::EventDescriptionPreCompact,
+        KnownRuntimeEvent::PostCompact => MessageKey::EventDescriptionPostCompact,
+        KnownRuntimeEvent::SessionStart => MessageKey::EventDescriptionSessionStart,
+        KnownRuntimeEvent::SessionEnd => MessageKey::EventDescriptionSessionEnd,
+        KnownRuntimeEvent::UserPromptSubmit => MessageKey::EventDescriptionUserPromptSubmit,
+        KnownRuntimeEvent::SubagentStart => MessageKey::EventDescriptionSubagentStart,
+        KnownRuntimeEvent::SubagentStop => MessageKey::EventDescriptionSubagentStop,
+        KnownRuntimeEvent::Stop => MessageKey::EventDescriptionStop,
+        KnownRuntimeEvent::Interrupt => MessageKey::EventDescriptionInterrupt,
     };
     t(locale, key)
 }
@@ -1001,6 +1072,23 @@ mod tests {
             assert!(!t(ResolvedLocale::EnUs, *key).is_empty());
             assert!(!t(ResolvedLocale::ZhCn, *key).is_empty());
         }
+    }
+
+    #[test]
+    fn known_runtime_event_semantics_localize_without_reliability_identity() {
+        assert_eq!(KnownRuntimeEvent::Interrupt.reliability_event(), None);
+        assert_eq!(
+            known_runtime_event_name(ResolvedLocale::EnUs, KnownRuntimeEvent::Interrupt),
+            "Interrupt"
+        );
+        assert_eq!(
+            known_runtime_event_name(ResolvedLocale::ZhCn, KnownRuntimeEvent::Interrupt),
+            "中断"
+        );
+        assert_eq!(
+            known_runtime_event_description(ResolvedLocale::ZhCn, KnownRuntimeEvent::PreToolUse,),
+            "工具执行前"
+        );
     }
 
     #[test]
