@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$CandidateSha,
-    [string]$ExpectedVersion = '0.3.1',
+    [string]$ExpectedVersion = '0.4.0',
     [string]$RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path,
     [string]$RustToolchain = '1.97.1',
     [string]$OutputPath,
@@ -43,16 +43,24 @@ function Invoke-CheckedNative {
 
 $resolvedRoot = (Resolve-Path -LiteralPath $RepositoryRoot).Path
 $result = [ordered]@{
-    RELEASE_GATE_VERSION        = 1
+    RELEASE_GATE_VERSION        = 2
     CANDIDATE_SHA               = $CandidateSha
     VERSION                     = 'UNVERIFIED'
     PACKAGE                     = 'NOT_RUN'
     PUBLISH_DRY_RUN             = 'NOT_RUN'
     FRESH_INSTALL               = 'NOT_RUN'
-    UPGRADE_030_TO_031          = 'NOT_RUN'
+    UPGRADE_FROM_PUBLIC_BASELINE = 'NOT_RUN'
+    UPGRADE_031_TO_040          = 'NOT_RUN'
+    LEDGER_PRESERVED             = 'NOT_RUN'
     LEGACY_EVIDENCE_PRESERVED   = 'NOT_RUN'
+    PREFERENCES_PRESERVED        = 'NOT_RUN'
+    RUNTIME_PRESENTATION_PERSISTED = 'UNVERIFIED'
     REPORT_SMOKE                = 'NOT_RUN'
     DOCTOR_SMOKE                = 'NOT_RUN'
+    TUI_DETERMINISTIC_TESTS      = 'NOT_RUN'
+    TUI_GOLDEN_BASELINES         = 'NOT_RUN'
+    TUI_STRUCTURAL_INVARIANTS    = 'NOT_RUN'
+    REAL_WIRE_TO_FRAME_E2E       = 'NOT_RUN'
     OVERALL                     = 'FAIL'
 }
 $tempRoot = [System.IO.Path]::GetTempPath()
@@ -98,13 +106,17 @@ try {
 
     $packageScript = Join-Path $resolvedRoot 'scripts/release/verify-package.ps1'
     $packageOutput = Invoke-CheckedNative -FailureMessage 'existing package verification failed' -Command {
-        & pwsh -NoProfile -File $packageScript -RepositoryRoot $resolvedRoot -RustToolchain $RustToolchain
+        & pwsh -NoProfile -File $packageScript -RepositoryRoot $resolvedRoot -RustToolchain $RustToolchain -ExpectedVersion $ExpectedVersion
     }
     $packageText = $packageOutput -join "`n"
     foreach ($required in @(
         'PACKAGE_ARCHIVE_SELF_CONTAINED=true',
         'FRESH_INSTALL_REQUIRED_PACKAGED_BINARIES=true',
-        'FRESH_INSTALL_TRANSPARENT_SHIM_ADMISSION=qualified_not_admitted_performance'
+        'FRESH_INSTALL_TRANSPARENT_SHIM_ADMISSION=qualified_not_admitted_performance',
+        "FRESH_INSTALL_VERSION=$ExpectedVersion",
+        'FRESH_INSTALL_REPORT_SMOKE=true',
+        'FRESH_INSTALL_DOCTOR_SMOKE=true',
+        'FRESH_INSTALL_TUI_FRAME_SMOKE=true'
     )) {
         if ($packageText -notmatch [regex]::Escape($required)) {
             throw 'existing package verification omitted a required receipt field'
@@ -125,35 +137,39 @@ try {
             & pwsh -NoProfile -File $upgradeScript -CandidateSha $actualSha -RepositoryRoot $resolvedRoot -RustToolchain $RustToolchain -OutputPath $upgradeReceipt
         }
         $upgrade = Get-Content -LiteralPath $upgradeReceipt -Raw | ConvertFrom-Json
-        if ($upgrade.OVERALL -ne 'PASS' -or $upgrade.UPGRADE_030_TO_031 -ne 'PASS') {
+        if ($upgrade.OVERALL -ne 'PASS' -or $upgrade.UPGRADE_031_TO_040 -ne 'PASS') {
             throw 'upgrade fixture did not produce a passing receipt'
         }
         foreach ($field in @(
-            'LEGACY_LEDGER_PRESERVED',
-            'LEGACY_RECEIPT_HISTORY_PRESERVED',
-            'COMPLETED_EVIDENCE_PRESERVED',
-            'FAILED_EVIDENCE_PRESERVED',
-            'INCOMPLETE_EVIDENCE_PRESERVED',
-            'ALIASES_PRESERVED',
-            'REVISION_EPOCHS_PRESERVED',
-            'INTERFACE_PREFERENCES_PRESERVED',
-            'V030_PUBLIC_BINARY',
-            'V030_RECEIPT_SPOOL_RECONCILED',
-            'V030_RECEIPT_JOURNAL_PRESERVED',
+            'LEDGER_PRESERVED',
+            'LEGACY_EVIDENCE_PRESERVED',
+            'PREFERENCES_PRESERVED',
+            'V031_PUBLIC_BINARY',
+            'V031_RECEIPT_SPOOL_RECONCILED',
+            'V031_RECEIPT_JOURNAL_PRESERVED',
             'CANDIDATE_RECEIPT_HISTORY_PRESERVED'
         )) {
             if ($upgrade.$field -ne $true) {
                 throw "upgrade fixture did not prove $field"
             }
         }
-        $result.UPGRADE_030_TO_031 = 'PASS'
+        if ($upgrade.RUNTIME_PRESENTATION_PERSISTED -ne $false) {
+            throw 'upgrade fixture did not prove runtime presentation remains ephemeral'
+        }
+        $result.UPGRADE_031_TO_040 = 'PASS'
+        $result.UPGRADE_FROM_PUBLIC_BASELINE = 'PASS'
+        $result.LEDGER_PRESERVED = 'PASS'
         $result.LEGACY_EVIDENCE_PRESERVED = 'PASS'
+        $result.PREFERENCES_PRESERVED = 'PASS'
+        $result.RUNTIME_PRESENTATION_PERSISTED = 'false'
 
-        # These disposable CLI fixtures exercise the candidate report and doctor
-        # commands without opening Owner data or recording raw command output.
-        Invoke-CheckedNative -FailureMessage 'candidate report/doctor smoke failed' -Command {
-            & rustup run $RustToolchain cargo test --locked --test diagnostics_e2e
+        Invoke-CheckedNative -FailureMessage 'deterministic TUI visual and real-wire gate failed' -Command {
+            & rustup run $RustToolchain cargo test --locked --lib tui_visual -- --nocapture
         } | Out-Null
+        $result.TUI_DETERMINISTIC_TESTS = 'PASS'
+        $result.TUI_GOLDEN_BASELINES = 'PASS'
+        $result.TUI_STRUCTURAL_INVARIANTS = 'PASS'
+        $result.REAL_WIRE_TO_FRAME_E2E = 'PASS'
         $result.REPORT_SMOKE = 'PASS'
         $result.DOCTOR_SMOKE = 'PASS'
     }

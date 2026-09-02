@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.4.0 – Hooks Control Center (release-ready; publication pending)
+
+HookStat v0.4.0 is the prepared release candidate. It is not yet a crates.io
+publication, public tag, or GitHub Release; v0.3.1 remains the public upgrade
+baseline until explicit Owner publication authorization.
+
+### Current runtime and reliability presentation
+
+- adds the Codex-first Hooks Control Center with Events → Handlers → Detail,
+  current `hooks/list` information parity, localized known events, visible
+  unknown runtime events, and first-class Interrupt presentation;
+- establishes Runtime Truth First, Reliability Second: current runtime state is
+  shown independently from admitted reliability history, with distinct
+  installed-but-unobserved and historical-not-installed states;
+- adds explicit metric scope, Human time, sample denominators, coverage and
+  risk explanations, while preserving truthful NoHistory/NOT_ADMITTED and
+  never rendering zero samples as healthy percentages.
+
+### Release integrity and boundaries
+
+- retains the 30-frame deterministic TUI visual-regression matrix and the
+  offline pinned Codex v0.151 real-wire parser-to-final-frame contract;
+- keeps runtime command/source/matcher/context material ephemeral in memory,
+  outside ledger, report, diagnostics export, and telemetry;
+- retains `WRITE_PARITY=UPSTREAM_UNAVAILABLE`: read parity does not authorize
+  configuration guessing, and experimental runtimes remain non-production.
+
 ## 0.3.1 – HSIP Infrastructure & Windows Hardening
 
 HookStat v0.3.1 is the current public release. This entry records the

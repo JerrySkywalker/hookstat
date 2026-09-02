@@ -2,6 +2,7 @@
 param(
     [string]$RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path,
     [string]$RustToolchain = '1.97.1',
+    [string]$ExpectedVersion = '0.4.0',
     [switch]$KeepLab
 )
 
@@ -12,6 +13,7 @@ $lab = Join-Path $tempRoot ('hookstat-package-verify-' + [guid]::NewGuid().ToStr
 $target = Join-Path $lab 'target'
 $unpacked = Join-Path $lab 'unpacked'
 $installRoot = Join-Path $lab 'install-root'
+$freshDataRoot = Join-Path $lab 'fresh-data'
 
 function Invoke-Cargo {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
@@ -23,7 +25,7 @@ function Invoke-Cargo {
 }
 
 try {
-    New-Item -ItemType Directory -Path $lab, $target, $unpacked | Out-Null
+    New-Item -ItemType Directory -Path $lab, $target, $unpacked, $freshDataRoot | Out-Null
     $env:CARGO_TARGET_DIR = $target
     $env:CARGO_BUILD_JOBS = '1'
     $env:RUSTFLAGS = '-C debuginfo=0'
@@ -106,8 +108,33 @@ try {
         throw 'fresh-installed transparent shim did not report its non-production admission'
     }
 
+    $hookstat = Join-Path $installRoot ("bin/hookstat{0}" -f $extension)
+    $version = @(& $hookstat --version)
+    if ($LASTEXITCODE -ne 0 -or ($version -join "`n").Trim() -ne "hookstat $ExpectedVersion") {
+        throw "fresh-installed HookStat version did not equal $ExpectedVersion"
+    }
+    $report = @(& $hookstat report --read-only --json --data-root $freshDataRoot)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace(($report -join "`n"))) {
+        throw 'fresh-installed HookStat report smoke failed'
+    }
+    $doctor = @(& $hookstat doctor --json --data-root $freshDataRoot)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace(($doctor -join "`n"))) {
+        throw 'fresh-installed HookStat doctor smoke failed'
+    }
+    # The ordinary TUI needs an interactive terminal. This deterministic
+    # packaged frame smoke exercises the same rendered home frame without
+    # connecting to Owner data or depending on terminal input.
+    $tuiFrame = @(& $hookstat preview-fixture)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace(($tuiFrame -join "`n"))) {
+        throw 'fresh-installed HookStat deterministic TUI frame smoke failed'
+    }
+
     'PACKAGE_ARCHIVE_SELF_CONTAINED=true'
     'FRESH_INSTALL_REQUIRED_PACKAGED_BINARIES=true'
+    "FRESH_INSTALL_VERSION=$ExpectedVersion"
+    'FRESH_INSTALL_REPORT_SMOKE=true'
+    'FRESH_INSTALL_DOCTOR_SMOKE=true'
+    'FRESH_INSTALL_TUI_FRAME_SMOKE=true'
     'FRESH_INSTALL_TRANSPARENT_SHIM_ADMISSION=qualified_not_admitted_performance'
     'FRESH_INSTALL_TRANSPARENT_SHIM_PRODUCTION_ADMITTED=false'
     "PACKAGE_SOURCE_GIT_HEAD=$sourceHead"

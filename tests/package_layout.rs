@@ -36,7 +36,7 @@ fn public_package_owns_runtime_and_retained_g36_binaries() {
 }
 
 #[test]
-fn packaged_transparent_shim_is_explicitly_non_production_for_v031() {
+fn packaged_transparent_shim_is_explicitly_non_production_for_v040() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let admission = source(root.join("src/admission.rs"));
     let shim_binary = source(root.join("src/bin/hookstat_hook.rs"));
@@ -44,7 +44,7 @@ fn packaged_transparent_shim_is_explicitly_non_production_for_v031() {
     assert!(admission.contains("V031_TRANSPARENT_SHIM_ADMISSION"));
     assert!(admission.contains("QualifiedNotAdmittedPerformance"));
     assert!(shim_binary.contains("--admission-status"));
-    assert!(shim_binary.contains("not production activated for v0.3.1"));
+    assert!(shim_binary.contains("not production activated for v0.4.0"));
 }
 
 #[test]
