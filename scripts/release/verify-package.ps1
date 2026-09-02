@@ -3,6 +3,8 @@ param(
     [string]$RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path,
     [string]$RustToolchain = '1.97.1',
     [string]$ExpectedVersion = '0.4.0',
+    [string]$CargoHome,
+    [switch]$IsolationProbeOnly,
     [switch]$KeepLab
 )
 
@@ -14,6 +16,22 @@ $target = Join-Path $lab 'target'
 $unpacked = Join-Path $lab 'unpacked'
 $installRoot = Join-Path $lab 'install-root'
 $freshDataRoot = Join-Path $lab 'fresh-data'
+$requestedCargoHome = if ([string]::IsNullOrWhiteSpace($CargoHome)) {
+    [System.IO.Path]::GetFullPath((Join-Path $lab 'cargo-home'))
+}
+else {
+    [System.IO.Path]::GetFullPath($CargoHome)
+}
+$ownerCargoHome = [System.IO.Path]::GetFullPath(
+    (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo')
+)
+
+if ($requestedCargoHome.Equals($ownerCargoHome, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw 'CargoHome must be a disposable lab path, not the Owner default Cargo home'
+}
+if (Test-Path -LiteralPath $requestedCargoHome) {
+    throw 'CargoHome must not already exist; the verifier creates and owns its disposable Cargo home'
+}
 
 function Invoke-Cargo {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
@@ -25,12 +43,21 @@ function Invoke-Cargo {
 }
 
 try {
-    New-Item -ItemType Directory -Path $lab, $target, $unpacked, $freshDataRoot | Out-Null
+    New-Item -ItemType Directory -Path $lab, $target, $unpacked, $freshDataRoot, $requestedCargoHome | Out-Null
+    $resolvedCargoHome = (Resolve-Path -LiteralPath $requestedCargoHome).Path
     $env:CARGO_TARGET_DIR = $target
     $env:CARGO_BUILD_JOBS = '1'
     $env:RUSTFLAGS = '-C debuginfo=0'
     Remove-Item Env:RUSTUP_HOME -ErrorAction SilentlyContinue
-    Remove-Item Env:CARGO_HOME -ErrorAction SilentlyContinue
+    # Never fall back to the Owner/default Cargo home. The caller may supply a
+    # fresh lab path; standalone verification creates its own lab-local home.
+    $env:CARGO_HOME = $resolvedCargoHome
+
+    'VERIFY_PACKAGE_CARGO_HOME_ISOLATED=true'
+    'OWNER_CARGO_CREDENTIAL_STORE_USED=false'
+    if ($IsolationProbeOnly) {
+        return
+    }
 
     Push-Location $resolvedRoot
     try {

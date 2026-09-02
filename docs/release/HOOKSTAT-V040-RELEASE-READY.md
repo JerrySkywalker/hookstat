@@ -64,3 +64,32 @@ Release qualification may run `cargo package --locked` and
 `cargo publish --dry-run --locked`. It must not run `cargo publish`, create or
 push a `v0.4.0` tag, or create a GitHub Release without separate explicit Owner
 authorization.
+
+`verify-package.ps1` and `release-gate.ps1` always bind Cargo to a newly
+created disposable lab home. They never fall back to the caller's normal
+`CARGO_HOME`, registry configuration, or credential store. The release gate
+also requires durable external metadata before it can run qualification:
+
+```text
+OWNER_G45R=PASS
+OWNER_G45R_RECEIPT_ID=<durable receipt identifier>
+OWNER_G45R_TESTED_MAIN=6125734fdbc3edbe33712929abcd4cd1e0e07e1b
+OWNER_G45R_NO_HISTORY_PRESENTATION=PASS
+OWNER_G45R_LIVE_RELIABILITY_SMOKE=BOUNDED_UNAVAILABLE_ACCEPTED
+
+INDEPENDENT_REVIEW=PASS
+INDEPENDENT_REVIEW_RECEIPT_ID=<durable exact-candidate review receipt>
+INDEPENDENT_REVIEW_SHA=<exact candidate SHA>
+```
+
+The Owner receipt must remain truthful about bounded-unavailable live
+reliability; it is never evidence of populated live observations. The tested
+main must be an ancestor of the candidate, and any candidate change to the
+Owner-dogfood Human surface requires renewed Owner dogfood. The independent
+review receipt must bind exactly to the candidate supplied to the gate.
+
+For the final, real qualification only, supply those values to
+`release-gate.ps1` using its `-OwnerG45R*` and `-IndependentReview*` parameters.
+`-PreflightOnly` exists solely for the deterministic local regression harness:
+it exercises fail-closed metadata and Cargo-home binding but reports
+`OVERALL=NOT_RUN_PREFLIGHT_ONLY`, never a release qualification PASS.
