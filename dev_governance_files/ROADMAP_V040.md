@@ -11,12 +11,13 @@ G42=ACCEPTED
 G43=ACCEPTED
 G44=QUALIFIED_UPSTREAM_UNAVAILABLE
 G45_AUTOMATED_PREPARATION=ACCEPTED
-G45_OWNER_VISUAL_CHECK=FAIL_CORRECTION_REQUIRED
-G45V_A=ACTIVE_NEXT
-G45V_B=WAITING_G45V_A
-G45V_C=WAITING_G45V_B
-G45_OWNER_REDOGFOOD=WAITING_G45V_C
-G46R=HOLD
+G45_OWNER_FIRST_PASS=FAIL_HISTORICAL
+G45V_A=ACCEPTED
+G45V_B=ACCEPTED
+G45V_C=ACCEPTED
+G45_OWNER_REDOGFOOD=ACCEPTED
+G46R=ACTIVE_RELEASE_CLOSEOUT
+PUBLICATION=OWNER_GATE
 ```
 
 ```text
@@ -26,7 +27,8 @@ PUBLIC_TAG=v0.3.1
 V040_PRODUCT_THEME=Hooks Control Center / Human Usability
 PRODUCTION_RUNTIME=Codex
 EXPERIMENTAL_RUNTIME_REQUIRED_FOR_V040=false
-CURRENT_CORRECTION_BASELINE=c24139842e35f83368db00dbf56d9025817d4a9e
+HISTORICAL_CORRECTION_BASELINE=c24139842e35f83368db00dbf56d9025817d4a9e
+CURRENT_EXECUTION_BASELINE=6125734fdbc3edbe33712929abcd4cd1e0e07e1b
 ```
 
 v0.4 is a product-usability release, not the productionization of a second runtime. DeepSeek Harness, OpenCode, Claude Code, Agy, and other runtime work proceeds in independent `exp/*` tracks and cannot block v0.4.
@@ -67,17 +69,17 @@ The following v0.4 nodes remain accepted historical milestones:
 - **G44** — safe-management qualification with `WRITE_PARITY=UPSTREAM_UNAVAILABLE`;
 - **G45 automated preparation** — sanitized fixtures and Owner dogfood packet.
 
-The G45 Owner visual check is the first Human acceptance gate after those nodes. It discovered a release-blocking presentation defect. This does not rewrite G42 history; it creates a correction train before release.
+The first G45 Owner visual check was the first Human acceptance gate after those nodes. It discovered a release-blocking presentation defect. This does not rewrite G42 history; it created the required correction train before release.
 
 ## Owner visual finding — G45-OV-001
 
-Owner dogfood against current main `c24139842e35f83368db00dbf56d9025817d4a9e` found that the Hook Event catalog can display the same semantic Codex event twice.
+Historical Owner dogfood against then-current main `c24139842e35f83368db00dbf56d9025817d4a9e` found that the Hook Event catalog can display the same semantic Codex event twice.
 
 The current parser seeds pinned event names using PascalCase strings such as `PreToolUse`, while the qualified Codex v0.151.0 v2 protocol serializes `HookEventName` with camelCase values such as `preToolUse`. The runtime presentation map keys by raw `(runtime_context, runtime_event_name)`, so the synthetic zero-handler row and the real `hooks/list` row become distinct entries and later localize to the same Human label.
 
 The same pass also exposed a localization-layer defect: known event descriptions seeded as English strings can leak unchanged into the zh-CN TUI, and known runtime events such as `Interrupt` cannot rely on reliability `HookEvent` support to obtain localized presentation semantics.
 
-Required disposition:
+Historical first-pass disposition (immutable):
 
 ```text
 G45_OWNER_VISUAL_CHECK=FAIL
@@ -361,9 +363,9 @@ G46R — v0.4 Hardening & Release
             PUBLIC v0.4
 ```
 
-G46R remains blocked until G45R passes.
+G46R is in active release closeout after the accepted G45R Owner re-dogfood.
 
-## Revised effort estimate
+## Historical correction estimate
 
 | Goal | Scope | Estimated effort |
 | --- | --- | ---: |
@@ -407,6 +409,20 @@ After G45V-A/B/C are accepted, repeat the Owner Windows Terminal / Codex `/hooks
 
 The first-pass failure receipt remains historical evidence. Do not overwrite it.
 
+The accepted Owner re-dogfood receipt is bound to accepted main
+`6125734fdbc3edbe33712929abcd4cd1e0e07e1b`:
+
+```text
+G45_OWNER_REDOGFOOD=PASS
+TESTED_MAIN=6125734fdbc3edbe33712929abcd4cd1e0e07e1b
+NO_HISTORY_PRESENTATION=PASS
+LIVE_RELIABILITY_SMOKE=BOUNDED_UNAVAILABLE_ACCEPTED
+FINDINGS=NONE
+```
+
+This accepts the NoHistory presentation without claiming populated live
+reliability observations.
+
 Required answer to the primary question remains:
 
 > If the user only opens HookStat, do they still need Codex `/hooks` to understand the current hook?
@@ -415,13 +431,13 @@ Required answer: **NO**.
 
 ## G46R — v0.4 release
 
-G46R may begin only after:
+G46R is in active release closeout because:
 
 ```text
-G45V_A=PASS
-G45V_B=PASS
-G45V_C=PASS
-G45_OWNER_REDOGFOOD=PASS
+G45V_A=ACCEPTED
+G45V_B=ACCEPTED
+G45V_C=ACCEPTED
+G45_OWNER_REDOGFOOD=ACCEPTED
 ```
 
 Then use the Fast Lane candidate process:
