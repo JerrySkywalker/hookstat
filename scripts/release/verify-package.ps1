@@ -113,7 +113,10 @@ try {
     if ($LASTEXITCODE -ne 0 -or ($version -join "`n").Trim() -ne "hookstat $ExpectedVersion") {
         throw "fresh-installed HookStat version did not equal $ExpectedVersion"
     }
-    $report = @(& $hookstat report --read-only --json --data-root $freshDataRoot)
+    # A fresh install has no ledger yet. Normal report initialization is the
+    # first-run contract; read-only inspection correctly rejects this empty
+    # root and is covered separately for existing data roots.
+    $report = @(& $hookstat report --json --data-root $freshDataRoot)
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace(($report -join "`n"))) {
         throw 'fresh-installed HookStat report smoke failed'
     }
