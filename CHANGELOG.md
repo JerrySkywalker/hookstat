@@ -1,10 +1,32 @@
 # Changelog
 
-## 0.4.0 – Hooks Control Center (release-ready; publication pending)
+## 0.4.1 – Mixed-state instrumentation safety (candidate; not published)
 
-HookStat v0.4.0 is the prepared release candidate. It is not yet a crates.io
-publication, public tag, or GitHub Release; v0.3.1 remains the public upgrade
-baseline until explicit Owner publication authorization.
+v0.4.0 is public. Public post-release Owner dogfood found a mixed-state Apply
+defect before any populated live-reliability observation was proven. This patch
+candidate is limited to that safety recovery; it does not add a product feature,
+runtime, architecture, daemon, telemetry, or evidence transport.
+
+- refuses Apply before config, manifest, or journal mutation when one mutable
+  configuration path contains both existing HookStat wrappers and newly
+  instrumentable handlers;
+- refuses Restore before config or journal mutation when its proposed target has
+  wrappers without a complete proven manifest control plane;
+- adds deterministic fixture coverage for 12+11 mixed Apply refusal, normal
+  eleven-handler Apply, idempotent already-instrumented state, unsafe/safe
+  Restore, and retained Trust fail-closed behavior;
+- preserves separate explicit Trust checks and does not write `trusted_hash`
+  outside Codex's verified official route.
+
+Publication, tag creation, GitHub Release creation, and deployment dogfood for
+v0.4.1 remain separately authorized future gates.
+
+## 0.4.0 – Hooks Control Center (public)
+
+HookStat v0.4.0 completed its separately authorized publication, public tag,
+and GitHub Release. The public post-release mixed-state finding is addressed by
+the separate v0.4.1 candidate above; it does not reopen the completed v0.4
+product train.
 
 ### Current runtime and reliability presentation
 
@@ -29,7 +51,7 @@ baseline until explicit Owner publication authorization.
 
 ## 0.3.1 – HSIP Infrastructure & Windows Hardening
 
-HookStat v0.3.1 is the current public release. This entry records the
+HookStat v0.3.1 was the public release before v0.4.0. This entry records the
 single-package HookStat substrate released without bundling, admitting, or
 modifying an external cooperative producer.
 

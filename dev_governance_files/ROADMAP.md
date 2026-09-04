@@ -1,10 +1,18 @@
 # HookStat Roadmap
 
-## Active execution overlay — v0.4
+## Current execution overlay — v0.4.1 safety patch candidate
 
-HookStat v0.3.1 is publicly released from accepted main `651620cbc9f204f312fc31efee424c747895927a` with public tag/release `v0.3.1`.
+HookStat v0.4.0 is publicly released from accepted main
+`58e605f5cd61f5952cba8440bbbd3ed5d2609b44` with public tag/release `v0.4.0`.
 
-Current product development is governed by [`ROADMAP_V040.md`](ROADMAP_V040.md) and the corresponding v0.4 goal contracts.
+The v0.4 product train is complete. A public post-release Owner dogfood found a
+narrow mixed-state Apply defect before any populated live-reliability
+observation was proven. v0.4.1 is a patch candidate for that safety repair, not
+a new roadmap phase or runtime train; publication and deployment dogfood remain
+separate future gates.
+
+Current patch work is governed by [`ROADMAP_V040.md`](ROADMAP_V040.md), the
+corresponding v0.4 contracts, and the v0.4.1 mixed-state safety scope.
 
 The v0.4 product theme is **Hooks Control Center / Human Usability**.
 
@@ -16,7 +24,7 @@ For Codex hooks, HookStat must expose at least the human-readable current-runtim
 
 The first G45 Owner visual pass on current-main lineage discovered a release-blocking Event-catalog duplication/localization defect and demonstrated that existing deterministic TUI tests did not yet constitute a complete visual-regression CI pipeline.
 
-Therefore the active v0.4 train now includes a release-blocking G45V correction sequence before G46R:
+Therefore the release-blocking G45V correction sequence was inserted into the v0.4 train before G46R:
 
 ```text
 G45V-A Runtime Event Identity & Localization Repair
@@ -30,9 +38,11 @@ G45R Owner Re-Dogfood
 G46R
 ```
 
-G45R is formally accepted through the Owner receipt on PR #55. The historical
-first G45 Owner visual finding remains immutable; G46R release readiness is
-now active, while public publication remains an explicit Owner gate.
+G45R was formally accepted through the Owner receipt on PR #55. The historical
+first G45 Owner visual finding remains immutable; G46R subsequently completed
+and v0.4.0 was publicly released. The only current active work is the narrow
+v0.4.1 mixed-state instrumentation safety patch candidate; its publication and
+deployment dogfood remain separately authorized future gates.
 
 v0.4 remains Codex production-first. DeepSeek Harness, OpenCode, Claude Code, Agy, and other runtime work proceeds through independent `exp/*` tracks and does not block v0.4 unless explicitly promoted.
 
@@ -119,39 +129,23 @@ Detailed history remains in `HOOKSTAT_POST_V02_TO_V03_ROADMAP.md`.
 
 See the completed overlay above.
 
-## v0.4 — Hooks Control Center / Human Usability — ACTIVE
+## v0.4 — Hooks Control Center / Human Usability — COMPLETE
 
 Critical path:
 
 ```text
-PUBLIC v0.3.1
+PUBLIC v0.4.0
       ↓
-G40 ✅ Rebaseline & /hooks parity
+v0.4.1 mixed-state instrumentation safety candidate
       ↓
-G41 ✅ Live Runtime Hook Catalog
-      ├───────────────┐
-      ↓               ↓
-G42 ✅              G43 ✅
-Hooks Center        Human Reliability
-      └───────┬───────┘
-              ↓
-G44 ✅ Safe Hook Management Qualification
-     WRITE_PARITY=UPSTREAM_UNAVAILABLE
-              ↓
-G45 Automated Preparation ✅
-              ↓
-G45 Owner Visual Check ❌
-              ↓
-G45V-A Runtime Event Identity & Localization Repair
-              ↓
-G45V-B TUI Visual Regression CI Foundation
-              ↓
-G45V-C Real-Wire End-to-End Visual Matrix
-              ↓
-G45R Owner Re-Dogfood ✅
-              ↓
-G46R v0.4 Hardening & Release — ACTIVE
+fresh independent review
+      ↓
+separately authorized public patch release
 ```
+
+The completed historical G40–G46R path remains recorded in
+[`ROADMAP_V040.md`](ROADMAP_V040.md). The v0.4.1 candidate changes only
+mixed-state Apply/Restore safety and does not reopen that product scope.
 
 Read/information parity with Codex `/hooks` remains mandatory. Write parity is admitted only when an official externally usable mutation surface is proven; the current accepted v0.4 disposition is `UPSTREAM_UNAVAILABLE` and does not authorize configuration guessing.
 
