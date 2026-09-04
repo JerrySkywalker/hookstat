@@ -24,7 +24,7 @@ For Codex hooks, HookStat must expose at least the human-readable current-runtim
 
 The first G45 Owner visual pass on current-main lineage discovered a release-blocking Event-catalog duplication/localization defect and demonstrated that existing deterministic TUI tests did not yet constitute a complete visual-regression CI pipeline.
 
-Therefore the active v0.4 train now includes a release-blocking G45V correction sequence before G46R:
+Therefore the release-blocking G45V correction sequence was inserted into the v0.4 train before G46R:
 
 ```text
 G45V-A Runtime Event Identity & Localization Repair
@@ -38,9 +38,11 @@ G45R Owner Re-Dogfood
 G46R
 ```
 
-G45R is formally accepted through the Owner receipt on PR #55. The historical
-first G45 Owner visual finding remains immutable; G46R release readiness is
-now active, while public publication remains an explicit Owner gate.
+G45R was formally accepted through the Owner receipt on PR #55. The historical
+first G45 Owner visual finding remains immutable; G46R subsequently completed
+and v0.4.0 was publicly released. The only current active work is the narrow
+v0.4.1 mixed-state instrumentation safety patch candidate; its publication and
+deployment dogfood remain separately authorized future gates.
 
 v0.4 remains Codex production-first. DeepSeek Harness, OpenCode, Claude Code, Agy, and other runtime work proceeds through independent `exp/*` tracks and does not block v0.4 unless explicitly promoted.
 

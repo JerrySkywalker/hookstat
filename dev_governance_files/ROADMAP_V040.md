@@ -374,7 +374,8 @@ G46R — v0.4 Hardening & Release
             PUBLIC v0.4
 ```
 
-G46R is in active release closeout after the accepted G45R Owner re-dogfood.
+G46R subsequently completed and v0.4.0 was publicly released; the DAG above
+is retained as the completed historical v0.4 execution path.
 
 ## Historical correction estimate
 
