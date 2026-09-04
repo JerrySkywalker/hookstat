@@ -36,7 +36,7 @@ fn public_package_owns_runtime_and_retained_g36_binaries() {
 }
 
 #[test]
-fn packaged_transparent_shim_is_explicitly_non_production_for_v031() {
+fn packaged_transparent_shim_is_explicitly_non_production_for_v040() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let admission = source(root.join("src/admission.rs"));
     let shim_binary = source(root.join("src/bin/hookstat_hook.rs"));
@@ -44,7 +44,59 @@ fn packaged_transparent_shim_is_explicitly_non_production_for_v031() {
     assert!(admission.contains("V031_TRANSPARENT_SHIM_ADMISSION"));
     assert!(admission.contains("QualifiedNotAdmittedPerformance"));
     assert!(shim_binary.contains("--admission-status"));
-    assert!(shim_binary.contains("not production activated for v0.3.1"));
+    assert!(shim_binary.contains("not production activated for v0.4.0"));
+}
+
+#[test]
+fn release_scripts_bind_disposable_cargo_home_without_owner_fallback() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let verify_package = source(root.join("scripts/release/verify-package.ps1"));
+    let release_gate = source(root.join("scripts/release/release-gate.ps1"));
+
+    assert!(verify_package.contains("[string]$CargoHome"));
+    assert!(verify_package.contains("[switch]$IsolationProbeOnly"));
+    assert!(verify_package.contains("$env:CARGO_HOME = $resolvedCargoHome"));
+    assert!(verify_package.contains("VERIFY_PACKAGE_CARGO_HOME_ISOLATED=true"));
+    assert!(verify_package.contains("OWNER_CARGO_CREDENTIAL_STORE_USED=false"));
+    assert!(
+        !verify_package.contains("Remove-Item Env:CARGO_HOME"),
+        "package verification must never silently fall back to the Owner Cargo home"
+    );
+
+    assert!(release_gate.contains("-CargoHome', $cargoHome"));
+    assert!(release_gate.contains("-IsolationProbeOnly"));
+    assert!(release_gate.contains("$env:CARGO_HOME = $cargoHome"));
+    assert!(release_gate.contains("RELEASE_GATE_CARGO_HOME_ISOLATED = 'true'"));
+    assert!(release_gate.contains("VERIFY_PACKAGE_CARGO_HOME_ISOLATED = 'true'"));
+    assert!(release_gate.contains("OWNER_CARGO_CREDENTIAL_STORE_USED = 'false'"));
+}
+
+#[test]
+fn release_gate_fails_closed_on_external_acceptance_metadata() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let release_gate = source(root.join("scripts/release/release-gate.ps1"));
+
+    for required in [
+        "[string]$OwnerG45R",
+        "[string]$OwnerG45RReceiptId",
+        "[string]$OwnerG45RTestedMain",
+        "[string]$OwnerG45RNoHistoryPresentation",
+        "[string]$OwnerG45RLiveReliabilitySmoke",
+        "[string]$IndependentReviewResult",
+        "[string]$IndependentReviewReceiptId",
+        "[string]$IndependentReviewSha",
+        "OWNER_G45R=PASS external acceptance metadata is required",
+        "INDEPENDENT_REVIEW=PASS external acceptance metadata is required",
+        "INDEPENDENT_REVIEW_SHA must equal CandidateSha exactly",
+        "BOUNDED_UNAVAILABLE_ACCEPTED",
+        "RENEWED_DOGFOOD_REQUIRED",
+        "NOT_RUN_PREFLIGHT_ONLY",
+    ] {
+        assert!(
+            release_gate.contains(required),
+            "release gate missing fail-closed contract: {required}"
+        );
+    }
 }
 
 #[test]

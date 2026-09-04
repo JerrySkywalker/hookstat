@@ -88,7 +88,7 @@ fn run() -> i32 {
             "--state-root" => &mut state_root,
             "-h" | "--help" => {
                 println!(
-                    "usage: hookstat-hook --capsule <private-file> --capsule-root <private-dir> --state-root <hookstat-state>\nstatus: internal/experimental; qualified_not_admitted_performance; not production activated for v0.3.1"
+                    "usage: hookstat-hook --capsule <private-file> --capsule-root <private-dir> --state-root <hookstat-state>\nstatus: internal/experimental; qualified_not_admitted_performance; not production activated for v0.4.0"
                 );
                 return 0;
             }

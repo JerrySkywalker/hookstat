@@ -2,15 +2,12 @@
 
 **Local-first reliability analytics for hooks across coding-agent runtimes.**
 
-HookStat v0.3.1 is the current public release of the Codex Reliability Workbench:
-a local-first terminal UI that turns admitted local hook receipts into a
-bilingual, human-readable operational view. It retains the Changes workbench,
-Hook Catalog, revision timeline, safe Human aliases, and bounded failure
-exploration through the shared TabBeacon-compatible Human interface. It is
-Codex-first today, while its canonical ledger, analytics, JSON, and TUI remain
-evidence-source-neutral. Passive durable receipts remain the preferred
-architecture. When passive per-handler terminal evidence is not available,
-HookStat supports an **opt-in transparent instrumented receipt source**.
+HookStat v0.4.0 is the release-ready Hooks Control Center. Publication remains
+an explicit Owner decision; v0.3.1 remains the public upgrade baseline until
+that decision. It is a local-first terminal UI that combines the current Codex
+hook catalog with admitted local reliability history. The product rule is
+**Runtime Truth First, Reliability Second**: current runtime facts never become
+historical facts, and missing history never becomes healthy evidence.
 
 Normal daily launch is unchanged:
 
@@ -30,8 +27,8 @@ cargo install hookstat --version 0.3.1 --locked
 cargo install hookstat --version 0.3.1 --locked --force
 ```
 
-v0.3.1 is publicly released. To test an owned source checkout without replacing
-a user-wide installation, use an isolated Cargo root:
+v0.4.0 is release-ready from source but is not yet published. To test it
+without replacing a user-wide installation, use an isolated Cargo root:
 
 ```powershell
 $sourceRoot = Join-Path $env:TEMP 'hookstat-source-checkout'
@@ -39,10 +36,38 @@ cargo install --path . --locked --root $sourceRoot
 & "$sourceRoot\\bin\\hookstat.exe" --version
 ```
 
-See [the historical v0.3.1 candidate notes](docs/release/HOOKSTAT-V031-RELEASE-CANDIDATE.md)
-and [CHANGELOG.md](CHANGELOG.md) for the release boundary. A local source
-install does not authorize a future `cargo publish`, public tag, or GitHub
-Release.
+See [the v0.4.0 release-ready notes](docs/release/HOOKSTAT-V040-RELEASE-READY.md),
+[the historical v0.3.1 candidate notes](docs/release/HOOKSTAT-V031-RELEASE-CANDIDATE.md),
+and [CHANGELOG.md](CHANGELOG.md). A local source install does not authorize a
+future `cargo publish`, public tag, or GitHub Release.
+
+## v0.4 Hooks Control Center
+
+The Hooks page follows **Events → Handlers → Detail**, sourced from Codex's
+current `hooks/list` information surface. It retains distinct current states:
+an installed-but-unobserved handler is current runtime truth with no reliability
+samples, while historical-not-installed evidence remains history and is never
+presented as a currently installed hook. Known Codex events use localized Human
+labels; unknown runtime events are preserved visibly rather than discarded.
+Interrupt is shown as a current runtime event with its own control semantics,
+not inferred as a successful or failed reliability sample.
+
+Reliability appears only after the current handler identity joins admitted
+history. The UI labels metric scope, renders human-readable local time rather
+than raw Unix milliseconds, includes sample denominators beside failure rates,
+and explains coverage and risk. Zero, partial, unsupported, unknown, or
+unobserved evidence never renders as a healthy percentage.
+
+The release matrix contains 30 deterministic Ratatui frames across layouts and
+locales, including the official-shaped Codex v0.151 real-wire fixture through
+parser, app, and final frame. Current runtime command, source, matcher, and
+context strings are ephemeral in-memory presentation material only: they are
+not ledger evidence, diagnostics export, or telemetry.
+
+Read/information parity with Codex `/hooks` is production scope. Safe write
+parity remains `WRITE_PARITY=UPSTREAM_UNAVAILABLE`; HookStat does not guess or
+edit unsupported configuration. DeepSeek, OpenCode, and other experimental
+runtimes remain non-production unless separately promoted and admitted.
 
 ## v0.3.1 HSIP and runtime availability
 

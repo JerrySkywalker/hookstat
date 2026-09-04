@@ -30,7 +30,9 @@ G45R Owner Re-Dogfood
 G46R
 ```
 
-G46R is on HOLD until G45R passes.
+G45R is formally accepted through the Owner receipt on PR #55. The historical
+first G45 Owner visual finding remains immutable; G46R release readiness is
+now active, while public publication remains an explicit Owner gate.
 
 v0.4 remains Codex production-first. DeepSeek Harness, OpenCode, Claude Code, Agy, and other runtime work proceeds through independent `exp/*` tracks and does not block v0.4 unless explicitly promoted.
 
@@ -146,9 +148,9 @@ G45V-B TUI Visual Regression CI Foundation
               ↓
 G45V-C Real-Wire End-to-End Visual Matrix
               ↓
-G45R Owner Re-Dogfood
+G45R Owner Re-Dogfood ✅
               ↓
-G46R v0.4 Hardening & Release
+G46R v0.4 Hardening & Release — ACTIVE
 ```
 
 Read/information parity with Codex `/hooks` remains mandatory. Write parity is admitted only when an official externally usable mutation surface is proven; the current accepted v0.4 disposition is `UPSTREAM_UNAVAILABLE` and does not authorize configuration guessing.
