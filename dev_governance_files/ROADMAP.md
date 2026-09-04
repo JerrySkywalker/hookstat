@@ -1,10 +1,18 @@
 # HookStat Roadmap
 
-## Active execution overlay — v0.4
+## Current execution overlay — v0.4.1 safety patch candidate
 
-HookStat v0.3.1 is publicly released from accepted main `651620cbc9f204f312fc31efee424c747895927a` with public tag/release `v0.3.1`.
+HookStat v0.4.0 is publicly released from accepted main
+`58e605f5cd61f5952cba8440bbbd3ed5d2609b44` with public tag/release `v0.4.0`.
 
-Current product development is governed by [`ROADMAP_V040.md`](ROADMAP_V040.md) and the corresponding v0.4 goal contracts.
+The v0.4 product train is complete. A public post-release Owner dogfood found a
+narrow mixed-state Apply defect before any populated live-reliability
+observation was proven. v0.4.1 is a patch candidate for that safety repair, not
+a new roadmap phase or runtime train; publication and deployment dogfood remain
+separate future gates.
+
+Current patch work is governed by [`ROADMAP_V040.md`](ROADMAP_V040.md), the
+corresponding v0.4 contracts, and the v0.4.1 mixed-state safety scope.
 
 The v0.4 product theme is **Hooks Control Center / Human Usability**.
 
@@ -119,39 +127,23 @@ Detailed history remains in `HOOKSTAT_POST_V02_TO_V03_ROADMAP.md`.
 
 See the completed overlay above.
 
-## v0.4 — Hooks Control Center / Human Usability — ACTIVE
+## v0.4 — Hooks Control Center / Human Usability — COMPLETE
 
 Critical path:
 
 ```text
-PUBLIC v0.3.1
+PUBLIC v0.4.0
       ↓
-G40 ✅ Rebaseline & /hooks parity
+v0.4.1 mixed-state instrumentation safety candidate
       ↓
-G41 ✅ Live Runtime Hook Catalog
-      ├───────────────┐
-      ↓               ↓
-G42 ✅              G43 ✅
-Hooks Center        Human Reliability
-      └───────┬───────┘
-              ↓
-G44 ✅ Safe Hook Management Qualification
-     WRITE_PARITY=UPSTREAM_UNAVAILABLE
-              ↓
-G45 Automated Preparation ✅
-              ↓
-G45 Owner Visual Check ❌
-              ↓
-G45V-A Runtime Event Identity & Localization Repair
-              ↓
-G45V-B TUI Visual Regression CI Foundation
-              ↓
-G45V-C Real-Wire End-to-End Visual Matrix
-              ↓
-G45R Owner Re-Dogfood ✅
-              ↓
-G46R v0.4 Hardening & Release — ACTIVE
+fresh independent review
+      ↓
+separately authorized public patch release
 ```
+
+The completed historical G40–G46R path remains recorded in
+[`ROADMAP_V040.md`](ROADMAP_V040.md). The v0.4.1 candidate changes only
+mixed-state Apply/Restore safety and does not reopen that product scope.
 
 Read/information parity with Codex `/hooks` remains mandatory. Write parity is admitted only when an official externally usable mutation surface is proven; the current accepted v0.4 disposition is `UPSTREAM_UNAVAILABLE` and does not authorize configuration guessing.
 

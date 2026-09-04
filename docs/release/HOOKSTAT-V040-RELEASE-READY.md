@@ -1,15 +1,19 @@
-# HookStat v0.4.0 Release-Ready Candidate
+# Historical HookStat v0.4.0 Release-Ready Candidate
 
 ## Status
 
-HookStat v0.4.0 is release-ready only after its exact candidate SHA completes
-the repository gates. This document is not a crates.io publication, public
-Git tag, or GitHub Release.
+This is the historical pre-publication candidate record. HookStat v0.4.0 was
+later publicly released from accepted main
+`58e605f5cd61f5952cba8440bbbd3ed5d2609b44` with tag `v0.4.0`. The separate
+v0.4.1 mixed-state instrumentation safety patch remains a candidate pending
+fresh review and separate publication authorization.
 
 ```text
 CURRENT_RELEASE=0.4.0
 UPGRADE_BASELINE=0.3.1
-PUBLICATION_AUTHORIZED=false
+HISTORICAL_CANDIDATE_PUBLICATION_AUTHORIZED=false
+V040_PUBLIC_RELEASE=true
+V041_PATCH_CANDIDATE=true
 ```
 
 ## Hooks Control Center
@@ -56,9 +60,10 @@ separately promoted and admitted.
 ## G45R and publication boundary
 
 The accepted Owner G45R disposition is `NO_HISTORY_PRESENTATION=PASS` and
-`LIVE_RELIABILITY_SMOKE=BOUNDED_UNAVAILABLE_ACCEPTED`. It records no populated
-live-reliability observations and no product defect; it must not be read as a
-claim of populated reliability history.
+`LIVE_RELIABILITY_SMOKE=BOUNDED_UNAVAILABLE_ACCEPTED`. At that time it recorded
+no populated live-reliability observations. The later public post-release Owner
+dogfood found the separate mixed-state Apply defect; neither result is a claim
+of populated reliability history.
 
 Release qualification may run `cargo package --locked` and
 `cargo publish --dry-run --locked`. It must not run `cargo publish`, create or

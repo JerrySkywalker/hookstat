@@ -2,9 +2,9 @@
 
 **Local-first reliability analytics for hooks across coding-agent runtimes.**
 
-HookStat v0.4.0 is the release-ready Hooks Control Center. Publication remains
-an explicit Owner decision; v0.3.1 remains the public upgrade baseline until
-that decision. It is a local-first terminal UI that combines the current Codex
+HookStat v0.4.0 is the public Hooks Control Center. v0.4.1 is a narrow
+mixed-state instrumentation safety patch candidate and is not public yet. It is
+a local-first terminal UI that combines the current Codex
 hook catalog with admitted local reliability history. The product rule is
 **Runtime Truth First, Reliability Second**: current runtime facts never become
 historical facts, and missing history never becomes healthy evidence.
@@ -20,15 +20,15 @@ daemon.
 
 ## Install and update
 
-Install the current public v0.3.1 release from crates.io with Cargo:
+Install the current public v0.4.0 release from crates.io with Cargo:
 
 ```powershell
-cargo install hookstat --version 0.3.1 --locked
-cargo install hookstat --version 0.3.1 --locked --force
+cargo install hookstat --version 0.4.0 --locked
+cargo install hookstat --version 0.4.0 --locked --force
 ```
 
-v0.4.0 is release-ready from source but is not yet published. To test it
-without replacing a user-wide installation, use an isolated Cargo root:
+v0.4.1 is a patch candidate from source and is not yet published. To test the
+candidate without replacing a user-wide installation, use an isolated Cargo root:
 
 ```powershell
 $sourceRoot = Join-Path $env:TEMP 'hookstat-source-checkout'
@@ -36,7 +36,7 @@ cargo install --path . --locked --root $sourceRoot
 & "$sourceRoot\\bin\\hookstat.exe" --version
 ```
 
-See [the v0.4.0 release-ready notes](docs/release/HOOKSTAT-V040-RELEASE-READY.md),
+See [the historical v0.4.0 release-ready notes](docs/release/HOOKSTAT-V040-RELEASE-READY.md),
 [the historical v0.3.1 candidate notes](docs/release/HOOKSTAT-V031-RELEASE-CANDIDATE.md),
 and [CHANGELOG.md](CHANGELOG.md). A local source install does not authorize a
 future `cargo publish`, public tag, or GitHub Release.
@@ -128,10 +128,14 @@ hookstat codex instrument --restore --config-root $env:USERPROFILE\.codex
 ```
 
 Apply is atomic, creates an exact local prestate backup and rollback journal,
-is idempotent, refuses configuration drift during restore, and will not wrap a
-handler twice. It supports safe `hooks.json` command handlers. Inline TOML,
-plugin, and managed sources are shown as unsupported coverage rather than
-modified optimistically. Changing a hook command can require Codex trust review.
+and is idempotent for an already-instrumented path. If one mutable config path
+contains both existing HookStat wrappers and newly instrumentable handlers,
+Apply refuses before changing config, manifest, or journal. Restore refuses
+configuration drift and also refuses a wrapper-containing target unless its
+complete manifest control plane is proven. It supports safe `hooks.json`
+command handlers. Inline TOML, plugin, and managed sources are shown as
+unsupported coverage rather than modified optimistically. Changing a hook
+command can require Codex trust review.
 `--apply` never approves trust. The separate explicit `--trust` action uses
 Codex's official App Server `hooks/list` and `config/batchWrite` route only
 after it proves the exact current HookStat manifest, journal, source path,
@@ -142,7 +146,7 @@ hooks are rejected or left unchanged; it never bypasses trust enforcement.
 
 Effective plugin or managed handlers can be visible in discovery even when
 HookStat cannot mutate them. That is `PASS_WITH_EXPLICIT_UNSUPPORTED_COVERAGE`,
-not a healthy zero-rate claim. v0.1 instruments only enabled, trusted,
+not a healthy zero-rate claim. HookStat instruments only enabled, trusted,
 unmanaged command handlers in safely supported user/project `hooks.json`
 layers. Inline TOML and any source that cannot be restored byte-exactly remain
 read-only coverage limitations.
@@ -160,7 +164,7 @@ On Windows, the proxy joins a Job Object with kill-on-close before spawning the
 original handler. Forced proxy termination therefore closes the active handler
 tree without broad process killing. After normal root-handler completion it
 clears that limit, allowing legitimate background descendants to survive.
-Unix keeps its native shell cancellation behavior in v0.1 and does not claim
+Unix keeps its native shell cancellation behavior and does not claim
 the Windows Job Object containment guarantee.
 
 For Codex 0.147 Windows command execution, HookStat keeps the portable quoted
@@ -279,8 +283,9 @@ cargo publish --dry-run --locked
 
 The Owner-authorized v0.3.0 public-release closure binds the historical exact
 release commit to its crates.io package, `v0.3.0` tag, and GitHub Release.
-v0.3.1 is the current public release. Running these development checks does
-not authorize a future publication, tag, or GitHub Release.
+v0.4.0 is the current public release; v0.4.1 remains a candidate pending
+separate review and publication authorization. Running these development checks
+does not authorize a future publication, tag, or GitHub Release.
 
 See the architecture, ADRs, and execution contracts under `docs/`,
 `dev_governance_files/`, and `goals/`.

@@ -2,7 +2,9 @@
 
 ## Status
 
-IN_PROGRESS from public HookStat v0.3.1.
+COMPLETE: HookStat v0.4.0 is public. A narrow v0.4.1 mixed-state
+instrumentation safety patch is a candidate pending fresh independent review;
+it is not a new roadmap phase.
 
 ```text
 G40=ACCEPTED
@@ -16,22 +18,31 @@ G45V_A=ACCEPTED
 G45V_B=ACCEPTED
 G45V_C=ACCEPTED
 G45_OWNER_REDOGFOOD=ACCEPTED
-G46R=ACTIVE_RELEASE_CLOSEOUT
-PUBLICATION=OWNER_GATE
+G46R=COMPLETE
+V040_PUBLIC_RELEASE=COMPLETE
+V041_MIXED_STATE_SAFETY_PATCH=CANDIDATE_PENDING_FRESH_REVIEW
+V041_PUBLICATION=NOT_AUTHORIZED
 ```
 
 ```text
-PUBLIC_BASELINE=v0.3.1
-PUBLIC_MAIN=651620cbc9f204f312fc31efee424c747895927a
-PUBLIC_TAG=v0.3.1
+PUBLIC_BASELINE=v0.4.0
+PUBLIC_MAIN=58e605f5cd61f5952cba8440bbbd3ed5d2609b44
+PUBLIC_TAG=v0.4.0
 V040_PRODUCT_THEME=Hooks Control Center / Human Usability
 PRODUCTION_RUNTIME=Codex
 EXPERIMENTAL_RUNTIME_REQUIRED_FOR_V040=false
 HISTORICAL_CORRECTION_BASELINE=c24139842e35f83368db00dbf56d9025817d4a9e
-CURRENT_EXECUTION_BASELINE=6125734fdbc3edbe33712929abcd4cd1e0e07e1b
+CURRENT_EXECUTION_BASELINE=58e605f5cd61f5952cba8440bbbd3ed5d2609b44
 ```
 
 v0.4 is a product-usability release, not the productionization of a second runtime. DeepSeek Harness, OpenCode, Claude Code, Agy, and other runtime work proceeds in independent `exp/*` tracks and cannot block v0.4.
+
+The public post-release Owner dogfood found a mixed-state Apply defect: an
+existing wrapper set and newly instrumentable handlers shared a manifest path,
+allowing the manifest to lose historical wrapper material. No populated v0.4.0
+live-reliability observation was proven. The v0.4.1 candidate fails closed for
+that state and guards Restore; it neither starts a later runtime track nor
+authorizes publication, Trust, Apply, or deployment dogfood.
 
 ## Product thesis
 
@@ -429,9 +440,9 @@ Required answer to the primary question remains:
 
 Required answer: **NO**.
 
-## G46R — v0.4 release
+## G46R — v0.4 release (complete)
 
-G46R is in active release closeout because:
+G46R completed the v0.4.0 public release after:
 
 ```text
 G45V_A=ACCEPTED
@@ -440,15 +451,17 @@ G45V_C=ACCEPTED
 G45_OWNER_REDOGFOOD=ACCEPTED
 ```
 
-Then use the Fast Lane candidate process:
+The public post-release mixed-state finding is handled by the separate narrow
+v0.4.1 patch candidate; it does not reopen G46R or create a successor roadmap
+phase. Its remaining route is:
 
 ```text
-settle code + docs
+settle v0.4.1 patch code + docs
 → freeze exact candidate SHA
-→ hosted CI / visual CI / independent review / owner dogfood evidence
-→ release gate
-→ merge
+→ hosted CI / fresh independent review
+→ merge only after acceptance
 → separately Owner-authorized publication
+→ later clean activation and deployment dogfood
 ```
 
 ## Explicit non-goals for G45V
@@ -465,7 +478,8 @@ settle code + docs
 ## v0.4 completion definition
 
 ```text
-PUBLIC_BASELINE=v0.3.1
+PUBLIC_BASELINE=v0.4.0
+V040_PUBLIC_RELEASE=true
 PRODUCTION_RUNTIME=Codex
 
 CODEX_HOOKS_HUMAN_INFORMATION_PARITY=PASS
@@ -496,7 +510,9 @@ MANAGED_HOOK_MUTATION=false
 
 WINDOWS=PASS
 UBUNTU=PASS
-OWNER_CODEX_HOOKS_AB_DOGFOOD=PASS
+OWNER_CODEX_HOOKS_AB_DOGFOOD=PUBLIC_POST_RELEASE_MIXED_STATE_DEFECT_FOUND
+POPULATED_V040_LIVE_RELIABILITY_OBSERVATION=NOT_PROVEN
 PACKAGE=PASS
-PUBLICATION=OWNER_GATE
+V041_PATCH_CANDIDATE=UNDER_FRESH_INDEPENDENT_REVIEW
+V041_PUBLICATION=NOT_AUTHORIZED
 ```
