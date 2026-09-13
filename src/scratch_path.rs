@@ -28,12 +28,11 @@ pub fn assert_safe_scratch_destination(candidate: &Path) -> io::Result<()> {
 fn is_unsafe_direct_c_root_destination(candidate: &Path) -> bool {
     let value = candidate.to_string_lossy().replace('/', "\\");
     let bytes = value.as_bytes();
-    if bytes.len() < 3
-        || !bytes[0].eq_ignore_ascii_case(&b'C')
-        || bytes[1] != b':'
-        || bytes[2] != b'\\'
-    {
+    if bytes.len() < 2 || !bytes[0].eq_ignore_ascii_case(&b'C') || bytes[1] != b':' {
         return false;
+    }
+    if bytes.len() < 3 || bytes[2] != b'\\' {
+        return true;
     }
 
     let mut components = Vec::new();
@@ -65,6 +64,7 @@ mod tests {
             "C:/hookstat-temp-lab",
             r"C:\.\hookstat-temp-lab",
             r"C:\hookstat-parent\..\hookstat-temp-lab",
+            r"C:hookstat-temp-lab",
         ] {
             let error = assert_safe_scratch_destination(Path::new(candidate)).unwrap_err();
             assert!(error.to_string().contains("direct C:\\ project/temp roots"));

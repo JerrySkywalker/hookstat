@@ -13,7 +13,8 @@ foreach ($candidate in @(
     'C:\hookstat-target',
     'c:\hookstat-temp-lab',
     'C:/hookstat-temp-lab',
-    'C:\.\hookstat-temp-lab'
+    'C:\.\hookstat-temp-lab',
+    'C:hookstat-temp-lab'
 )) {
     try {
         Assert-HookStatSafeScratchPath -Candidate $candidate
@@ -35,6 +36,6 @@ foreach ($candidate in @(
     Assert-HookStatSafeScratchPath -Candidate $candidate
 }
 
-'CROOT_SCRATCH_PATH_REJECTED_CASES=7'
+'CROOT_SCRATCH_PATH_REJECTED_CASES=8'
 'CROOT_SCRATCH_PATH_SAFE_CASES=4'
 'CROOT_SCRATCH_PATH_NO_FILESYSTEM_MUTATION=true'

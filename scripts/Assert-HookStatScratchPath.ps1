@@ -3,8 +3,12 @@ function Assert-HookStatSafeScratchPath {
     param([Parameter(Mandatory = $true)][string]$Candidate)
 
     $normalized = $Candidate.Replace('/', '\')
-    if ($normalized -notmatch '^(?i:c):\\') {
+    if ($normalized -notmatch '^(?i:c):') {
         return
+    }
+
+    if ($normalized -notmatch '^(?i:c):\\') {
+        throw "HookStat scratch destination '$Candidate' is prohibited: direct C:\ project/temp roots are prohibited; choose a normal temporary or build location"
     }
 
     $components = [System.Collections.Generic.List[string]]::new()
