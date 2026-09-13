@@ -5,6 +5,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot '../Assert-HookStatScratchPath.ps1')
 
 $classifier = Join-Path $RepositoryRoot 'scripts/ci/classify-change.ps1'
 if (-not (Test-Path -LiteralPath $classifier -PathType Leaf)) {
@@ -127,6 +128,7 @@ Assert-Case -Name 'unknown_test' -Paths @('tests/future_subsystem.rs') -Expected
 function Assert-GitDiffFixtures {
     $tempRoot = [System.IO.Path]::GetTempPath()
     $lab = Join-Path $tempRoot ('hookstat-classifier-fixtures-' + [guid]::NewGuid().ToString('N'))
+    Assert-HookStatSafeScratchPath -Candidate $lab
     try {
         New-Item -ItemType Directory -Path (Join-Path $lab 'docs/process'), (Join-Path $lab 'src') -Force | Out-Null
         [System.IO.File]::WriteAllText((Join-Path $lab 'docs/process/guide.md'), "base`n")

@@ -9,6 +9,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '../Assert-HookStatScratchPath.ps1')
 $resolvedRoot = (Resolve-Path -LiteralPath $RepositoryRoot).Path
 $tempRoot = [System.IO.Path]::GetTempPath()
 $lab = Join-Path $tempRoot ('hookstat-package-verify-' + [guid]::NewGuid().ToString('N'))
@@ -25,6 +26,9 @@ else {
 $ownerCargoHome = [System.IO.Path]::GetFullPath(
     (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.cargo')
 )
+
+Assert-HookStatSafeScratchPath -Candidate $lab
+Assert-HookStatSafeScratchPath -Candidate $requestedCargoHome
 
 if ($requestedCargoHome.Equals($ownerCargoHome, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw 'CargoHome must be a disposable lab path, not the Owner default Cargo home'

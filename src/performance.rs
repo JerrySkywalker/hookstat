@@ -7,6 +7,7 @@
 use crate::codex::{ProxyHandler, ProxyManifest};
 use crate::domain::{EvidenceCoverage, ExecutionMode, HandlerIdentity, HookEvent, TerminalStatus};
 use crate::receipt::{ReceiptCompletion, ReceiptSpool, ReceiptStart};
+use crate::scratch_path::assert_safe_scratch_destination;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -858,6 +859,7 @@ impl DisposableFixture {
             std::process::id(),
             sequence
         ));
+        assert_safe_scratch_destination(&root)?;
         if root.exists() {
             return Err(PerformanceError::Prerequisite(
                 "unique disposable fixture root",

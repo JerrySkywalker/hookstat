@@ -109,6 +109,10 @@ jobs:
         shell: pwsh
         run: pwsh ./scripts/ci/test-classify-change.ps1
 
+      - name: C-root scratch-path guard
+        shell: pwsh
+        run: pwsh ./scripts/ci/test-croot-scratch-path.ps1
+
       - name: Workflow structure sanity
         shell: pwsh
         run: pwsh ./scripts/ci/test-workflow-sanity.ps1

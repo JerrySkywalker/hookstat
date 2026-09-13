@@ -9,6 +9,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '../Assert-HookStatScratchPath.ps1')
 $resolvedRoot = (Resolve-Path -LiteralPath $RepositoryRoot).Path
 $sourceHead = (& git -C $resolvedRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $sourceHead -notmatch '^[0-9a-f]{40}$') {
@@ -25,6 +26,7 @@ $clientSource = Join-Path $resolvedRoot 'src/ipc_client.rs'
 $clientSourceSha256 = (Get-FileHash -LiteralPath $clientSource -Algorithm SHA256).Hash.ToLowerInvariant()
 $tempRoot = [System.IO.Path]::GetTempPath()
 $lab = Join-Path $tempRoot ('hookstat-tabbeacon-proof-' + [guid]::NewGuid().ToString('N'))
+Assert-HookStatSafeScratchPath -Candidate $lab
 $tabbeacon = Join-Path $lab 'tabbeacon'
 $target = Join-Path $lab 'target'
 $resolvedOutput = [System.IO.Path]::GetFullPath($Output)

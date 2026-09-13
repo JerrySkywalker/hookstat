@@ -19,6 +19,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot '../Assert-HookStatScratchPath.ps1')
 
 function Write-Result {
     param([Parameter(Mandatory = $true)][System.Collections.IDictionary]$Result)
@@ -112,6 +113,7 @@ $result = [ordered]@{
 }
 $tempRoot = [System.IO.Path]::GetTempPath()
 $lab = Join-Path $tempRoot ('hookstat-release-gate-' + [guid]::NewGuid().ToString('N'))
+Assert-HookStatSafeScratchPath -Candidate $lab
 
 try {
     Assert-FullLowercaseSha -Value $CandidateSha -Name 'CandidateSha'

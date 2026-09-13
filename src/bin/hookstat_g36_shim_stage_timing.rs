@@ -18,6 +18,7 @@ mod windows_timing {
         write_key_for_test,
     };
     use hookstat::ipc::{BrokerConfig, BrokerHost};
+    use hookstat::scratch_path::assert_safe_scratch_destination;
     use serde::Serialize;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -221,6 +222,7 @@ mod windows_timing {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |value| value.as_nanos())
         ));
+        assert_safe_scratch_destination(&root).expect("validate disposable stage root");
         let capsule_root = root.join("capsules");
         let state_root = root.join("state");
         let sealed = seal(&capsule_root, &capsule());

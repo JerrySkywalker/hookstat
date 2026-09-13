@@ -6,6 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot '../Assert-HookStatScratchPath.ps1')
 
 function Assert-ReceiptField {
     param(
@@ -44,6 +45,7 @@ $expectedOwnerMain = '6125734fdbc3edbe33712929abcd4cd1e0e07e1b'
 $releaseGate = Join-Path $resolvedRoot 'scripts/release/release-gate.ps1'
 $verifyPackage = Join-Path $resolvedRoot 'scripts/release/verify-package.ps1'
 $testLab = Join-Path ([System.IO.Path]::GetTempPath()) ('hookstat-release-gate-test-' + [guid]::NewGuid().ToString('N'))
+Assert-HookStatSafeScratchPath -Candidate $testLab
 
 try {
     New-Item -ItemType Directory -Path $testLab | Out-Null
