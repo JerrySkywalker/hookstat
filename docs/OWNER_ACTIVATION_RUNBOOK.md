@@ -1,10 +1,11 @@
-# HookStat v0.1 Owner activation runbook
+# HookStat Owner activation runbook
 
-This is the short explicit-authorization sequence for a released build.
-It is normally owner-attended; an active Goal may instead grant the same
-bounded authority for a named controlled release train. It changes only the
-Codex configuration root you explicitly pass to `--apply`. Normal use stays
-`codex`; do not launch `hookstat codex`.
+This is the short explicit-authorization sequence for a separately released
+build. It is normally owner-attended; an active Goal may instead grant the same
+bounded authority for a named controlled release train. A source candidate is
+not activation authority. The runbook changes only the Codex configuration root
+you explicitly pass to `--apply`. Normal use stays `codex`; do not launch
+`hookstat codex`.
 
 ## 1. Sync and install the release
 
@@ -28,6 +29,11 @@ and unsupported coverage. The output must not contain raw hook commands. Stop
 here if the selected root is not the one you intend to change.
 
 ## 3. Apply with an explicit root
+
+If the read-only plan reports both already-instrumented and newly
+instrumentable handlers for the same mutable configuration path, stop. Do not
+attempt to merge or repair that state by hand: the v0.4.1 safety contract
+refuses Apply before config, manifest, or journal mutation.
 
 ```powershell
 hookstat codex instrument --apply --config-root $configRoot
@@ -77,6 +83,8 @@ hookstat codex instrument --restore --config-root $configRoot
 hookstat codex instrument --dry-run
 ```
 
-Restore refuses configuration drift rather than overwriting a changed file. If
-that occurs, preserve the changed configuration and review it before choosing a
-manual recovery plan; do not hand-edit solely to satisfy HookStat.
+Restore refuses configuration drift rather than overwriting a changed file. It
+also refuses a wrapper-containing target unless the complete manifest control
+plane is proven. If either guard fires, preserve the changed configuration and
+review it before choosing a manual recovery plan; do not hand-edit solely to
+satisfy HookStat.

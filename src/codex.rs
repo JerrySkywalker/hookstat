@@ -12,7 +12,7 @@ use crate::runtime_presentation::RuntimePresentationSnapshot;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
@@ -241,6 +241,8 @@ pub enum CodexError {
     Toml(toml::de::Error),
     Invalid(&'static str),
     DriftDetected,
+    MixedInstrumentationState,
+    RestoreControlPlaneUnproven,
     AppServerUnavailable,
     AppServerTimeout,
     AppServerProtocol,
@@ -258,6 +260,12 @@ impl fmt::Display for CodexError {
             Self::Invalid(field) => write!(output, "Codex hook configuration has invalid {field}"),
             Self::DriftDetected => output
                 .write_str("Codex hook configuration drift detected; no modification was made"),
+            Self::MixedInstrumentationState => output.write_str(
+                "Codex hook configuration contains mixed HookStat instrumentation state; apply refused before modification",
+            ),
+            Self::RestoreControlPlaneUnproven => output.write_str(
+                "HookStat restore target contains wrappers without a complete proven control plane; no modification was made",
+            ),
             Self::AppServerUnavailable => {
                 output.write_str("Codex App Server effective hook discovery is unavailable")
             }
@@ -1173,6 +1181,106 @@ fn source_kind(path: &Path) -> SourceKind {
     }
 }
 
+fn marked_command_count(value: &Value) -> usize {
+    match value {
+        Value::Array(items) => items.iter().map(marked_command_count).sum(),
+        Value::Object(items) => {
+            let own = usize::from(["command", "commandWindows", "command_windows"].iter().any(
+                |field| {
+                    items
+                        .get(*field)
+                        .and_then(Value::as_str)
+                        .is_some_and(|command| command.contains(MARKER))
+                },
+            ));
+            own + items.values().map(marked_command_count).sum::<usize>()
+        }
+        _ => 0,
+    }
+}
+
+fn restore_target_wrapper_keys(
+    config_path: &Path,
+    backup: &[u8],
+) -> Result<BTreeSet<String>, CodexError> {
+    let root: Value =
+        serde_json::from_slice(backup).map_err(|_| CodexError::RestoreControlPlaneUnproven)?;
+    let marked_commands = marked_command_count(&root);
+    if marked_commands == 0 {
+        return Ok(BTreeSet::new());
+    }
+
+    let mut keys = BTreeSet::new();
+    let Some(hooks) = root.get("hooks").and_then(Value::as_object) else {
+        return Err(CodexError::RestoreControlPlaneUnproven);
+    };
+    for (event_name, groups) in hooks {
+        let Some(event) = parse_event(event_name) else {
+            continue;
+        };
+        let Some(groups) = groups.as_array() else {
+            continue;
+        };
+        for (group_index, group) in groups.iter().enumerate() {
+            let Some(handlers) = group.get("hooks").and_then(Value::as_array) else {
+                continue;
+            };
+            for (handler_index, handler) in handlers.iter().enumerate() {
+                let is_marked_command = handler.get("type").and_then(Value::as_str)
+                    == Some("command")
+                    && handler
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .is_some_and(|command| command.contains(MARKER));
+                if is_marked_command {
+                    keys.insert(format!(
+                        "hk_{}",
+                        runtime_location_fingerprint(
+                            config_path,
+                            event,
+                            group_index,
+                            handler_index
+                        )
+                    ));
+                }
+            }
+        }
+    }
+    if keys.len() != marked_commands {
+        return Err(CodexError::RestoreControlPlaneUnproven);
+    }
+    Ok(keys)
+}
+
+fn require_proven_restore_control_plane(
+    config_path: &Path,
+    data_root: &Path,
+    journal: &Journal,
+    backup: &[u8],
+) -> Result<(), CodexError> {
+    let wrapper_keys = restore_target_wrapper_keys(config_path, backup)?;
+    if wrapper_keys.is_empty() {
+        return Ok(());
+    }
+
+    let manifest = load_manifest(&data_root.join("manifests").join(&journal.manifest_file))
+        .map_err(|_| CodexError::RestoreControlPlaneUnproven)?;
+    let path_fingerprint = short_hash(config_path.to_string_lossy().as_bytes());
+    if manifest.config_path_fingerprint != path_fingerprint
+        || manifest.original_config_sha256 != journal.original_config_sha256
+        || manifest.handlers.len() != wrapper_keys.len()
+        || wrapper_keys.iter().any(|key| {
+            manifest
+                .handlers
+                .get(key)
+                .is_none_or(|handler| handler.handler.key != *key)
+        })
+    {
+        return Err(CodexError::RestoreControlPlaneUnproven);
+    }
+    Ok(())
+}
+
 /// Apply only a discovery generated from the same explicit config path. The
 /// caller provides HookStat's own data root; this routine never resolves or
 /// mutates a default owner configuration implicitly.
@@ -1181,12 +1289,33 @@ pub fn apply(
     data_root: &Path,
     proxy_executable: &Path,
 ) -> Result<ApplySummary, CodexError> {
-    fs::create_dir_all(data_root.join("backups"))?;
-    fs::create_dir_all(data_root.join("manifests"))?;
-    fs::create_dir_all(data_root.join("journals"))?;
     let mut by_path: BTreeMap<&Path, Vec<&LocatedHandler>> = BTreeMap::new();
     for item in &discovery.handlers {
         by_path.entry(item.path.as_path()).or_default().push(item);
+    }
+    let has_mutable_instrumentable = |items: &[&LocatedHandler]| {
+        items.iter().any(|item| {
+            item.discovered.disposition == InstrumentationDisposition::Instrumentable
+                && item.discovered.source_kind.format() == ConfigFormat::HooksJson
+        })
+    };
+    for items in by_path.values() {
+        let has_already_instrumented = items.iter().any(|item| {
+            item.discovered.disposition == InstrumentationDisposition::AlreadyInstrumented
+        });
+        if has_already_instrumented && has_mutable_instrumentable(items) {
+            // v0.4.1 deliberately does not attempt to merge original-command
+            // material from an existing manifest during Apply.
+            return Err(CodexError::MixedInstrumentationState);
+        }
+    }
+    if by_path
+        .values()
+        .any(|items| has_mutable_instrumentable(items))
+    {
+        fs::create_dir_all(data_root.join("backups"))?;
+        fs::create_dir_all(data_root.join("manifests"))?;
+        fs::create_dir_all(data_root.join("journals"))?;
     }
     let mut summary = ApplySummary::default();
     for (path, items) in by_path {
@@ -1318,6 +1447,7 @@ pub fn restore(config_path: &Path, data_root: &Path) -> Result<RestoreSummary, C
     if sha256(&backup) != journal.original_config_sha256 {
         return Err(CodexError::DriftDetected);
     }
+    require_proven_restore_control_plane(config_path, data_root, &journal, &backup)?;
     atomic_bytes(config_path, &backup)?;
     fs::remove_file(journal_path)?;
     Ok(RestoreSummary {
@@ -1572,6 +1702,183 @@ mod tests {
     fn fixture(path: &Path) {
         fs::write(path, r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo private fixture value","timeout":4},{"type":"command","command":"echo second","async":true}]}],"PreToolUse":[{"matcher":"^Bash$","hooks":[{"type":"command","command":"echo deny","commandWindows":"echo deny-windows","statusMessage":"check","additionalContextLimit":500}]}]}}"#).unwrap();
     }
+
+    fn synthetic_hooks_document(wrapped: usize, instrumentable: usize) -> Value {
+        let mut handlers = Vec::new();
+        for index in 0..wrapped {
+            handlers.push(serde_json::json!({
+                "type": "command",
+                "command": format!("synthetic-wrapped-{index} {MARKER}"),
+            }));
+        }
+        for index in 0..instrumentable {
+            handlers.push(serde_json::json!({
+                "type": "command",
+                "command": format!("synthetic-original-{index}"),
+            }));
+        }
+        serde_json::json!({
+            "unrelated": {"preserve": true},
+            "hooks": {"Stop": [{"matcher": "^Synthetic$", "hooks": handlers}]},
+        })
+    }
+
+    fn fixture_with_handlers(path: &Path, wrapped: usize, instrumentable: usize) {
+        fs::write(
+            path,
+            serde_json::to_vec_pretty(&synthetic_hooks_document(wrapped, instrumentable)).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn control_plane_paths(config: &Path, state: &Path) -> (PathBuf, PathBuf) {
+        let fingerprint = short_hash(config.to_string_lossy().as_bytes());
+        (
+            state.join("manifests").join(format!("{fingerprint}.json")),
+            state.join("journals").join(format!("{fingerprint}.json")),
+        )
+    }
+
+    #[test]
+    fn mixed_twelve_plus_eleven_refuses_before_any_control_plane_mutation() {
+        let temp = tempdir().unwrap();
+        let config = temp.path().join("hooks.json");
+        fixture_with_handlers(&config, 12, 11);
+        let before = fs::read(&config).unwrap();
+        let state = temp.path().join("state");
+        let discovery = discover_paths(std::slice::from_ref(&config)).unwrap();
+        assert_eq!(discovery.summary.already_instrumented, 12);
+        assert_eq!(discovery.summary.instrumentable, 11);
+
+        assert!(matches!(
+            apply(&discovery, &state, Path::new("hookstat-test")),
+            Err(CodexError::MixedInstrumentationState)
+        ));
+        assert_eq!(fs::read(&config).unwrap(), before);
+        assert!(!state.exists());
+    }
+
+    #[test]
+    fn mixed_state_with_stale_manifest_refuses_without_replacing_evidence() {
+        let temp = tempdir().unwrap();
+        let config = temp.path().join("hooks.json");
+        fixture_with_handlers(&config, 12, 11);
+        let before = fs::read(&config).unwrap();
+        let state = temp.path().join("state");
+        let (manifest_path, journal_path) = control_plane_paths(&config, &state);
+        fs::create_dir_all(manifest_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(journal_path.parent().unwrap()).unwrap();
+        let manifest_before = b"stale manifest fixture";
+        let journal_before = b"stale journal fixture";
+        fs::write(&manifest_path, manifest_before).unwrap();
+        fs::write(&journal_path, journal_before).unwrap();
+        let discovery = discover_paths(std::slice::from_ref(&config)).unwrap();
+
+        assert!(matches!(
+            apply(&discovery, &state, Path::new("hookstat-test")),
+            Err(CodexError::MixedInstrumentationState)
+        ));
+        assert_eq!(fs::read(&config).unwrap(), before);
+        assert_eq!(fs::read(&manifest_path).unwrap(), manifest_before);
+        assert_eq!(fs::read(&journal_path).unwrap(), journal_before);
+    }
+
+    #[test]
+    fn fresh_eleven_handler_apply_succeeds() {
+        let temp = tempdir().unwrap();
+        let config = temp.path().join("hooks.json");
+        fixture_with_handlers(&config, 0, 11);
+        let state = temp.path().join("state");
+        let discovery = discover_paths(std::slice::from_ref(&config)).unwrap();
+        assert_eq!(discovery.summary.already_instrumented, 0);
+        assert_eq!(discovery.summary.instrumentable, 11);
+
+        let result = apply(&discovery, &state, Path::new("hookstat-test")).unwrap();
+        assert_eq!(result.applied, 11);
+        let (manifest_path, journal_path) = control_plane_paths(&config, &state);
+        assert_eq!(load_manifest(&manifest_path).unwrap().handlers.len(), 11);
+        assert!(journal_path.exists());
+    }
+
+    #[test]
+    fn twelve_already_instrumented_handlers_are_idempotent_without_double_wrapping() {
+        let temp = tempdir().unwrap();
+        let config = temp.path().join("hooks.json");
+        fixture_with_handlers(&config, 12, 0);
+        let before = fs::read(&config).unwrap();
+        let state = temp.path().join("state");
+        let discovery = discover_paths(std::slice::from_ref(&config)).unwrap();
+        assert_eq!(discovery.summary.already_instrumented, 12);
+        assert_eq!(discovery.summary.instrumentable, 0);
+
+        let result = apply(&discovery, &state, Path::new("hookstat-test")).unwrap();
+        assert_eq!(result.applied, 0);
+        assert_eq!(result.already_instrumented, 12);
+        assert_eq!(fs::read(&config).unwrap(), before);
+        assert!(!state.exists());
+    }
+
+    #[test]
+    fn restore_refuses_wrapper_target_without_complete_manifest_support() {
+        let temp = tempdir().unwrap();
+        let config = temp.path().join("hooks.json");
+        let active = br#"{"active":"synthetic-applied"}"#;
+        fs::write(&config, active).unwrap();
+        let state = temp.path().join("state");
+        let (manifest_path, journal_path) = control_plane_paths(&config, &state);
+        let backup = serde_json::to_vec(&synthetic_hooks_document(1, 0)).unwrap();
+        fs::create_dir_all(state.join("backups")).unwrap();
+        fs::create_dir_all(journal_path.parent().unwrap()).unwrap();
+        let backup_file = "unsafe-restore.backup";
+        fs::write(state.join("backups").join(backup_file), &backup).unwrap();
+        let journal = Journal {
+            original_config_sha256: sha256(&backup),
+            applied_config_sha256: sha256(active),
+            backup_file: backup_file.into(),
+            manifest_file: manifest_path.file_name().unwrap().to_string_lossy().into(),
+        };
+        fs::write(&journal_path, serde_json::to_vec(&journal).unwrap()).unwrap();
+        let journal_before = fs::read(&journal_path).unwrap();
+
+        assert!(matches!(
+            restore(&config, &state),
+            Err(CodexError::RestoreControlPlaneUnproven)
+        ));
+        assert_eq!(fs::read(&config).unwrap(), active);
+        assert_eq!(fs::read(&journal_path).unwrap(), journal_before);
+        assert!(!manifest_path.exists());
+    }
+
+    #[test]
+    fn safe_restore_to_wrapper_free_exact_prestate_passes() {
+        let temp = tempdir().unwrap();
+        let config = temp.path().join("hooks.json");
+        fixture_with_handlers(&config, 0, 1);
+        let original = fs::read(&config).unwrap();
+        let state = temp.path().join("state");
+        let discovery = discover_paths(std::slice::from_ref(&config)).unwrap();
+        apply(&discovery, &state, Path::new("hookstat-test")).unwrap();
+
+        assert_eq!(restore(&config, &state).unwrap().restored, 1);
+        assert_eq!(fs::read(&config).unwrap(), original);
+    }
+
+    #[test]
+    fn trust_remains_fail_closed_for_manifest_configuration_mismatch() {
+        let temp = tempdir().unwrap();
+        let config = temp.path().join("hooks.json");
+        fixture_with_handlers(&config, 0, 1);
+        let state = temp.path().join("state");
+        let discovery = discover_paths(std::slice::from_ref(&config)).unwrap();
+        apply(&discovery, &state, Path::new("hookstat-test")).unwrap();
+        fs::write(&config, br#"{"changed":true}"#).unwrap();
+
+        assert!(matches!(
+            load_trust_material(&config, &state),
+            Err(CodexError::TrustPrecondition)
+        ));
+    }
+
     #[test]
     fn discovery_keeps_two_handlers_on_same_event_distinct_and_private() {
         let temp = tempdir().unwrap();
