@@ -34,6 +34,7 @@ pub mod render;
 pub mod report;
 pub mod runtime;
 pub mod runtime_presentation;
+pub mod scratch_path;
 pub mod tui;
 pub mod workbench;
 

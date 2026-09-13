@@ -25,6 +25,7 @@ mod windows_oracle {
         LocalEndpoint, ObservationDisposition, TerminalOutcome,
     };
     use hookstat::ipc::{BrokerConfig, BrokerHost};
+    use hookstat::scratch_path::assert_safe_scratch_destination;
     use interprocess::local_socket::traits::Listener as _;
     use serde::Serialize;
     use std::fs;
@@ -368,6 +369,7 @@ mod windows_oracle {
             "hookstat-g36-same-invocation-{}-{unique}",
             std::process::id()
         ));
+        assert_safe_scratch_destination(&root).expect("validate disposable oracle root");
         fs::create_dir(&root).expect("create disposable oracle root");
         let capsule_root = root.join("capsules");
         let state_root = root.join("state");

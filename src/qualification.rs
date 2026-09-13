@@ -14,6 +14,7 @@ use crate::ipc::{
     GroupDurabilityPolicy, IpcClient, IpcError, IpcFrame, LifecycleFrame, ObservationDisposition,
     QualificationBrokerStageSample, QualificationClientStageSample, QualificationSendFailure,
 };
+use crate::scratch_path::assert_safe_scratch_destination;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
@@ -1659,6 +1660,11 @@ struct DisposableStateRoot(PathBuf);
 impl DisposableStateRoot {
     fn create() -> Result<Self, QualificationError> {
         let base = std::env::temp_dir().join("hookstat-g35-qualification");
+        Self::create_under(base)
+    }
+
+    fn create_under(base: PathBuf) -> Result<Self, QualificationError> {
+        assert_safe_scratch_destination(&base)?;
         fs::create_dir_all(&base)?;
         for _ in 0..100 {
             let sequence = DISPOSABLE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1709,6 +1715,12 @@ mod tests {
             control_p95_max_ms() + 0.001,
             control_p99_max_ms()
         )));
+    }
+
+    #[test]
+    fn disposable_state_root_rejects_direct_c_root_before_creation() {
+        let result = DisposableStateRoot::create_under(PathBuf::from(r"C:\hookstat-temp-lab"));
+        assert!(result.is_err());
     }
 
     #[test]

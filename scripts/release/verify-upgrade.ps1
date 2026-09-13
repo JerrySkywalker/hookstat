@@ -8,6 +8,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot '../Assert-HookStatScratchPath.ps1')
 
 function Write-Receipt {
     param([Parameter(Mandatory = $true)][System.Collections.IDictionary]$Receipt)
@@ -108,6 +109,7 @@ $receipt = [ordered]@{
 }
 $tempRoot = [System.IO.Path]::GetTempPath()
 $lab = Join-Path $tempRoot ('hookstat-upgrade-verify-' + [guid]::NewGuid().ToString('N'))
+Assert-HookStatSafeScratchPath -Candidate $lab
 
 try {
     New-Item -ItemType Directory -Path $lab | Out-Null
